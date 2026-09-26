@@ -1,0 +1,176 @@
+diff --git a/kernel/drivers/samsung_stm32_pogo.c b/kernel/drivers/samsung_stm32_pogo.c
+index 7157f76..cb38e25 100644
+--- a/kernel/drivers/samsung_stm32_pogo.c
++++ b/kernel/drivers/samsung_stm32_pogo.c
+@@ -92,6 +92,7 @@ struct samsung_pogo {
+ 	struct delayed_work connection_work;
+ 	struct delayed_work application_work;
+ 	struct mutex lock;
++	struct mutex recovery_lock;
+ 	struct mutex power_lock;
+ 	int data_irq;
+ 	int connection_irq;
+@@ -105,6 +106,7 @@ struct samsung_pogo {
+ 	bool bootloader_reachable;
+ 	bool data_irq_enabled;
+ 	bool powered;
++	bool reset_on_reconnect;
+ 	bool wake_enabled;
+ 	bool lid_closed;
+ 	atomic64_t data_irq_count;
+@@ -123,6 +125,7 @@ struct samsung_pogo {
+ 
+ static int samsung_pogo_input_event(struct input_dev *input,
+ 				    unsigned int type, unsigned int code, int value);
++static int samsung_pogo_initialize_application(struct samsung_pogo *pogo);
+ static void samsung_pogo_set_data_irq(struct samsung_pogo *pogo, bool enable);
+ static void samsung_pogo_release_keys(struct samsung_pogo *pogo);
+ static void samsung_pogo_release_touchpad(struct samsung_pogo *pogo);
+@@ -576,6 +579,67 @@ out_release:
+ }
+ static DEVICE_ATTR_WO(firmware_update);
+ 
++/*
++ * A driver reprobe recovers a wedged controller because probe deliberately
++ * enters the STM32 system bootloader (BOOT0/NRST), reads its immutable ID and
++ * flash version, and returns it to the application.  A physical keyboard
++ * disconnect only cuts the accessory VDDO rail; on this board that does not
++ * necessarily reset the tablet-side STM32.  Expose the same read-only
++ * bootloader handshake/application restart as an explicit, privileged
++ * recovery operation.  This never erases or programs STM32 flash.
++ */
++static ssize_t recover_store(struct device *dev,
++			     struct device_attribute *attribute,
++			     const char *buf, size_t count)
++{
++	struct samsung_pogo *pogo = dev_get_drvdata(dev);
++	bool connected;
++	int ret;
++
++	if (!sysfs_streq(buf, "1"))
++		return -EINVAL;
++
++	/* Serialize the whole IRQ/work quiesce sequence, not just the reset. */
++	mutex_lock(&pogo->recovery_lock);
++
++	/* Quiesce both interrupt paths before manipulating BOOT0/NRST. */
++	disable_irq(pogo->connection_irq);
++	cancel_delayed_work_sync(&pogo->connection_work);
++	samsung_pogo_set_data_irq(pogo, false);
++	cancel_delayed_work_sync(&pogo->application_work);
++
++	mutex_lock(&pogo->lock);
++	connected = gpiod_get_value_cansleep(pogo->connected) > 0;
++	if (!pogo->attached || !pogo->powered || !connected) {
++		ret = -ENODEV;
++		goto out_unlock;
++	}
++
++	/* Do not leave a modifier or touch contact logically held over reset. */
++	samsung_pogo_release_keys(pogo);
++	pogo->bootloader_reachable = false;
++	samsung_pogo_probe_bootloader(pogo);
++	ret = samsung_pogo_initialize_application(pogo);
++	pogo->last_init_error = ret;
++	atomic64_inc(&pogo->recovery_count);
++	if (ret)
++		dev_warn(dev, "manual controller recovery failed: %d\n", ret);
++	else
++		dev_info(dev, "manual controller recovery completed\n");
++
++out_unlock:
++	if (pogo->attached && gpiod_get_value_cansleep(pogo->connected) > 0)
++		samsung_pogo_set_data_irq(pogo, true);
++	mutex_unlock(&pogo->lock);
++
++	/* Reconcile any physical change that occurred while its IRQ was masked. */
++	enable_irq(pogo->connection_irq);
++	mod_delayed_work(system_dfl_wq, &pogo->connection_work, 0);
++	mutex_unlock(&pogo->recovery_lock);
++	return ret ? ret : count;
++}
++static DEVICE_ATTR_WO(recover);
++
+ static int samsung_pogo_enable_power(struct samsung_pogo *pogo)
+ {
+ 	int ret;
+@@ -1195,7 +1259,7 @@ static void samsung_pogo_connection_work(struct work_struct *work)
+ 	connected = gpiod_get_value_cansleep(pogo->connected) > 0;
+ 
+ 	/* Wait for an in-flight data thread before destroying its input device. */
+-	if (!connected) {
++	if (!connected || READ_ONCE(pogo->reset_on_reconnect)) {
+ 		samsung_pogo_set_data_irq(pogo, false);
+ 		cancel_delayed_work_sync(&pogo->application_work);
+ 	}
+@@ -1208,10 +1272,23 @@ static void samsung_pogo_connection_work(struct work_struct *work)
+ 	 */
+ 	if (connected && pogo->attached && !pogo->powered) {
+ 		ret = samsung_pogo_enable_power(pogo);
+-		if (ret)
++		if (ret) {
+ 			dev_err_ratelimited(dev,
+ 					     "cannot restore keyboard power: %d\n",
+ 					     ret);
++			mod_delayed_work(system_dfl_wq, &pogo->connection_work,
++					 msecs_to_jiffies(1000));
++		} else if (READ_ONCE(pogo->reset_on_reconnect)) {
++			/*
++			 * Match Samsung's NRST handling on cover reopen.  VDDO
++			 * cycling alone may not restart the tablet-side STM32, so
++			 * restart its app before accepting more protocol traffic.
++			 */
++			msleep(50);
++			samsung_pogo_reset_application(pogo);
++			WRITE_ONCE(pogo->reset_on_reconnect, false);
++			samsung_pogo_set_data_irq(pogo, true);
++		}
+ 	}
+ 	if (connected == pogo->attached)
+ 		goto out_unlock;
+@@ -1226,6 +1303,10 @@ static void samsung_pogo_connection_work(struct work_struct *work)
+ 		}
+ 
+ 		msleep(50);
++		if (READ_ONCE(pogo->reset_on_reconnect)) {
++			samsung_pogo_reset_application(pogo);
++			WRITE_ONCE(pogo->reset_on_reconnect, false);
++		}
+ 		pogo->attached = true;
+ 		samsung_pogo_set_data_irq(pogo, true);
+ 		dev_info(dev, "pogo connection detected; waiting for protocol ID\n");
+@@ -1255,6 +1336,7 @@ static irqreturn_t samsung_pogo_connection_irq_thread(int irq, void *data)
+ 		atomic64_inc(&pogo->connection_irq_high);
+ 	else {
+ 		atomic64_inc(&pogo->connection_irq_low);
++		WRITE_ONCE(pogo->reset_on_reconnect, true);
+ 		/*
+ 		 * The STM32 repeats GPIO62 pulses until the host acknowledges them by
+ 		 * dropping VDDO; deferring this cut produced hundreds of edges and no
+@@ -1375,6 +1457,7 @@ static int samsung_pogo_probe(struct i2c_client *client)
+ 	atomic64_set(&pogo->recovery_count, 0);
+ 	atomic64_set(&pogo->read_retry_release_count, 0);
+ 	mutex_init(&pogo->lock);
++	mutex_init(&pogo->recovery_lock);
+ 	mutex_init(&pogo->power_lock);
+ 	INIT_DELAYED_WORK(&pogo->connection_work, samsung_pogo_connection_work);
+ 	INIT_DELAYED_WORK(&pogo->application_work, samsung_pogo_application_work);
+@@ -1481,6 +1564,10 @@ static int samsung_pogo_probe(struct i2c_client *client)
+ 	if (ret)
+ 		return dev_err_probe(dev, ret,
+ 				     "failed to create event poll control\n");
++	ret = device_create_file(dev, &dev_attr_recover);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "failed to create controller recovery control\n");
+ 	dev_info(dev, "STM32 pogo controller ready (connected=%d, data-ready=%d)\n",
+ 		 gpiod_get_value_cansleep(pogo->connected),
+ 		 gpiod_get_value_cansleep(pogo->data_ready));
+@@ -1496,6 +1583,7 @@ static void samsung_pogo_remove(struct i2c_client *client)
+ 	struct samsung_pogo *pogo = i2c_get_clientdata(client);
+ 
+ 	device_remove_file(&client->dev, &dev_attr_firmware_update);
++	device_remove_file(&client->dev, &dev_attr_recover);
+ 	device_remove_file(&client->dev, &dev_attr_diagnostics);
+ 	device_remove_file(&client->dev, &dev_attr_event_poll);
+ 	cancel_delayed_work_sync(&pogo->connection_work);

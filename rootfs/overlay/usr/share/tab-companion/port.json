@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "port_id": "x810-fedora",
+  "name": "Fedora on Samsung Galaxy Tab S9+ Wi-Fi",
+  "repo_url": "https://github.com/iamSlightlyWind/x810-fedroid",
+  "workflow_file": "port-updates.yml",
+  "branch": "main",
+  "artifact_name": "x810-fedora-port",
+  "public_release": true,
+  "release_tag_prefix": "x810-fedora-port-build",
+  "build_info_path": "/usr/share/tab-companion/port-build.json",
+  "version": "unknown",
+  "device_id": "SM-X810",
+  "os_id": "fedora",
+  "os_version": "44",
+  "arch": "aarch64"
+}

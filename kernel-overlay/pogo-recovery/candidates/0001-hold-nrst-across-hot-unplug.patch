@@ -1,0 +1,106 @@
+diff --git a/kernel/drivers/samsung_stm32_pogo.c b/kernel/drivers/samsung_stm32_pogo.c
+--- a/kernel/drivers/samsung_stm32_pogo.c
++++ b/kernel/drivers/samsung_stm32_pogo.c
+@@ -171,6 +171,41 @@
+ 	mutex_unlock(&pogo->power_lock);
+ }
+ 
++/*
++ * Samsung's cover-close path holds NRST asserted while VDDO is off.  Use the
++ * same ordering for a physical disconnect so a rapid reconnect starts from a
++ * known application-reset state rather than relying on rail discharge.
++ */
++static void samsung_pogo_hold_reset_and_power_off(struct samsung_pogo *pogo)
++{
++	mutex_lock(&pogo->power_lock);
++	gpiod_set_value_cansleep(pogo->boot, 0);
++	gpiod_set_value_cansleep(pogo->reset, 1);
++	samsung_pogo_power_off_locked(pogo);
++	mutex_unlock(&pogo->power_lock);
++}
++
++static bool samsung_pogo_release_held_reset(struct samsung_pogo *pogo)
++{
++	bool connected;
++
++	/* Serialize NRST release against detach's reset-and-power-off path. */
++	mutex_lock(&pogo->power_lock);
++	connected = pogo->powered &&
++		gpiod_get_value_cansleep(pogo->connected) > 0;
++	if (connected) {
++		gpiod_set_value_cansleep(pogo->boot, 0);
++		gpiod_set_value_cansleep(pogo->reset, 0);
++	}
++	mutex_unlock(&pogo->power_lock);
++	if (!connected)
++		return false;
++
++	/* Match Samsung's main-flash startup settle delay after NRST release. */
++	msleep(150);
++	return true;
++}
++
+ static void samsung_pogo_put_booster(void *data)
+ {
+ 	put_device(data);
+@@ -1280,14 +1315,18 @@
+ 					 msecs_to_jiffies(1000));
+ 		} else if (READ_ONCE(pogo->reset_on_reconnect)) {
+ 			/*
+-			 * Match Samsung's NRST handling on cover reopen.  VDDO
+-			 * cycling alone may not restart the tablet-side STM32, so
+-			 * restart its app before accepting more protocol traffic.
++			 * Match Samsung's NRST handling on cover reopen. Keep the
++			 * reset request set until the rail is back and NRST releases.
+ 			 */
+-			msleep(50);
+-			samsung_pogo_reset_application(pogo);
+ 			WRITE_ONCE(pogo->reset_on_reconnect, false);
+-			samsung_pogo_set_data_irq(pogo, true);
++			msleep(50);
++			if (!samsung_pogo_release_held_reset(pogo)) {
++				WRITE_ONCE(pogo->reset_on_reconnect, true);
++				mod_delayed_work(system_dfl_wq, &pogo->connection_work,
++						 msecs_to_jiffies(POGO_DISCONNECT_DEBOUNCE_MS));
++			}
++			if (!READ_ONCE(pogo->reset_on_reconnect))
++				samsung_pogo_set_data_irq(pogo, true);
+ 		}
+ 	}
+ 	if (connected == pogo->attached)
+@@ -1304,8 +1343,14 @@
+ 
+ 		msleep(50);
+ 		if (READ_ONCE(pogo->reset_on_reconnect)) {
+-			samsung_pogo_reset_application(pogo);
+ 			WRITE_ONCE(pogo->reset_on_reconnect, false);
++			if (!samsung_pogo_release_held_reset(pogo))
++				WRITE_ONCE(pogo->reset_on_reconnect, true);
++		}
++		if (READ_ONCE(pogo->reset_on_reconnect)) {
++			mod_delayed_work(system_dfl_wq, &pogo->connection_work,
++					 msecs_to_jiffies(POGO_DISCONNECT_DEBOUNCE_MS));
++			goto out_unlock;
+ 		}
+ 		pogo->attached = true;
+ 		samsung_pogo_set_data_irq(pogo, true);
+@@ -1338,6 +1383,11 @@
+ 		atomic64_inc(&pogo->connection_irq_low);
+ 		WRITE_ONCE(pogo->reset_on_reconnect, true);
+ 		/*
++		 * The reset descriptor is active-low: logical 1 asserts NRST.  Hold
++		 * it before disabling VDDO, matching Samsung's cover-close order.
++		 */
++		samsung_pogo_hold_reset_and_power_off(pogo);
++		/*
+ 		 * The STM32 repeats GPIO62 pulses until the host acknowledges them by
+ 		 * dropping VDDO; deferring this cut produced hundreds of edges and no
+ 		 * keys.  Samsung cuts the regulator directly in this IRQ, before the
+@@ -1346,7 +1396,6 @@
+ 		 * which otherwise postpones the acknowledgement and makes the MCU
+ 		 * repeat the request until the protocol collapses.
+ 		 */
+-		samsung_pogo_power_off(pogo);
+ 		mutex_lock(&pogo->lock);
+ 		samsung_pogo_release_keys(pogo);
+ 		mutex_unlock(&pogo->lock);

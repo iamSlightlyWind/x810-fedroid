@@ -1,0 +1,170 @@
+--- a/drivers/input/keyboard/samsung_stm32_pogo.c
++++ b/drivers/input/keyboard/samsung_stm32_pogo.c
+@@ -185,24 +185,26 @@
+ 	mutex_unlock(&pogo->power_lock);
+ }
+ 
+-static bool samsung_pogo_release_held_reset(struct samsung_pogo *pogo)
++static bool samsung_pogo_reset_application(struct samsung_pogo *pogo,
++					   unsigned int settle_ms)
+ {
+ 	bool connected;
+ 
+-	/* Serialize NRST release against detach's reset-and-power-off path. */
++	/* Serialize NRST against detach's VDDO-off/reset-hold sequence. */
+ 	mutex_lock(&pogo->power_lock);
+ 	connected = pogo->powered &&
+ 		gpiod_get_value_cansleep(pogo->connected) > 0;
+ 	if (connected) {
+ 		gpiod_set_value_cansleep(pogo->boot, 0);
++		gpiod_set_value_cansleep(pogo->reset, 1);
++		usleep_range(3000, 4000);
+ 		gpiod_set_value_cansleep(pogo->reset, 0);
+ 	}
+ 	mutex_unlock(&pogo->power_lock);
+ 	if (!connected)
+ 		return false;
+ 
+-	/* Match Samsung's main-flash startup settle delay after NRST release. */
+-	msleep(150);
++	msleep(settle_ms);
+ 	return true;
+ }
+ 
+@@ -248,15 +250,6 @@
+ 	msleep(150);
+ }
+ 
+-static void samsung_pogo_reset_application(struct samsung_pogo *pogo)
+-{
+-	/* Samsung resets the application after an exhausted runtime I2C retry. */
+-	gpiod_set_value_cansleep(pogo->boot, 0);
+-	gpiod_set_value_cansleep(pogo->reset, 1);
+-	usleep_range(3000, 4000);
+-	gpiod_set_value_cansleep(pogo->reset, 0);
+-	msleep(10);
+-}
+ 
+ static int samsung_pogo_boot_write(struct samsung_pogo *pogo,
+ 				   const void *buf, size_t len)
+@@ -1243,30 +1236,51 @@
+ {
+ 	struct samsung_pogo *pogo = data;
+ 	bool reset = false;
++	bool deferred = false;
++	int connected;
+ 	int ret;
+ 
+ 	pm_wakeup_event(&pogo->client->dev, 1000);
+ 	mutex_lock(&pogo->lock);
+ 	ret = pogo->attached ? samsung_pogo_read_event(pogo) : -ENODEV;
+-	if (ret && ret != -ENODEV && pogo->powered &&
+-	    gpiod_get_value_cansleep(pogo->connected) > 0) {
+-		/*
+-		 * The MCU can leave DATA asserted after a contact bounce or an
+-		 * interrupted transaction.  Match Samsung's exhausted-I2C-retry
+-		 * recovery and ensure userspace never retains a key across reset.
+-		 */
+-		cancel_delayed_work(&pogo->application_work);
+-		samsung_pogo_release_keys(pogo);
+-		pogo->model = 0;
+-		samsung_pogo_reset_application(pogo);
+-		atomic64_inc(&pogo->recovery_count);
+-		reset = true;
++	if (ret && ret != -ENODEV && pogo->attached) {
++		connected = gpiod_get_value_cansleep(pogo->connected);
++		if (READ_ONCE(pogo->powered) && connected > 0) {
++			/*
++			 * Samsung resets after exhausted application-I2C retries.
++			 * Serialize that pulse with VDDO shutdown; if attachment raced
++			 * away, defer it to connection reconciliation below.
++			 */
++			cancel_delayed_work(&pogo->application_work);
++			samsung_pogo_release_keys(pogo);
++			pogo->model = 0;
++			if (samsung_pogo_reset_application(pogo, 10)) {
++				atomic64_inc(&pogo->recovery_count);
++				reset = true;
++			} else {
++				WRITE_ONCE(pogo->reset_on_reconnect, true);
++				mod_delayed_work(system_dfl_wq, &pogo->connection_work,
++						 msecs_to_jiffies(POGO_DISCONNECT_DEBOUNCE_MS));
++				deferred = true;
++			}
++		} else {
++			/*
++			 * The transfer exhausted retries while connection/power was
++			 * changing. Preserve reset intent; the worker will pulse NRST
++			 * after power returns instead of silently abandoning recovery.
++			 */
++			WRITE_ONCE(pogo->reset_on_reconnect, true);
++			mod_delayed_work(system_dfl_wq, &pogo->connection_work,
++					 msecs_to_jiffies(POGO_DISCONNECT_DEBOUNCE_MS));
++			deferred = true;
++		}
+ 	}
+ 	mutex_unlock(&pogo->lock);
+ 	if (ret && ret != -ENODEV)
+ 		dev_warn_ratelimited(&pogo->client->dev,
+-				     "event read failed: %d%s\n", ret,
+-				     reset ? "; application reset" : "");
++				     "event read failed: %d%s%s\n", ret,
++				     reset ? "; application reset" : "",
++				     deferred ? "; recovery deferred for connection/power" : "");
+ 
+ 	return IRQ_HANDLED;
+ }
+@@ -1305,23 +1319,32 @@
+ 	 * debounced attachment state. Its connection ISR switched it off at the
+ 	 * falling edge below.
+ 	 */
+-	if (connected && pogo->attached && !pogo->powered) {
+-		ret = samsung_pogo_enable_power(pogo);
+-		if (ret) {
+-			dev_err_ratelimited(dev,
+-					     "cannot restore keyboard power: %d\n",
+-					     ret);
+-			mod_delayed_work(system_dfl_wq, &pogo->connection_work,
+-					 msecs_to_jiffies(1000));
+-		} else if (READ_ONCE(pogo->reset_on_reconnect)) {
++	if (connected && pogo->attached &&
++	    (!pogo->powered || READ_ONCE(pogo->reset_on_reconnect))) {
++		if (!pogo->powered) {
++			ret = samsung_pogo_enable_power(pogo);
++			if (ret) {
++				dev_err_ratelimited(dev,
++						     "cannot restore keyboard power: %d\n",
++						     ret);
++				mod_delayed_work(system_dfl_wq, &pogo->connection_work,
++							 msecs_to_jiffies(1000));
++				goto out_unlock;
++			}
++		}
++		if (READ_ONCE(pogo->reset_on_reconnect)) {
+ 			/*
+-			 * Match Samsung's NRST handling on cover reopen. Keep the
+-			 * reset request set until the rail is back and NRST releases.
++			 * A failed runtime read can race with VDDO/connection loss.
++			 * Keep recovery pending until the rail and GPIO62 are valid,
++			 * then perform a complete application reset before data IRQs.
+ 			 */
+ 			WRITE_ONCE(pogo->reset_on_reconnect, false);
+ 			msleep(50);
+-			if (!samsung_pogo_release_held_reset(pogo))
++			if (!samsung_pogo_reset_application(pogo, 150)) {
+ 				WRITE_ONCE(pogo->reset_on_reconnect, true);
++				mod_delayed_work(system_dfl_wq, &pogo->connection_work,
++							 msecs_to_jiffies(POGO_DISCONNECT_DEBOUNCE_MS));
++			}
+ 			if (!READ_ONCE(pogo->reset_on_reconnect))
+ 				samsung_pogo_set_data_irq(pogo, true);
+ 		}
+@@ -1341,7 +1364,7 @@
+ 		msleep(50);
+ 		if (READ_ONCE(pogo->reset_on_reconnect)) {
+ 			WRITE_ONCE(pogo->reset_on_reconnect, false);
+-			if (!samsung_pogo_release_held_reset(pogo))
++			if (!samsung_pogo_reset_application(pogo, 150))
+ 				WRITE_ONCE(pogo->reset_on_reconnect, true);
+ 		}
+ 		if (READ_ONCE(pogo->reset_on_reconnect)) {

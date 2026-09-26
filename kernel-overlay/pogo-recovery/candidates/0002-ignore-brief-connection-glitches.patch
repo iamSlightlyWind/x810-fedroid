@@ -1,0 +1,70 @@
+--- a/drivers/input/keyboard/samsung_stm32_pogo.c
++++ b/drivers/input/keyboard/samsung_stm32_pogo.c
+@@ -111,10 +111,11 @@
+ 	bool lid_closed;
+ 	atomic64_t data_irq_count;
+ 	atomic64_t data_irq_deasserted;
+ 	atomic64_t connection_irq_high;
+ 	atomic64_t connection_irq_low;
++	atomic64_t connection_irq_glitches;
+ 	atomic64_t manual_poll_count;
+ 	atomic64_t key_event_count;
+ 	atomic64_t recovery_count;
+ 	atomic64_t read_retry_release_count;
+ 	atomic64_t touchpad_packets;
+@@ -1376,10 +1377,21 @@
+ 	connected = gpiod_get_value_cansleep(pogo->connected);
+ 	if (connected > 0)
+ 		atomic64_inc(&pogo->connection_irq_high);
+ 	else {
+ 		atomic64_inc(&pogo->connection_irq_low);
++		/*
++		 * The X910 mainline port captured short GPIO62 low glitches while
++		 * physically attached.  Recheck after 3-4 ms before resetting the
++		 * STM32/cutting VDDO; only a persistent low is a detach request.
++		 * This callback is threaded, so a sleepable GPIO read is valid.
++		 */
++		usleep_range(3000, 4000);
++		if (gpiod_get_value_cansleep(pogo->connected) > 0) {
++			atomic64_inc(&pogo->connection_irq_glitches);
++			return IRQ_HANDLED;
++		}
+ 		WRITE_ONCE(pogo->reset_on_reconnect, true);
+ 		/*
+ 		 * The reset descriptor is active-low: logical 1 asserts NRST.  Hold
+ 		 * it before disabling VDDO, matching Samsung's cover-close order.
+ 		 */
+@@ -1427,19 +1439,20 @@
+ 	 * driver can talk to from one it cannot: the mainline sequence only
+ 	 * drives the V37 application.  Exposing it here means the check costs
+ 	 * a cat instead of grepping a boot-time dmesg line that rotates away.
+ 	 */
+ 	return sysfs_emit(buf,
+-		"driver_revision=2 attached=%u model=%#04x connected=%d data_ready=%d caps=%u data_irq=%lld data_irq_deasserted=%lld connection_high=%lld connection_low=%lld manual_polls=%lld key_events=%lld last_key=%#06x keys_down=%u recoveries=%lld read_retry_releases=%lld bootloader=%u flash_version=%*phN app_version=%*phN init_attempts=%lld last_init_error=%d touchpad=%u touchpad_packets=%lld touchpad_bad_packets=%lld\n",
++		"driver_revision=2 attached=%u model=%#04x connected=%d data_ready=%d caps=%u data_irq=%lld data_irq_deasserted=%lld connection_high=%lld connection_low=%lld connection_glitches=%lld manual_polls=%lld key_events=%lld last_key=%#06x keys_down=%u recoveries=%lld read_retry_releases=%lld bootloader=%u flash_version=%*phN app_version=%*phN init_attempts=%lld last_init_error=%d touchpad=%u touchpad_packets=%lld touchpad_bad_packets=%lld\n",
+ 		pogo->attached, pogo->model,
+ 		gpiod_get_value_cansleep(pogo->connected),
+ 		gpiod_get_value_cansleep(pogo->data_ready),
+ 		READ_ONCE(pogo->caps_request),
+ 		atomic64_read(&pogo->data_irq_count),
+ 		atomic64_read(&pogo->data_irq_deasserted),
+ 		atomic64_read(&pogo->connection_irq_high),
+ 		atomic64_read(&pogo->connection_irq_low),
++		atomic64_read(&pogo->connection_irq_glitches),
+ 		atomic64_read(&pogo->manual_poll_count),
+ 		atomic64_read(&pogo->key_event_count),
+ 		READ_ONCE(pogo->last_key_event),
+ 		bitmap_weight(pogo->keys_down, KEY_MAX + 1),
+ 		atomic64_read(&pogo->recovery_count),
+@@ -1496,10 +1509,11 @@
+ 	pogo->caps_request = 1;
+ 	atomic64_set(&pogo->data_irq_count, 0);
+ 	atomic64_set(&pogo->data_irq_deasserted, 0);
+ 	atomic64_set(&pogo->connection_irq_high, 0);
+ 	atomic64_set(&pogo->connection_irq_low, 0);
++	atomic64_set(&pogo->connection_irq_glitches, 0);
+ 	atomic64_set(&pogo->manual_poll_count, 0);
+ 	atomic64_set(&pogo->key_event_count, 0);
+ 	atomic64_set(&pogo->recovery_count, 0);
+ 	atomic64_set(&pogo->read_retry_release_count, 0);
+ 	mutex_init(&pogo->lock);

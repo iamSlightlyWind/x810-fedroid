@@ -1,0 +1,136 @@
+--- a/drivers/input/keyboard/samsung_stm32_pogo.c
++++ b/drivers/input/keyboard/samsung_stm32_pogo.c
+@@ -101,7 +101,6 @@
+ 	u8 caps_request;
+ 	u8 flash_version[4];
+ 	u8 app_version[4];
+-	u16 last_key_event;
+ 	bool attached;
+ 	bool bootloader_reachable;
+ 	bool data_irq_enabled;
+@@ -117,6 +116,10 @@
+ 	atomic64_t key_event_count;
+ 	atomic64_t recovery_count;
+ 	atomic64_t read_retry_release_count;
++	atomic64_t event_read_errors;
++	atomic64_t recovery_gate_skips;
++	atomic64_t invalid_key_events;
++	int last_event_error;
+ 	atomic64_t touchpad_packets;
+ 	atomic64_t touchpad_bad_packets;
+ 	atomic64_t init_attempts;
+@@ -1075,12 +1078,12 @@
+ 		if (event == 0xffff || event == 0x7fff)
+ 			continue;
+ 
+-		WRITE_ONCE(pogo->last_key_event, event);
+ 		atomic64_inc(&pogo->key_event_count);
+ 
+ 		if (!code || code > KEY_MAX) {
++			atomic64_inc(&pogo->invalid_key_events);
+ 			dev_warn_ratelimited(&pogo->client->dev,
+-				"invalid key event %#06x\n", event);
++				"invalid key event\n");
+ 			continue;
+ 		}
+ 
+@@ -1237,12 +1240,30 @@
+ 	struct samsung_pogo *pogo = data;
+ 	bool reset = false;
+ 	bool deferred = false;
++	bool error_attached = false;
++	bool error_powered = false;
++	bool error_irq_enabled = false;
++	bool error_reset_pending = false;
++	bool error_input = false;
++	int error_connected = -1;
++	int error_data_ready = -1;
+ 	int connected;
+ 	int ret;
+ 
+ 	pm_wakeup_event(&pogo->client->dev, 1000);
+ 	mutex_lock(&pogo->lock);
+ 	ret = pogo->attached ? samsung_pogo_read_event(pogo) : -ENODEV;
++	if (ret && ret != -ENODEV) {
++		atomic64_inc(&pogo->event_read_errors);
++		WRITE_ONCE(pogo->last_event_error, ret);
++		error_attached = pogo->attached;
++		error_powered = READ_ONCE(pogo->powered);
++		error_connected = gpiod_get_value_cansleep(pogo->connected);
++		error_data_ready = gpiod_get_value_cansleep(pogo->data_ready);
++		error_irq_enabled = READ_ONCE(pogo->data_irq_enabled);
++		error_reset_pending = READ_ONCE(pogo->reset_on_reconnect);
++		error_input = pogo->input != NULL;
++	}
+ 	if (ret && ret != -ENODEV && pogo->attached) {
+ 		connected = gpiod_get_value_cansleep(pogo->connected);
+ 		if (READ_ONCE(pogo->powered) && connected > 0) {
+@@ -1275,12 +1296,17 @@
+ 			deferred = true;
+ 		}
+ 	}
++	if (ret && ret != -ENODEV && !reset)
++		atomic64_inc(&pogo->recovery_gate_skips);
+ 	mutex_unlock(&pogo->lock);
+ 	if (ret && ret != -ENODEV)
+ 		dev_warn_ratelimited(&pogo->client->dev,
+-				     "event read failed: %d%s%s\n", ret,
++				     "event read failed: %d attached=%u powered=%u connected=%d data_ready=%d data_irq_enabled=%u reset_pending=%u input=%u%s%s\n",
++				     ret, error_attached, error_powered, error_connected,
++				     error_data_ready, error_irq_enabled, error_reset_pending,
++				     error_input,
+ 				     reset ? "; application reset" : "",
+-				     deferred ? "; recovery deferred for connection/power" : "");
++				     deferred ? "; recovery deferred" : "");
+ 
+ 	return IRQ_HANDLED;
+ }
+@@ -1452,10 +1478,12 @@
+ 	 * a cat instead of grepping a boot-time dmesg line that rotates away.
+ 	 */
+ 	return sysfs_emit(buf,
+-		"driver_revision=2 attached=%u model=%#04x connected=%d data_ready=%d caps=%u data_irq=%lld data_irq_deasserted=%lld connection_high=%lld connection_low=%lld manual_polls=%lld key_events=%lld last_key=%#06x keys_down=%u recoveries=%lld read_retry_releases=%lld bootloader=%u flash_version=%*phN app_version=%*phN init_attempts=%lld last_init_error=%d touchpad=%u touchpad_packets=%lld touchpad_bad_packets=%lld\n",
+-		pogo->attached, pogo->model,
++		"driver_revision=4 attached=%u powered=%u connected=%d data_ready=%d data_irq_enabled=%u reset_pending=%u model=%#04x caps=%u data_irq=%lld data_irq_deasserted=%lld connection_high=%lld connection_low=%lld manual_polls=%lld key_events=%lld keys_down=%u recoveries=%lld read_retry_releases=%lld event_read_errors=%lld last_event_error=%d recovery_gate_skips=%lld invalid_key_events=%lld bootloader=%u flash_version=%*phN app_version=%*phN init_attempts=%lld last_init_error=%d input=%u touchpad=%u touchpad_packets=%lld touchpad_bad_packets=%lld\n",
++		READ_ONCE(pogo->attached), READ_ONCE(pogo->powered),
+ 		gpiod_get_value_cansleep(pogo->connected),
+ 		gpiod_get_value_cansleep(pogo->data_ready),
++		READ_ONCE(pogo->data_irq_enabled),
++		READ_ONCE(pogo->reset_on_reconnect), READ_ONCE(pogo->model),
+ 		READ_ONCE(pogo->caps_request),
+ 		atomic64_read(&pogo->data_irq_count),
+ 		atomic64_read(&pogo->data_irq_deasserted),
+@@ -1463,15 +1491,19 @@
+ 		atomic64_read(&pogo->connection_irq_low),
+ 		atomic64_read(&pogo->manual_poll_count),
+ 		atomic64_read(&pogo->key_event_count),
+-		READ_ONCE(pogo->last_key_event),
+ 		bitmap_weight(pogo->keys_down, KEY_MAX + 1),
+ 		atomic64_read(&pogo->recovery_count),
+ 		atomic64_read(&pogo->read_retry_release_count),
++		atomic64_read(&pogo->event_read_errors),
++		READ_ONCE(pogo->last_event_error),
++		atomic64_read(&pogo->recovery_gate_skips),
++		atomic64_read(&pogo->invalid_key_events),
+ 		pogo->bootloader_reachable,
+ 		(int)sizeof(pogo->flash_version), pogo->flash_version,
+ 		(int)sizeof(pogo->app_version), pogo->app_version,
+-		atomic64_read(&pogo->init_attempts), pogo->last_init_error,
+-		pogo->touchpad != NULL, atomic64_read(&pogo->touchpad_packets),
++		atomic64_read(&pogo->init_attempts), READ_ONCE(pogo->last_init_error),
++		READ_ONCE(pogo->input) != NULL, pogo->touchpad != NULL,
++		atomic64_read(&pogo->touchpad_packets),
+ 		atomic64_read(&pogo->touchpad_bad_packets));
+ }
+ static DEVICE_ATTR_RO(diagnostics);
+@@ -1525,6 +1557,10 @@
+ 	atomic64_set(&pogo->key_event_count, 0);
+ 	atomic64_set(&pogo->recovery_count, 0);
+ 	atomic64_set(&pogo->read_retry_release_count, 0);
++	atomic64_set(&pogo->event_read_errors, 0);
++	atomic64_set(&pogo->recovery_gate_skips, 0);
++	atomic64_set(&pogo->invalid_key_events, 0);
++	pogo->last_event_error = 0;
+ 	mutex_init(&pogo->lock);
+ 	mutex_init(&pogo->recovery_lock);
+ 	mutex_init(&pogo->power_lock);

@@ -1,0 +1,143 @@
+name: Fedora rootfs
+
+on:
+  workflow_dispatch:
+    inputs:
+      fedora_release:
+        description: "Fedora release to build against"
+        default: "44"
+        type: string
+      fedora_base_compose:
+        description: "Immutable Fedora Everything base compose (must match the selected Fedora release)"
+        default: "Fedora-44-20260422.1"
+        type: string
+      fedora_updates_compose:
+        description: "Immutable Fedora updates compose (must match the selected Fedora release)"
+        default: "Fedora-44-updates-20260926.0"
+        type: string
+      desktop:
+        description: "gnome = release image (Workstation + device stack + firmware + kernel); core = headless debug image"
+        default: "gnome"
+        type: choice
+        options: [gnome, core]
+      port_version:
+        description: "Explicit Tab Companion port version (MAJOR.MINOR.PATCH); use unknown for debug/unreleased builds"
+        default: "unknown"
+        type: string
+      kernel_release_tag:
+        description: "This repository's kernel build tag; the rootfs downloads its checksum-matched X810 RPM from it"
+        default: "kernel-7.2.0-gts9wifi-1"
+        type: string
+      firmware_url:
+        description: "Device firmware payload (extracted from the stock partitions)"
+        default: "https://github.com/nacht20-de/gts9wifi-fedora/releases/download/kernel-7.2.0-rc3-gts9wifi-2/firmware-samsung-gts9wifi-v2.tar.gz"
+        type: string
+      firmware_sha256:
+        description: "sha256 of the firmware payload"
+        default: "30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5"
+        type: string
+      release_tag:
+        description: "Release tag to (re)publish the finished assets to, e.g. rootfs-f44-gnome-3 (required: there is no artifact upload anymore)"
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-rootfs:
+    # Native arm64 like the pmOS kernel workflow — the rootfs build (dnf
+    # installroot + three meson builds) runs natively inside a Fedora
+    # aarch64 container, no qemu involved.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - name: Require a release tag
+        run: |
+          [ -n "${{ inputs.release_tag }}" ] || {
+            echo "release_tag is required: assets go straight to the release," >&2
+            echo "and the run no longer uploads Actions artifacts." >&2
+            exit 1
+          }
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Fetch pinned firmware payload
+        env:
+          FIRMWARE_URL: ${{ inputs.firmware_url }}
+          FIRMWARE_SHA256: ${{ inputs.firmware_sha256 }}
+        run: |
+          mkdir -p _ci
+          curl -sfL "$FIRMWARE_URL" -o _ci/firmware.tar.gz
+          echo "$FIRMWARE_SHA256  _ci/firmware.tar.gz" | sha256sum -c -
+
+      - name: Download the exact RPM from this repository's X810 kernel release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KERNEL_RELEASE_TAG: ${{ inputs.kernel_release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p _ci/kernel
+          gh release download "$KERNEL_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'linux-gts9wifi-*.rpm' --pattern RPM-SHA256SUMS --dir _ci/kernel
+          (cd _ci/kernel && sha256sum -c RPM-SHA256SUMS)
+          shopt -s nullglob
+          rpms=(_ci/kernel/linux-gts9wifi-*.rpm)
+          [ "${#rpms[@]}" -eq 1 ] || {
+            echo "REFUSING: kernel release must contain exactly one X810 linux-gts9wifi RPM." >&2
+            exit 1
+          }
+          cp "${rpms[0]}" _ci/kernel.rpm
+
+      - name: Build rootfs in Fedora aarch64 container
+        env:
+          PORT_VERSION: ${{ inputs.port_version }}
+          FEDORA_RELEASE: ${{ inputs.fedora_release }}
+          FEDORA_BASE_COMPOSE: ${{ inputs.fedora_base_compose }}
+          FEDORA_UPDATES_COMPOSE: ${{ inputs.fedora_updates_compose }}
+          GTS9_DESKTOP: ${{ inputs.desktop }}
+          FIRMWARE_URL: ${{ inputs.firmware_url }}
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -e FEDORA_RELEASE \
+            -e FEDORA_BASE_COMPOSE \
+            -e FEDORA_UPDATES_COMPOSE \
+            -e GTS9_DESKTOP \
+            -e PORT_VERSION \
+            -e FIRMWARE_TARBALL=/work/_ci/firmware.tar.gz \
+            -e FIRMWARE_SOURCE_URL="$FIRMWARE_URL" \
+            -e KERNEL_RPM=/work/_ci/kernel.rpm \
+            -e BUILDER_IMAGE=quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a \
+            quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a \
+            ./rootfs/build-rootfs.sh
+          # The container writes out/ as root; hand it to the runner user
+          # so the checksum step below can add SHA256SUMS next to it.
+          sudo chown -R "$(id -u):$(id -g)" out
+
+      - name: Checksum
+        run: |
+          cd out
+          shopt -s nullglob
+          assets=( *.tar.gz *.rpm rootfs-manifest.txt )
+          sha256sum "${assets[@]}" > SHA256SUMS
+          cat SHA256SUMS
+
+      # The runner uploads straight to the release: there is no API to turn an
+      # Actions artifact into a release asset, and doing it from here avoids a
+      # ~2 GB download/upload round-trip through a personal machine.  --clobber
+      # replaces same-named assets, so the tag keeps a stable asset set.  This
+      # is the run's only output — no Actions artifacts are uploaded.
+      - name: Publish assets to the named release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REL: ${{ inputs.release_tag }}
+        run: |
+          gh release view "$REL" >/dev/null 2>&1 || \
+            gh release create "$REL" --title "$REL" --latest=false \
+              --notes "Built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh release edit "$REL" --latest=false
+          shopt -s nullglob
+          assets=(out/*.tar.gz out/*.rpm out/rootfs-manifest.txt out/SHA256SUMS)
+          gh release upload "$REL" --clobber "${assets[@]}"

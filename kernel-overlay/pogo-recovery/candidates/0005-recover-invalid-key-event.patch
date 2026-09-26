@@ -1,0 +1,49 @@
+--- a/drivers/input/keyboard/samsung_stm32_pogo.c
++++ b/drivers/input/keyboard/samsung_stm32_pogo.c
+@@ -1061,13 +1061,13 @@
+ 	input_unregister_device(input);
+ }
+ 
+-static void samsung_pogo_report_keys(struct samsung_pogo *pogo,
+-				     const u8 *payload, size_t len)
++static int samsung_pogo_report_keys(struct samsung_pogo *pogo,
++				    const u8 *payload, size_t len)
+ {
+ 	size_t offset;
+ 
+ 	if (!pogo->input)
+-		return;
++		return 0;
+ 
+ 	for (offset = 0; offset + sizeof(u16) <= len; offset += sizeof(u16)) {
+ 		u16 event = get_unaligned_le16(payload + offset);
+@@ -1084,7 +1084,8 @@
+ 			atomic64_inc(&pogo->invalid_key_events);
+ 			dev_warn_ratelimited(&pogo->client->dev,
+ 				"invalid key event\n");
+-			continue;
++			/* Use 0003's existing safe reset/defer path on malformed frames. */
++			return -EPROTO;
+ 		}
+ 
+ 		if (pressed)
+@@ -1094,7 +1095,7 @@
+ 		input_report_key(pogo->input, code, pressed);
+ 	}
+ 	input_sync(pogo->input);
+-
++	return 0;
+ }
+ 
+ static void samsung_pogo_report_hall(struct samsung_pogo *pogo,
+@@ -1192,7 +1193,9 @@
+ 		samsung_pogo_report_touchpad(pogo, payload, payload_len);
+ 		break;
+ 	case POGO_EVENT_KEYPAD:
+-		samsung_pogo_report_keys(pogo, payload, payload_len);
++		ret = samsung_pogo_report_keys(pogo, payload, payload_len);
++		if (ret)
++			return ret;
+ 		break;
+ 	case POGO_EVENT_HALL:
+ 		samsung_pogo_release_keys(pogo);

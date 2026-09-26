@@ -1,0 +1,99 @@
+#!/sbin/sh
+# X810-only Fedora boot-set writer. No repartition, format, vbmeta, firmware,
+# Android-system, recovery, or automatic reboot operations are performed.
+
+OUTFD=$2
+ZIPFILE=$3
+TMP=/tmp/x810-bootset.$$
+
+ui_print() {
+    echo "ui_print $1" >> /proc/self/fd/$OUTFD
+    echo "ui_print" >> /proc/self/fd/$OUTFD
+}
+
+abort() {
+    ui_print "ERROR: $1"
+    ui_print "No automatic reboot. If a write started, restore the full saved boot set in TWRP."
+    rm -rf "$TMP"
+    exit 1
+}
+
+[ -n "$ZIPFILE" ] && [ -f "$ZIPFILE" ] || abort "missing installer ZIP"
+for cmd in getprop unzip sha256sum blockdev dd cat awk wc tr mkdir rm sync; do
+    command -v "$cmd" >/dev/null 2>&1 || abort "required recovery tool is missing: $cmd"
+done
+
+# TWRP's product/model strings can identify the shared gts9p recovery build,
+# so require both the Plus-family recovery codename and an X810 bootloader ID.
+DEVICE_CODENAME="$(getprop ro.product.device)"
+EM_MODEL="$(getprop ro.boot.em.model)"
+BOOTLOADER="$(getprop ro.bootloader)"
+CMDLINE="$(cat /proc/cmdline 2>/dev/null)"
+case "$DEVICE_CODENAME" in gts9p|gts9pwifi) ;; *) abort "expected X810 recovery codename; got '$DEVICE_CODENAME'" ;; esac
+[ -z "$EM_MODEL" ] || [ "$EM_MODEL" = SM-X810 ] || abort "recovery model conflicts with SM-X810 ('$EM_MODEL')"
+case "$BOOTLOADER" in
+    '') BL_PROP_CONFIRMED=0 ;;
+    X810*) BL_PROP_CONFIRMED=1 ;;
+    *) abort "recovery bootloader conflicts with SM-X810 ('$BOOTLOADER')" ;;
+esac
+case " $CMDLINE " in *" androidboot.em.model=SM-X810 "*) MODEL_CONFIRMED=1 ;; *) MODEL_CONFIRMED=0 ;; esac
+case " $CMDLINE " in *" androidboot.bootloader=X810"*) BL_CONFIRMED=1 ;; *) BL_CONFIRMED=0 ;; esac
+if [ "$EM_MODEL" != SM-X810 ] && [ "$BL_PROP_CONFIRMED" -ne 1 ] && \
+   [ "$MODEL_CONFIRMED" -ne 1 ] && [ "$BL_CONFIRMED" -ne 1 ]; then
+    abort "cannot positively identify SM-X810 from recovery properties or command line"
+fi
+
+ui_print "SM-X810 identity confirmed; vbmeta and recovery will be preserved."
+
+BB=/dev/block/by-name
+parts="boot:100663296 init_boot:8388608 vendor_boot:100663296 dtbo:16777216"
+for spec in $parts; do
+    part=${spec%%:*}
+    expected=${spec#*:}
+    target="$BB/$part"
+    [ -b "$target" ] || abort "missing block partition $target"
+    actual=$(blockdev --getsize64 "$target" 2>/dev/null) || abort "cannot read $part geometry"
+    [ "$actual" = "$expected" ] || abort "$part geometry mismatch (expected $expected, got $actual)"
+    ro=$(blockdev --getro "$target" 2>/dev/null) || abort "cannot read $part write status"
+    [ "$ro" = 0 ] || abort "$part is read-only; no images have been written"
+done
+
+mkdir -p "$TMP" || abort "cannot create staging directory"
+trap 'rm -rf "$TMP"' EXIT
+
+# Stage and validate every complete, partition-sized image before the first
+# write. The ZIP checksum list is generated alongside the release artifact.
+unzip -p "$ZIPFILE" SHA256SUMS > "$TMP/SHA256SUMS" || abort "ZIP has no SHA256SUMS"
+for spec in $parts; do
+    part=${spec%%:*}
+    expected_size=${spec#*:}
+    file="$part.img"
+    expected_hash=$(awk -v name="$file" '$2 == name { print $1 }' "$TMP/SHA256SUMS")
+    case "$expected_hash" in
+        ''|*[!0-9a-f]*) abort "invalid or missing checksum for $file" ;;
+    esac
+    [ "${#expected_hash}" -eq 64 ] || abort "invalid checksum length for $file"
+    unzip -p "$ZIPFILE" "$file" > "$TMP/$file" || abort "cannot extract $file"
+    [ "$(wc -c < "$TMP/$file" | tr -d ' ')" = "$expected_size" ] || abort "$file has the wrong size"
+    actual_hash=$(sha256sum "$TMP/$file" | awk '{print $1}')
+    [ "$actual_hash" = "$expected_hash" ] || abort "$file checksum mismatch"
+done
+
+ui_print "All four images and target partitions verified. Writing boot set..."
+for spec in $parts; do
+    part=${spec%%:*}
+    target="$BB/$part"
+    file="$TMP/$part.img"
+    expected_hash=$(awk -v name="$part.img" '$2 == name { print $1 }' "$TMP/SHA256SUMS")
+    ui_print "Writing $part..."
+    dd if="$file" of="$target" bs=4M || abort "write failed for $part"
+    sync
+    actual_hash=$(dd if="$target" bs=4M 2>/dev/null | sha256sum | awk '{print $1}')
+    [ "$actual_hash" = "$expected_hash" ] || abort "$part read-back verification failed"
+done
+
+sync
+ui_print "All four boot partitions read-back verified."
+ui_print "vbmeta, recovery, Android data, GPT and firmware were not touched."
+ui_print "This installer does not reboot; reboot only after confirming rootfs and recovery plan."
+exit 0

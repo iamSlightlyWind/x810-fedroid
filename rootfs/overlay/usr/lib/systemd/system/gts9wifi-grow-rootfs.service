@@ -1,0 +1,18 @@
+[Unit]
+Description=Grow the Fedora filesystem within the existing X810 linuxroot partition
+ConditionPathExists=!/var/lib/gts9wifi-rootfs-grown
+
+# This only resizes ext4 within the already-existing partition; it never edits
+# GPT. Run after local filesystems are mounted so ext4 can grow online.
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/gts9wifi-grow-rootfs
+# Growing is a convenience, never a reason to fail the boot.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

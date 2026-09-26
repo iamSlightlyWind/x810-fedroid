@@ -1,0 +1,2556 @@
+# Mission
+
+You are responsible for researching, engineering, testing, and documenting a native-mainline Linux/Fedora port for a **Samsung Galaxy Tab S9+ Wi-Fi, SM-X810, codename `gts9pwifi`, Qualcomm SM8550/Kalama**, using a real tablet that is available to you over ADB.
+
+The finished system should provide:
+
+1. A current stable Fedora desktop running natively on the tablet's **internal UFS**.
+2. Mainline or near-mainline Linux based on the proven Tab S9 work, not Android userspace/chroot/proot.
+3. One UI retained alongside Fedora.
+4. No microSD dependency at any stage of the finished installation.
+5. Internal-UFS dual boot.
+6. A reliable **Fedora → Reboot into One UI** mechanism.
+7. Preferably also **One UI → Reboot into Fedora**, using a rooted Android-side switcher if appropriate.
+8. TWRP/Download Mode recovery.
+9. Reproducible source, scripts, documentation, hardware findings, build artifacts, and test evidence.
+10. An architecture that can be maintained and updated rather than a one-off manually patched image.
+
+The owner does **not care about preserving current userdata**. You may wipe Android data, repartition the UFS, recreate `userdata`, and create a dedicated Linux partition when appropriate.
+
+However:
+
+* Do not destroy partitions unnecessarily.
+* Do not overwrite bootloader/EFS/calibration data.
+* Do not update the Samsung bootloader merely to obtain a newer firmware.
+* Preserve the currently useful unlocked bootloader state unless compelling evidence requires otherwise.
+* The current tablet is believed to be bootloader revision / SEC bit **5**, unlocked. Verify this yourself.
+* Do not assume any SM-X710 or SM-X910 partition sizes, GPIOs, DT selectors, component identities, memory carveouts, firmware selections, battery parameters, or other board-specific data apply to SM-X810.
+* The tablet starts in a working One UI installation with **wireless ADB already connected**.
+* There is **no microSD-based development path**. Do not design around one.
+* Internet research is expected. Use primary sources wherever possible.
+* You are expected to draw your own conclusions from source and device evidence rather than treating this document as authoritative hardware truth.
+
+This is a research-and-engineering assignment, not a rote implementation assignment.
+
+---
+
+# Core engineering philosophy
+
+Use the following evidence hierarchy when facts disagree:
+
+**Highest confidence:**
+
+1. Measurements from the actual connected SM-X810.
+2. Exact stock firmware corresponding to the connected tablet.
+3. Samsung/Qualcomm downstream device-tree/kernel source for the exact X810 family.
+4. Decompiled stock X810 DTB/DTBO.
+5. Active mainline Linux ports for SM-X710 and SM-X910.
+6. Samsung SM8550 common source.
+7. Recovery-device trees and custom kernels.
+8. Forum posts, issue discussions, and third-party claims.
+
+Never promote an inference into a hardware fact without recording how it was established.
+
+For every significant hardware conclusion, record:
+
+* fact;
+* confidence;
+* source;
+* exact source commit or firmware build;
+* whether it was measured on X810;
+* whether it came from X710/X910 prior art;
+* what experiment validated it;
+* what evidence would falsify it.
+
+When sibling devices disagree, assume the X810 may be unique until evidence establishes otherwise.
+
+---
+
+# Mandatory upstream/prior-art research
+
+Before designing the X810 implementation, clone and thoroughly inspect the current versions and histories of at least these repositories.
+
+## Primary Fedora prior art
+
+GitHub repository:
+
+`nacht20-de/gts9wifi-fedora-linux`
+
+The historical `nacht20-de/gts9wifi-fedora` location currently redirects there. Verify this rather than assuming names remain unchanged.
+
+Read the complete current tree, not only README files. Pay particular attention to:
+
+* `README.md`
+* `INSTALL.md`
+* `docs/Hardware-Notes.md`
+* `docs/Known-Issues.md`
+* `docs/PORT-KIT.md`
+* `docs/Device-Controls.md`
+* `kernel/`
+* board DTS/DTSI files;
+* out-of-tree drivers;
+* kernel config fragments;
+* patches;
+* `rootfs/`
+* rootfs overlays and services;
+* firmware staging;
+* `boot/`
+* boot bundle creation;
+* `build-bundle.sh`;
+* cmdline;
+* bootconfig;
+* dracut modules;
+* `tools/`
+* TWRP packaging;
+* installer scripts;
+* AVB tooling;
+* all release workflows.
+
+Also inspect git history where current code contradicts older documentation.
+
+Do not blindly inherit a stale design merely because a document still describes it.
+
+Determine the exact current known-good:
+
+* Fedora release;
+* Linux version;
+* relevant source commit;
+* kernel patch set;
+* firmware versions;
+* build artifact pairings;
+* known regressions.
+
+At the time this brief was written, Fedora 44 and Linux 7.2.0 were important baselines, including a known WLAN regression in later 7.2.x kernels. Re-verify that yourself. Do not upgrade the kernel simply because a numerically newer release exists.
+
+## Primary dual-boot and SM-X910 prior art
+
+GitHub repository:
+
+`agcarbajo/ubuntu-galaxy-tab-s9-ultra`
+
+Read at minimum:
+
+* `README.md`
+* `docs/boot-strategy.md`
+* `docs/dual-boot.md`
+* `docs/hardware-status.md`
+* development notes;
+* porting log;
+* kernel tree;
+* X910 DTS;
+* installation ZIP tooling;
+* UFS split tooling;
+* boot-set switcher;
+* Tab Companion dual-boot implementation;
+* polkit helper;
+* Android `Dualboot` application;
+* update implementation;
+* recovery scripts;
+* build validation tools.
+
+Understand **why** each safety invariant exists.
+
+Especially understand:
+
+* Samsung Android boot-header-v4 chain;
+* the roles of `boot`, `init_boot`, `vendor_boot`, and `dtbo`;
+* why the mainline DTB is effectively supplied via the custom boot bundle;
+* why runtime stock DTBO application is deliberately prevented;
+* why `vbmeta` must not be swapped on every OS transition;
+* how `userdata` + `linuxroot` coexist;
+* when Android boot images are captured;
+* how read-back verification is performed;
+* how TWRP remains the independent recovery environment;
+* how the Linux and Android switchers identify boot sets;
+* how an interrupted switch is recovered.
+
+Inspect the actual code, not just the prose.
+
+## Historical SM-X910 mainline work
+
+Also inspect:
+
+`agcarbajo/postmarketos-galaxy-tab-s9-ultra`
+
+Use it for historical bring-up information, failed approaches, secure-memory discoveries, Samsung ABL behavior, panel recovery, firmware requirements, and other lessons.
+
+Do not automatically copy its old microSD architecture. The target here is internal UFS only.
+
+## Samsung SM8550 source
+
+Find and inspect current Samsung SM8550 device-tree/kernel sources that contain:
+
+* `gts9p`
+* `gts9pwifi`
+* SM-X810;
+* Tab S9-family definitions.
+
+Potential source families include Samsung SM8550 development organizations and downstream Samsung kernel/device-tree repositories.
+
+Locate the best available exact X810 source rather than relying on a single random fork.
+
+Also inspect recovery/device trees supporting `gts9pwifi`, but treat them as secondary evidence. Recovery `BoardConfig.mk` values are not authoritative partition geometry for the connected tablet.
+
+## Mainline Linux
+
+Inspect the exact mainline Linux source version used by the Fedora X710 project and determine which SM8550 pieces are now upstream.
+
+Before carrying an X710 patch to X810:
+
+1. determine whether it is still required;
+2. determine whether it is SoC-wide or X710-specific;
+3. search upstream history;
+4. determine whether the X910 project carries an equivalent fix;
+5. document the decision.
+
+Do not accumulate patches merely because they existed in an earlier port.
+
+---
+
+# Repository structure for this project
+
+Create a clean X810 project repository rather than modifying upstream clones directly.
+
+A sensible initial structure is:
+
+```text
+gts9pwifi-fedora/
+├── README.md
+├── docs/
+│   ├── RESEARCH.md
+│   ├── HARDWARE-X810.md
+│   ├── BOOT-STRATEGY.md
+│   ├── DUAL-BOOT.md
+│   ├── MEMORY-MAP.md
+│   ├── PARTITION-LAYOUT.md
+│   ├── PORTING-LOG.md
+│   ├── KNOWN-ISSUES.md
+│   ├── RECOVERY.md
+│   ├── TEST-MATRIX.md
+│   ├── SOURCE-PROVENANCE.md
+│   └── DECISIONS.md
+├── kernel/
+├── rootfs/
+├── boot/
+├── android/
+├── packaging/
+├── installer/
+├── tools/
+├── probes/
+├── tests/
+├── artifacts/
+└── work/
+```
+
+`work/` and locally extracted proprietary firmware should normally stay untracked.
+
+Every upstream repository should be recorded with:
+
+```text
+owner/repo
+branch
+commit SHA
+retrieval date
+purpose
+```
+
+in `docs/SOURCE-PROVENANCE.md`.
+
+---
+
+# Research log requirements
+
+Maintain `docs/PORTING-LOG.md` continuously.
+
+Every meaningful experiment should record:
+
+* timestamp;
+* host commit;
+* tablet state before test;
+* currently installed boot set;
+* exact images written;
+* SHA-256 values;
+* device properties;
+* command or script used;
+* result;
+* logs captured;
+* conclusion;
+* next hypothesis.
+
+If a test fails, record the failure.
+
+Do not erase failed approaches from history after discovering the fix. Failed approaches are valuable because they prevent repeating unsafe experiments.
+
+Use git commits aggressively so every device test corresponds to identifiable source.
+
+---
+
+# Phase 0 — Verify development environment and target
+
+Start entirely read-only.
+
+Run:
+
+```text
+adb devices -l
+adb shell getprop
+```
+
+Confirm that the connected device is actually:
+
+```text
+SM-X810
+gts9pwifi
+Qualcomm SM8550 / Kalama
+arm64
+```
+
+Collect at minimum:
+
+```text
+ro.product.*
+ro.build.*
+ro.boot.*
+ro.bootloader
+ro.boot.verifiedbootstate
+ro.boot.vbmeta.*
+ro.boot.slot_suffix
+ro.boot.dynamic_partitions
+ro.hardware
+ro.board.*
+ro.soc.*
+ro.kernel.*
+```
+
+Determine:
+
+* One UI version;
+* Android version;
+* build fingerprint;
+* exact firmware version;
+* bootloader revision;
+* whether U5 is actually installed;
+* whether the bootloader reports unlocked/orange state;
+* whether the device is A/B or non-A/B;
+* current security patch;
+* kernel version;
+* whether root exists.
+
+Test root without assuming it:
+
+```text
+adb shell su -c id
+```
+
+Do not attempt to install root yet if it does not exist.
+
+Create:
+
+```text
+probes/android-baseline/
+```
+
+and store all collected information there.
+
+---
+
+# Phase 1 — Exhaustive read-only live-device inventory
+
+Use the working wireless ADB session aggressively before changing anything.
+
+Create one reproducible script such as:
+
+```text
+tools/probe-android.sh
+```
+
+that gathers as much hardware and boot information as permissions allow.
+
+Capture at minimum:
+
+## Boot state
+
+* `/proc/cmdline`
+* `/proc/bootconfig`
+* `/proc/version`
+* `/sys/firmware/devicetree/base`
+* `/proc/device-tree` where applicable;
+* `/sys/firmware/fdt` if exposed;
+* `/proc/iomem`
+* `/proc/meminfo`
+* kernel configuration if available;
+* `dmesg` if accessible;
+* pstore state;
+* boot reason.
+
+Archive the live device tree without corrupting binary properties. Prefer tar/copying the tree rather than concatenating arbitrary nodes as text.
+
+## Block layout
+
+Collect:
+
+```text
+ls -l /dev/block/by-name
+ls -l /dev/block/by-partlabel
+ls -l /dev/block/platform/*/by-name
+cat /proc/partitions
+lsblk
+blkid
+mount
+df -h
+```
+
+Use root-only commands if root exists:
+
+```text
+blockdev --getsize64
+sgdisk -p
+sgdisk --print
+parted -l
+lpdump
+```
+
+Map:
+
+* physical UFS LUNs;
+* GPT-containing LUN;
+* partition number;
+* partition label;
+* partition GUID;
+* type GUID;
+* exact first/last sectors;
+* exact byte sizes.
+
+Do not infer partition numbering from X910.
+
+## Dynamic partitions
+
+Record:
+
+* `super` geometry;
+* logical groups;
+* Android `system`;
+* `vendor`;
+* `product`;
+* `system_ext`;
+* ODM if present;
+* snapshot/update state.
+
+Do not plan to reuse `super` for Fedora.
+
+## I²C/SPI/platform devices
+
+Enumerate:
+
+* `/sys/bus/i2c/devices`
+* `/sys/bus/spi/devices`
+* `/sys/bus/platform/devices`
+* `/sys/class/input`
+* `/proc/bus/input/devices`.
+
+Correlate device modaliases/drivers with downstream DT.
+
+## PCIe
+
+Enumerate:
+
+```text
+/sys/bus/pci/devices
+lspci -nn
+```
+
+if tools exist.
+
+Identify WLAN PCI vendor/device/subsystem IDs.
+
+This is important for deciding whether X810 resembles the X710 WCN6855/ath11k path or the X910 WCN7850/ath12k path.
+
+Do not decide based only on Wi-Fi 6E marketing support.
+
+## WLAN
+
+Collect:
+
+* Android WLAN firmware version;
+* PCI IDs;
+* driver;
+* firmware paths;
+* calibration/BDF references;
+* relevant vendor properties;
+* `iw` output where possible;
+* MAC source;
+* regulatory data;
+* Samsung WLAN configuration files.
+
+Search stock partitions later for:
+
+```text
+amss
+m3
+board-2.bin
+bdwlan
+regdb
+WCN
+QCA
+```
+
+and similar relevant strings.
+
+## Bluetooth
+
+Determine:
+
+* UART/controller type;
+* transport;
+* firmware;
+* NVM;
+* enable GPIO if discoverable;
+* address source;
+* EFS dependency.
+
+Do not write EFS.
+
+If EFS must be inspected, mount/read it read-only only.
+
+## Display
+
+Gather evidence for:
+
+* panel/DDIC identity;
+* DSI controller;
+* DSC parameters;
+* resolution;
+* refresh rates;
+* panel command tables;
+* regulators;
+* reset GPIO;
+* TE GPIO;
+* backlight control;
+* bootloader panel handoff state.
+
+Look in:
+
+* stock DT;
+* DRM/sysfs;
+* Samsung panel driver source;
+* kernel logs;
+* downstream panel tables.
+
+Do not assume the X710 panel driver works merely because ANA38407 appears elsewhere in the family.
+
+## Touch
+
+Identify exact controller, not generic "Samsung touchscreen."
+
+Collect:
+
+* I²C/SPI device;
+* IRQ;
+* reset;
+* regulators;
+* firmware name;
+* input event capabilities;
+* hover/palm behavior if any.
+
+Compare against both:
+
+* X710 FTS implementation;
+* X910 Goodix implementation.
+
+## S Pen
+
+Determine:
+
+* exact controller/interface;
+* GPIOs;
+* regulator;
+* dock sensing;
+* charging mechanism;
+* pressure range;
+* tilt;
+* hover;
+* tool button;
+* BLE/Air Actions architecture if present.
+
+Separate ordinary EMR input from BLE/dock functionality.
+
+## Audio
+
+Inventory:
+
+* speaker amplifier ICs;
+* count;
+* addresses/buses;
+* IRQ/reset GPIOs;
+* LPASS/AFE routing;
+* SoundWire usage if any;
+* codecs;
+* microphones;
+* UCM expectations;
+* speaker-protection firmware.
+
+Never enable high speaker gain until the correct X810 speaker protection/calibration path is understood.
+
+## Power and charging
+
+Identify:
+
+* charger IC;
+* fuel gauge;
+* PD controller;
+* MUIC;
+* direct charger;
+* USB redriver/mux;
+* battery model;
+* charge voltage/current parameters;
+* thermistors;
+* calibration/profile data.
+
+Do not copy X710 battery values to X810.
+
+## GPU
+
+Record:
+
+* GPU ID;
+* firmware names;
+* zap shader firmware;
+* GMU firmware;
+* IOMMU topology;
+* clocks/OPP information.
+
+Expected Adreno 740 commonality is a hypothesis to verify, not permission to copy all DT properties.
+
+## Remote processors
+
+Inventory:
+
+* ADSP;
+* CDSP;
+* SLPI/SSC;
+* SPSS;
+* VPU;
+* WLAN remote components;
+* firmware names;
+* memory regions.
+
+This is directly related to the protected-memory work.
+
+## Sensors
+
+Inventory:
+
+* accelerometer;
+* gyro;
+* magnetometer;
+* ambient light;
+* hall/cover;
+* orientation/calibration;
+* Samsung sensor registry state.
+
+Determine what is stored in `persist`.
+
+## Cameras
+
+X810 has a different physical camera topology from base X710.
+
+Identify exact:
+
+* rear main sensor;
+* rear ultrawide sensor;
+* front sensor;
+* CCI/I²C addresses;
+* regulators;
+* reset GPIOs;
+* CAMSS paths;
+* CSIPHY instances;
+* EEPROM/calibration dependencies.
+
+Do not make cameras an early bring-up blocker.
+
+## USB-C
+
+Inventory:
+
+* USB controller;
+* Type-C/PD;
+* DP alt-mode;
+* redriver;
+* SBU;
+* orientation switching;
+* dock behavior.
+
+## Keyboard/cover
+
+Determine:
+
+* pogo/USB/HID architecture;
+* lid hall sensor;
+* keyboard model support;
+* special key mappings.
+
+## Fingerprint
+
+Inventory it, but fingerprint is not a Phase-1 enablement requirement.
+
+---
+
+# Phase 2 — Obtain exact stock firmware
+
+Find the exact Samsung firmware matching the connected tablet's build.
+
+Do not start by downloading "latest SM-X810 firmware" if that would differ from the currently working U5 boot chain.
+
+Record the firmware source and hashes.
+
+Extract at minimum:
+
+* `boot`
+* `init_boot`
+* `vendor_boot`
+* `dtbo`
+* `vbmeta`
+* `recovery`
+* `super`
+* PIT / partition metadata if available;
+* relevant firmware partitions;
+* APNHLOS;
+* DSP;
+* persist image where available.
+
+Handle Samsung `.lz4` containers correctly.
+
+Use Android image tooling such as:
+
+* `unpack_bootimg`;
+* `mkbootimg`;
+* `avbtool`;
+* `lpunpack`;
+* `simg2img`;
+* `dtc`;
+* `fdtdump`;
+* `fdtget`;
+* `fdtoverlay`;
+* DTBO tools.
+
+Record exact boot-header versions, page sizes, offsets, compression, ramdisk formats, cmdline, bootconfig and DTB placement.
+
+Do not assume they match X710 or X910.
+
+---
+
+# Phase 3 — Obtain exact live partition backups
+
+Before the first destructive write, make byte-exact backups of at least:
+
+```text
+boot
+init_boot
+vendor_boot
+dtbo
+vbmeta
+recovery
+param
+```
+
+and any other boot-chain partitions research shows to be relevant.
+
+Back up GPT/PIT information too.
+
+Store copies:
+
+1. on the host;
+2. in the project backup directory outside git;
+3. with SHA-256 manifests.
+
+Where practical, compare live images against extracted stock firmware.
+
+If they differ, determine why:
+
+* Magisk?
+* TWRP?
+* AVB-disabled vbmeta?
+* prior modifications?
+* Samsung runtime provisioning?
+
+Do not overwrite a modified working boot set until its provenance is understood.
+
+The current One UI set ultimately becomes the initial `android` boot set for dual boot.
+
+---
+
+# Mandatory recovery-access gate
+
+Wireless ADB works while Android is running. It is **not sufficient proof of recovery access**.
+
+Before repartitioning or replacing the main boot set, establish a path that remains available if Android no longer boots.
+
+At least one of these must be proven:
+
+* TWRP with host ADB access;
+* USB ADB from TWRP;
+* Download Mode plus functioning Odin4/Heimdall path;
+* another demonstrably reliable host-controlled recovery path.
+
+Prefer having both TWRP and Download Mode recovery.
+
+If the agent is physically unable to interact with buttons, determine whether:
+
+```text
+adb reboot recovery
+adb reboot download
+```
+
+are sufficient from the current state.
+
+Actually test recovery access **before** making the first Linux boot experiment.
+
+If rebooting to TWRP causes wireless ADB to disappear, that is expected. Do not confuse lost Wi-Fi ADB with a failed recovery.
+
+The host should have a USB connection available for destructive/recovery phases.
+
+There is no requirement to use a microSD card.
+
+If reliable recovery cannot be demonstrated, stop before destructive operations and report the missing physical requirement.
+
+---
+
+# Phase 4 — Reverse-engineer X810 stock DT completely
+
+Extract every stock DTB and DTBO candidate.
+
+Determine exactly which DTB/overlay the connected X810 uses.
+
+Decompile them.
+
+Build a searchable corpus.
+
+Then produce a structured three-way comparison:
+
+```text
+X810 Samsung downstream/stock
+            ↕
+X710 mainline Fedora DTS
+            ↕
+X910 mainline Ubuntu DTS
+```
+
+For each subsystem answer:
+
+* Which stock X810 nodes exist?
+* What downstream bindings do they use?
+* How did X710 translate the corresponding downstream nodes to mainline bindings?
+* How did X910 translate them?
+* Which translation fits X810 hardware?
+* Is a mainline binding already available?
+* Does an out-of-tree driver remain necessary?
+
+Record conclusions in:
+
+`docs/HARDWARE-X810.md`
+
+Do not simply create a huge textual diff. Produce a meaningful subsystem mapping.
+
+---
+
+# Phase 5 — Samsung ABL and DT selection
+
+Research exactly how Samsung ABL chooses the DTB on the X810.
+
+Identify:
+
+* `model`;
+* `compatible`;
+* Qualcomm board/platform identifiers;
+* PMIC identifiers;
+* Samsung board revision selectors;
+* any properties consumed before Linux runs.
+
+The X710 and X910 prior art both demonstrate that a DTS can be perfectly valid Linux DT and still be rejected or mishandled by Samsung ABL.
+
+Build a validator for the final X810 DTB that checks required ABL-facing identifiers.
+
+Do not reach display debugging until you know ABL is actually accepting the intended DTB.
+
+---
+
+# Phase 6 — Protected memory is the first kernel-safety problem
+
+This is a hard gate.
+
+Before first serious mainline boot, reconstruct the X810 memory map.
+
+Compare:
+
+* live `/proc/iomem`;
+* live `/proc/device-tree/reserved-memory`;
+* stock base DT;
+* stock overlays;
+* X710 mainline DTS;
+* X910 mainline DTS;
+* Qualcomm SM8550 base DTSI;
+* remoteproc reserved regions;
+* secure processor regions;
+* framebuffer/carveout regions;
+* hypervisor/Gunyah regions if applicable;
+* modem-related regions even on Wi-Fi hardware if firmware reserves them;
+* Samsung-specific carveouts.
+
+Create:
+
+`docs/MEMORY-MAP.md`
+
+with start address, end address, size, owner, source and confidence.
+
+Create a tool such as:
+
+```text
+tools/validate-memory-map.py
+```
+
+that verifies:
+
+* no overlapping accidental Linux RAM;
+* no conflicting reserved-memory nodes;
+* correct `no-map` where required;
+* no region silently dropped while converting downstream DT to mainline.
+
+Treat a TrustZone/NoC reset as evidence of an incorrect hardware contract, not something to brute-force through.
+
+Do not repeatedly boot a DTS that triggers secure firmware resets without first changing the hypothesis.
+
+---
+
+# Phase 7 — Design the X810 mainline DTS
+
+Do not begin by cloning the full X710 DTS and changing the model string.
+
+A better process is:
+
+1. Start from upstream SM8550/Kalama definitions.
+2. Add the verified Samsung X810 board identity.
+3. Add the verified memory map.
+4. Enable only essential platform blocks.
+5. Add board peripherals incrementally.
+6. Borrow X710/X910 implementations only when X810 evidence supports them.
+
+The first DTS should intentionally omit optional hardware.
+
+Initial goal:
+
+```text
+ABL accepts DTB
+→ kernel executes
+→ memory is safe
+→ UFS probes
+→ Linux root mounts
+→ USB/network debug path works
+```
+
+Display is not required for the earliest successful boot.
+
+---
+
+# Phase 8 — Fedora baseline
+
+Use the current active X710 Fedora repository as the userspace/build-system basis.
+
+At the start of implementation, determine its current proven baseline.
+
+At the time this task was drafted, Fedora 44 was the appropriate stable Fedora baseline. Do not move to a Fedora beta merely to satisfy the word "latest."
+
+Target policy:
+
+1. Bring up X810 on the **latest stable Fedora release already proven by the source port**.
+2. Get hardware parity.
+3. Only then evaluate upgrading Fedora userspace.
+
+Likewise for Linux:
+
+* start from the exact known-good version used by the active X710 port unless research shows its known regression has been fixed;
+* do not combine initial X810 bring-up with an unnecessary kernel-version experiment.
+
+Pin the exact baseline in the repository.
+
+---
+
+# Phase 9 — Internal UFS layout; no SD card
+
+The final Linux root must live in a dedicated internal-UFS partition.
+
+Use the SM-X910 dual-boot architecture as a conceptual model, but derive all numbers from X810.
+
+Target layout conceptually:
+
+```text
+existing Samsung partitions
+...
+super        -> untouched Android dynamic partitions
+userdata     -> recreated smaller for One UI
+linuxroot    -> new ext4 Fedora root
+...
+```
+
+Do not hardcode `userdata` as partition 34 or `linuxroot` as partition 35 until the X810 has been measured.
+
+Because current Android userdata is disposable, do **not** attempt a risky live shrink of encrypted/F2FS userdata.
+
+Instead:
+
+1. back up the original GPT;
+2. record PIT;
+3. delete/recreate `userdata` at a smaller size;
+4. create `linuxroot` in the freed space;
+5. format/create the required filesystems from recovery;
+6. allow Android to create fresh encryption state.
+
+Make the split configurable.
+
+A reasonable project interface would expose:
+
+```text
+ANDROID_PERCENT
+```
+
+instead of embedding a fixed sector count.
+
+If no better use-case evidence emerges, choose a balanced default, but keep it easy to change before installation.
+
+All actual partition boundaries must be sector-aligned and derived from the device's physical geometry.
+
+Before applying a generated partition table, validate:
+
+* first sector;
+* last sector;
+* partition order;
+* backup GPT location;
+* no overlap;
+* alignment;
+* preserved GUIDs/types where appropriate;
+* exact untouched partitions;
+* total disk geometry.
+
+Save both:
+
+```text
+gpt-before.bin
+gpt-after-planned.txt
+```
+
+on the host.
+
+---
+
+# Phase 10 — Build a safe UFS split installer
+
+Adapt the conceptual design of the X910 split ZIP, not its hardcoded sizes.
+
+The X810 split tool must:
+
+* refuse non-X810 devices;
+* verify `ro.product.model`;
+* verify `gts9pwifi`;
+* inspect actual GPT geometry;
+* verify expected source layout;
+* refuse unexpected layouts;
+* verify adequate free range;
+* back up GPT before changing it;
+* recreate only `userdata`;
+* add only `linuxroot`;
+* not touch `super`;
+* not touch PIT;
+* not touch EFS;
+* not touch bootloader partitions;
+* not touch modem/calibration partitions;
+* not touch recovery;
+* emit before/after tables;
+* flush writes;
+* reread the table;
+* verify the resulting GPT.
+
+Make the operation idempotent: if a valid `linuxroot` already exists with the expected layout, exit safely rather than repartition again.
+
+---
+
+# Phase 11 — Root filesystem installation with no SD
+
+The installation path should be host → recovery → internal `linuxroot`.
+
+Preferred transport:
+
+**ADB sideload or USB ADB from TWRP.**
+
+Do not depend on files being present on Android userdata because that partition may be reformatted.
+
+The Fedora installer should:
+
+1. identify `linuxroot` by stable partition label/path;
+2. verify size;
+3. ensure it is unmounted;
+4. create/check ext4;
+5. install or write the Fedora root image;
+6. read data back and verify it;
+7. only after successful rootfs verification install the Fedora boot set.
+
+The expensive/rootfs operation should happen before boot-chain replacement.
+
+That preserves a valid Android boot set if the large write fails.
+
+---
+
+# Phase 12 — Boot image construction
+
+Build X810-specific:
+
+```text
+boot.img
+init_boot.img
+vendor_boot.img
+dtbo.img
+```
+
+using the exact boot format observed on X810.
+
+Do not use X710/X910 size constants.
+
+Validate every output against its live destination partition size.
+
+Understand which image actually controls each piece on X810:
+
+* kernel;
+* initramfs;
+* DTB;
+* cmdline;
+* bootconfig.
+
+Follow evidence from the live boot chain and Samsung ABL.
+
+If the proven sibling strategy of deliberately invalid/non-table DTBO to force the mainline DTB fallback applies to X810, use it only after verifying the same ABL behavior.
+
+---
+
+# Phase 13 — `vbmeta` invariant
+
+Treat `vbmeta` separately from OS boot sets.
+
+The desired stable state is an AVB-disabled vbmeta compatible with both One UI and Fedora.
+
+Research the currently installed vbmeta and report:
+
+* AVB flags;
+* descriptors;
+* verification state;
+* whether it is on a read-only UFS LUN;
+* whether the existing unlocked/TWRP setup already installed a flags-2 image.
+
+If it is already suitable, preserve it.
+
+If it must be changed, make it a deliberate one-time recovery/download-mode setup step.
+
+After dual boot is initialized:
+
+**never include `vbmeta` in Fedora ↔ One UI boot-set switching.**
+
+Boot-set swapping must not alternate verified-boot states.
+
+---
+
+# Phase 14 — Preserve TWRP as independent recovery
+
+TWRP must remain outside the swapped Fedora/Android boot set.
+
+Verify whether normal One UI boot attempts to restore stock recovery on this X810 firmware.
+
+Study how the working X910 dual-boot implementation prevents or handles that.
+
+Do not assume an installed TWRP survives indefinitely merely because it booted once.
+
+Create a specific test:
+
+```text
+flash/boot TWRP
+→ boot One UI
+→ reboot recovery
+→ verify TWRP still exists
+```
+
+If One UI restores stock recovery, solve this deliberately before relying on TWRP as the long-term safety net.
+
+Document exact behavior for the installed U5 firmware.
+
+---
+
+# Phase 15 — Early Linux debugging
+
+A blank internal display must not make Linux undebuggable.
+
+Build a debug path that does not depend on the panel.
+
+Prefer one or more of:
+
+* USB networking from initramfs;
+* SSH via USB gadget networking;
+* persistent journal on `linuxroot`;
+* pstore/ramoops using a verified reserved-memory region;
+* early kernel logging if available;
+* `initcall_debug`;
+* maximum log level during bring-up.
+
+Do not invent a new pstore region by stealing unknown RAM.
+
+Use only a verified safe reserved range.
+
+Each boot attempt should leave enough persistent evidence to distinguish:
+
+```text
+ABL rejection
+kernel never entered
+early kernel crash
+secure firmware reset
+UFS failure
+rootfs failure
+userspace failure
+display-only failure
+```
+
+---
+
+# Phase 16 — First boot progression
+
+Use explicit milestones.
+
+## Milestone A — Samsung ABL accepts the boot set
+
+Evidence:
+
+* no immediate fallback to Download Mode caused by DT rejection;
+* kernel execution can be inferred.
+
+## Milestone B — Safe kernel execution
+
+Evidence:
+
+* no immediate secure/NoC reset;
+* persistent log survives;
+* memory topology looks sane.
+
+## Milestone C — UFS
+
+Evidence:
+
+* correct UFS device probes;
+* `linuxroot` appears.
+
+## Milestone D — Fedora root
+
+Evidence:
+
+* ext4 mounts;
+* systemd starts;
+* persistent journal exists.
+
+## Milestone E — remote access
+
+Evidence:
+
+* host can reach Fedora without display;
+* preferably USB networking + SSH.
+
+Do not move on to cosmetic hardware before A–E are stable.
+
+Perform multiple cold boots.
+
+---
+
+# Phase 17 — Display bring-up
+
+Only after core stability.
+
+Research X810 panel identity and command sequence from exact downstream source.
+
+Compare against:
+
+* X710 panel implementation;
+* X910 implementation;
+* upstream DRM panel drivers.
+
+Determine whether:
+
+* X810 uses the same DDIC but different panel configuration;
+* a new compatible/table is enough;
+* or a distinct driver is required.
+
+Enable conservative known-good refresh first.
+
+Do not start with maximum refresh rate.
+
+Test:
+
+* cold boot;
+* warm reboot;
+* suspend/resume;
+* blank/unblank;
+* 60 Hz;
+* higher refresh;
+* brightness;
+* DSC;
+* orientation.
+
+Specifically test the Samsung bootloader → panel handoff problem documented on sibling ports.
+
+If a suspend/resume recovery hack is necessary, determine why and document it rather than hiding it in an unexplained service.
+
+---
+
+# Phase 18 — Touchscreen
+
+Determine exact X810 touch controller first.
+
+Use the correct existing driver if available.
+
+Only port X710's FTS driver if the X810 actually uses compatible FTS hardware.
+
+Only port X910's Goodix path if hardware evidence supports it.
+
+Test:
+
+* all contacts;
+* edges/corners;
+* rotation transforms;
+* suspend/resume;
+* double tap to wake;
+* palm behavior;
+* high refresh interaction.
+
+---
+
+# Phase 19 — GPU
+
+Bring up Adreno 740 using the X710/X910 prior art and exact firmware expected by this tablet.
+
+Verify:
+
+```text
+dmesg
+/sys/kernel/debug/dri
+glxinfo / eglinfo where appropriate
+vulkaninfo
+GNOME compositor
+```
+
+Confirm hardware rendering rather than llvmpipe.
+
+Store firmware hashes and provenance.
+
+Test cold boot so firmware is available before the GPU's initial probe.
+
+---
+
+# Phase 20 — Wi-Fi
+
+Do not decide the WLAN implementation until X810 hardware identification is conclusive.
+
+Possible sibling models already show different Qualcomm WLAN generations.
+
+Determine exact:
+
+* PCI ID;
+* subsystem ID;
+* firmware family;
+* BDF;
+* calibration;
+* AOP/PDC requirements;
+* driver.
+
+If WCN6855/ath11k:
+
+* study every X710 WLAN workaround;
+* determine which is X710 BDF-specific versus SM8550-wide.
+
+If WCN7850/ath12k:
+
+* study X910 implementation.
+
+Test:
+
+* cold boot;
+* 2.4 GHz;
+* 5 GHz;
+* 6 GHz if regulatory environment permits;
+* upload/download;
+* suspend/resume;
+* repeated reconnect;
+* NetworkManager;
+* MAC persistence.
+
+Do not copy a BDF just because it makes the radio appear. Validate RF behavior.
+
+---
+
+# Phase 21 — Bluetooth
+
+Bring it up after WLAN identification.
+
+Verify:
+
+* controller initialization;
+* address;
+* firmware/NVM;
+* audio devices;
+* keyboard/mouse;
+* suspend/resume.
+
+Never write arbitrary data to EFS to obtain a Bluetooth address.
+
+Read only.
+
+---
+
+# Phase 22 — Battery and charging
+
+This requires particular care because wrong values may stress hardware.
+
+Translate the actual X810 downstream configuration.
+
+Do not reuse X710 battery capacity, thermistor, voltage or charge-current tables.
+
+Start conservatively.
+
+Test:
+
+* battery reporting;
+* temperature;
+* online/offline charging;
+* USB-C PD negotiation;
+* standard charging;
+* fast charging;
+* thermal behavior;
+* charging during suspend;
+* low battery boot;
+* shutdown charging if feasible.
+
+Record charger IC register behavior where relevant.
+
+---
+
+# Phase 23 — Audio
+
+Keep speaker output muted or at conservative gain until:
+
+* correct CS35L45 or other amp identity confirmed;
+* speaker topology confirmed;
+* correct protection DSP firmware/calibration staged;
+* UCM mapping established.
+
+Validate:
+
+* headphones/USB audio where applicable;
+* microphones;
+* each speaker channel;
+* volume control;
+* suspend/resume.
+
+Avoid experiments that risk physical speaker damage.
+
+---
+
+# Phase 24 — S Pen
+
+Bring up:
+
+* hover;
+* contact;
+* pressure;
+* side button;
+* palm rejection;
+* tilt if hardware provides it;
+* dock detection;
+* dock charging;
+* optional BLE/Air Actions separately.
+
+Do not make BLE functionality a blocker for ordinary pen writing.
+
+Expose capabilities correctly to Wayland/libinput rather than relying on application-specific raw event handling.
+
+---
+
+# Phase 25 — Sensors and cover
+
+Bring up:
+
+* accelerometer;
+* gyro;
+* ALS;
+* autorotation;
+* hall/lid;
+* folio behavior;
+* keyboard cover;
+* key mappings.
+
+Audit every `persist` dependency.
+
+The X710 project currently has reasons to use Samsung state in `persist`, while the Ultra dual-boot design is deliberately conservative around persistent/calibration partitions.
+
+For X810:
+
+* prefer read-only access where possible;
+* hash relevant files before experimentation;
+* document any file Linux must modify;
+* never treat `persist` as disposable.
+
+---
+
+# Phase 26 — USB-C, host mode, docks and DisplayPort
+
+Test:
+
+* USB host;
+* hubs;
+* charging + data;
+* orientation;
+* DisplayPort alt-mode;
+* hot-plug;
+* dock attached at cold boot;
+* suspend/resume with dock.
+
+Check interactions with internal-panel recovery before declaring DP stable.
+
+---
+
+# Phase 27 — Cameras
+
+Do cameras late.
+
+Build the X810-specific media graph.
+
+Do not assume X710's sensor topology.
+
+Test each physical sensor independently.
+
+Record limitations such as autofocus separately from sensor detection.
+
+Camera support is useful but should never block basic Fedora/dual-boot completion.
+
+---
+
+# Phase 28 — Suspend/resume
+
+Suspend is a release gate.
+
+Test:
+
+* short suspend;
+* deep suspend;
+* lid-triggered suspend;
+* power-key suspend;
+* Wi-Fi reconnect;
+* Bluetooth reconnect;
+* display recovery;
+* touch recovery;
+* pen recovery;
+* USB state;
+* charging;
+* repeated cycles.
+
+Automate cycle testing where possible.
+
+Collect wakeup sources.
+
+Do not mark suspend "working" after a single successful resume.
+
+---
+
+# Phase 29 — Build proper Fedora packages
+
+Do not finish with `/usr/local` hacks that cannot be reproduced.
+
+Integrate:
+
+* kernel RPM;
+* modules;
+* firmware staging;
+* udev rules;
+* systemd services;
+* UCM;
+* device controls;
+* panel recovery if genuinely required;
+* initramfs;
+* dual-boot service;
+* updater.
+
+Ensure kernel and modules are always a matched set.
+
+Refuse updates that would install a boot image whose modules are not installed.
+
+---
+
+# Phase 30 — Define boot sets
+
+A boot set contains exactly:
+
+```text
+boot.img
+init_boot.img
+vendor_boot.img
+dtbo.img
+```
+
+Do not include:
+
+```text
+vbmeta
+recovery
+super
+userdata
+linuxroot
+EFS
+persist
+```
+
+Create Fedora-side boot sets such as:
+
+```text
+/var/lib/gts9p-boot-sets/
+    android/
+        boot.img
+        init_boot.img
+        vendor_boot.img
+        dtbo.img
+        manifest.json
+        SHA256SUMS
+        name.txt
+
+    fedora/
+        boot.img
+        init_boot.img
+        vendor_boot.img
+        dtbo.img
+        manifest.json
+        SHA256SUMS
+        name.txt
+```
+
+`manifest.json` should contain at least:
+
+* device model;
+* codename;
+* source build;
+* firmware association;
+* partition expected sizes;
+* creation date;
+* hashes;
+* boot-set type;
+* kernel version if Linux.
+
+The installer should seed both sets while it has access to both:
+
+* Android images from the live partitions;
+* Fedora images from the install bundle.
+
+Also save the Android boot set on the development host.
+
+---
+
+# Phase 31 — Fedora boot-set switcher
+
+Implement a privileged helper inspired by the proven Ultra architecture, adapted to X810 rather than copied blindly.
+
+Requirements:
+
+* device/model check;
+* codename check;
+* stable `/dev/block/by-name/...` or by-partlabel paths;
+* no hardcoded `/dev/block/sdaNN`;
+* exact partition-size checks;
+* source file size check;
+* source SHA-256 check;
+* free-space sanity;
+* destination identification;
+* sync/fsync;
+* full read-back verification;
+* refuse reboot if verification fails;
+* clear diagnostics;
+* dry-run mode;
+* status-only unprivileged command.
+
+Separate status querying from destructive switching.
+
+A possible architecture:
+
+```text
+/usr/libexec/gts9p-boot-status
+/usr/libexec/gts9p-boot-switch
+```
+
+Use polkit for authorization.
+
+Do not make GNOME shell itself privileged.
+
+Initially implement CLI:
+
+```text
+gts9p-bootctl status
+gts9p-bootctl list
+gts9p-bootctl switch android
+gts9p-bootctl switch fedora
+```
+
+Then expose it through a graphical control or GNOME Quick Settings integration.
+
+The user-facing target is:
+
+**Reboot into One UI**
+
+from Fedora.
+
+Before reboot, print/log exactly what was written and verified.
+
+---
+
+# Phase 32 — Handling interruption during boot-set switch
+
+A four-partition swap is not truly atomic.
+
+Study the Ultra implementation's failure strategy.
+
+Improve reliability where practical:
+
+* validate all four source images before writing the first;
+* verify destination sizes before writing;
+* save current set;
+* write with fsync;
+* read back each partition;
+* never reboot on a failed hash;
+* preserve TWRP independently.
+
+Consider a deterministic write order.
+
+Document what happens if power is lost after each individual partition write.
+
+Recovery must always be possible by flashing a complete known-good set from TWRP.
+
+Provide:
+
+```text
+tools/restore-boot-set.sh
+```
+
+that operates from recovery over ADB and accepts an explicit set directory.
+
+---
+
+# Phase 33 — Android → Fedora switching
+
+Inspect the Android dual-boot application in the Ultra repository.
+
+Port its architecture to X810 if suitable.
+
+Android requires privilege to write raw boot partitions.
+
+Determine whether the existing One UI installation already has root.
+
+If not, research the current reliable root method for the exact X810 U5 firmware.
+
+Likely approaches may include Magisk/KernelSU, but do not assume which one is correct.
+
+If using Magisk:
+
+* keep the rooted Android boot image as part of the `android` boot set;
+* understand whether `init_boot` rather than `boot` is patched on this firmware;
+* preserve its exact version in the manifest.
+
+Target Android UX:
+
+**Quick Settings tile → Reboot into Fedora**
+
+and/or an Android app button.
+
+Before switching:
+
+* validate Fedora set;
+* write all four images;
+* read back;
+* verify;
+* reboot only on success.
+
+If Android root proves undesirable or incompatible, do not compromise Fedora → One UI switching. Document Android → Fedora as requiring TWRP until the root path is solved.
+
+---
+
+# Phase 34 — U5 preservation and Samsung updates
+
+The Linux project does not need a newer Samsung bootloader for its own sake.
+
+Do not upgrade U5 to U6+ merely because newer One UI firmware exists.
+
+Research whether Samsung OTA is currently enabled.
+
+Because an OTA may replace boot-chain images or advance anti-rollback revision, document an update policy.
+
+At minimum:
+
+* no unattended bootloader-changing OTA;
+* never accept firmware blindly;
+* capture new Android boot images after intentional One UI updates;
+* revalidate AVB/TWRP state;
+* update the Android boot set afterwards.
+
+If practical, disable automatic firmware installation while leaving ordinary app updates unaffected.
+
+Do not modify anti-rollback state.
+
+---
+
+# Phase 35 — Fedora updates
+
+A normal `dnf upgrade` must not silently create a kernel/modules mismatch.
+
+Implement a device-aware update model.
+
+An update containing a new kernel should provide:
+
+1. matching Fedora kernel package/modules;
+2. matching firmware;
+3. matching `boot/init_boot/vendor_boot/dtbo`;
+4. updated Fedora boot set;
+5. rollback copy of previous Fedora boot set.
+
+Validate new Fedora boot set before replacing the active saved set.
+
+A failed update should be recoverable by switching back to the previous Fedora set from TWRP.
+
+---
+
+# Phase 36 — Recovery tooling
+
+Create a host-side recovery directory that contains:
+
+* original One UI boot set;
+* latest working Fedora boot set;
+* TWRP image/package;
+* disabled-AVB vbmeta if required;
+* original GPT backup;
+* planned dual-boot GPT description;
+* Samsung PIT;
+* exact stock U5 firmware identifiers;
+* hashes;
+* restore scripts.
+
+Write:
+
+`docs/RECOVERY.md`
+
+with distinct procedures for:
+
+## Case A — Fedora fails but TWRP boots
+
+Restore Android set.
+
+## Case B — Android fails but TWRP boots
+
+Restore Android boot set; inspect userdata.
+
+## Case C — mixed/incomplete boot-set write
+
+Flash a complete known-good boot set.
+
+## Case D — GPT damaged
+
+Restore exact saved GPT if appropriate.
+
+## Case E — want factory partitioning back
+
+Use official Samsung firmware/PIT and documented re-partition procedure.
+
+## Case F — TWRP unavailable but Download Mode works
+
+Use Odin4/appropriate Samsung flashing path.
+
+Do not make factory recovery dependent on the project GitHub repository remaining online.
+
+---
+
+# Phase 37 — Automated validation
+
+Create host/device tests.
+
+Examples:
+
+```text
+tests/test-boot-images.py
+tests/test-partition-layout.py
+tests/test-boot-set.py
+tests/test-dtb.py
+tests/test-memory-map.py
+tests/test-installer-static.py
+```
+
+Validate:
+
+* boot images fit;
+* manifests match;
+* no wrong device IDs;
+* no hardcoded X710/X910 partition sizes remain;
+* no `/dev/sdaNN` hardcoding;
+* `vbmeta` absent from switch sets;
+* recovery absent from switch sets;
+* split installer modifies only expected GPT entries;
+* Linux partition label unique;
+* kernel/modules versions match;
+* DTB uses X810 identity;
+* reserved-memory linter passes.
+
+Test the boot switcher against ordinary files/loop devices on the host where possible before allowing it to touch hardware.
+
+---
+
+# Phase 38 — Device-specific hardware documentation
+
+`docs/HARDWARE-X810.md` should become the canonical engineering notebook.
+
+For each subsystem include:
+
+```text
+Hardware:
+Bus/address:
+IRQ:
+GPIO/reset:
+Regulators:
+Firmware:
+Mainline driver:
+Out-of-tree code:
+Source evidence:
+Measured evidence:
+Known limitations:
+Sibling differences:
+```
+
+Explicitly call out cases where X810 differs from X710 and X910.
+
+The goal is that another kernel developer can understand the board without repeating the reverse engineering.
+
+---
+
+# Phase 39 — Source provenance and licensing
+
+Do not blindly copy proprietary Samsung code into the repository.
+
+Track provenance of:
+
+* kernel drivers;
+* DTS fragments;
+* patches;
+* firmware;
+* calibration blobs.
+
+Prefer reimplementation against public bindings and measured behavior where needed.
+
+Keep proprietary firmware out of git when licensing requires it.
+
+Provide extraction scripts and checksum manifests instead.
+
+Follow existing X710/X910 practices for owner-extracted firmware.
+
+---
+
+# Phase 40 — Research independently when blocked
+
+When a subsystem fails:
+
+Do not immediately ask the owner what to do.
+
+Research it.
+
+Search:
+
+* kernel git history;
+* mailing lists;
+* Qualcomm bindings;
+* sibling Linux ports;
+* Samsung downstream source;
+* stock DTS;
+* Android logs;
+* source code;
+* GitHub issues;
+* XDA only as secondary evidence.
+
+Form a hypothesis.
+
+Design an experiment that distinguishes at least two explanations.
+
+Run it.
+
+Record result.
+
+Iterate.
+
+Do not repeat the same unsuccessful flash with trivial changes without understanding what new evidence it will produce.
+
+---
+
+# Phase 41 — Use the actual tablet as the authoritative test platform
+
+The owner is intentionally giving you a physical SM-X810.
+
+Use it.
+
+Do not stop at:
+
+```text
+"this should work"
+```
+
+A hardware feature is not "working" until measured on this device.
+
+Whenever feasible capture objective proof:
+
+* kernel logs;
+* PCI/I²C enumeration;
+* DRM modes;
+* input events;
+* GPU renderer;
+* Wi-Fi throughput;
+* Bluetooth controller state;
+* charger current/voltage;
+* audio channel tests;
+* pen pressure;
+* suspend statistics.
+
+A compile success is not hardware validation.
+
+---
+
+# Phase 42 — Be autonomous about destructive data operations
+
+The owner explicitly permits wiping existing userdata.
+
+Therefore do not waste effort preserving existing Android personal data.
+
+You may:
+
+* Format Data;
+* recreate userdata;
+* repartition its space;
+* create linuxroot;
+* reinstall/reinitialize One UI userdata.
+
+You may **not** interpret this permission as approval to erase unrelated Samsung partitions.
+
+The following remain protected unless there is a proven technical need:
+
+```text
+bootloader partitions
+EFS
+persist/calibration
+modemst
+PIT
+super contents
+recovery
+factory/provisioning partitions
+```
+
+`persist` deserves special care even if Fedora eventually needs write access.
+
+---
+
+# Phase 43 — No microSD fallback
+
+Do not solve a problem by saying:
+
+```text
+"boot from microSD first"
+```
+
+The owner explicitly does not want that workflow.
+
+Development root is `linuxroot` on UFS.
+
+Recovery transport should be:
+
+* TWRP + USB ADB/sideload;
+* Download Mode + Odin when necessary.
+
+The installer and documentation must function with the microSD slot empty.
+
+---
+
+# Phase 44 — Human-intervention policy
+
+Continue independently whenever the required action can be performed through available command-line access.
+
+Do not ask the owner to manually inspect logs or type commands you can run yourself.
+
+Only stop for human action when something inherently physical is required, for example:
+
+* connecting a USB cable;
+* holding hardware buttons when software reboot paths fail;
+* selecting a TWRP UI action that cannot be invoked through shell;
+* recovering after complete loss of software access.
+
+When human intervention is needed, state exactly:
+
+1. current tablet state;
+2. why automation cannot proceed;
+3. exact physical action required;
+4. what output/state you expect afterwards;
+5. what you will do next.
+
+Do not offload research decisions to the owner.
+
+---
+
+# Phase 45 — Criteria before first destructive UFS repartition
+
+Do not repartition merely because permission was granted.
+
+The following must first exist:
+
+* verified device identity;
+* full live inventory;
+* exact current firmware identity;
+* host copy of stock firmware;
+* partition map;
+* GPT backup;
+* boot-chain backups;
+* Android boot set;
+* verified TWRP or other recovery route;
+* Download Mode restoration knowledge;
+* reliable host transport after Android stops;
+* exact target UFS split plan;
+* validated split script;
+* understanding of current vbmeta state.
+
+Once these exist, repartitioning is authorized.
+
+No additional permission is required because the owner has explicitly allowed data loss.
+
+---
+
+# Phase 46 — Criteria before first Linux boot-set flash
+
+Require:
+
+* X810 board identification;
+* verified ABL DT selectors;
+* verified protected-memory map;
+* boot images fitting exact X810 partitions;
+* verified Fedora root installed to `linuxroot`;
+* recovery route;
+* Android boot-set backup;
+* no known partition mismatch;
+* no borrowed X710/X910 secure-memory values without evidence.
+
+Then flash/test.
+
+---
+
+# Phase 47 — Bring-up priority
+
+Use this approximate priority:
+
+```text
+1. Bootloader/DT acceptance
+2. Safe memory map
+3. Kernel stability
+4. UFS
+5. Fedora root
+6. Debug connectivity
+7. Display
+8. Touch
+9. GPU
+10. Wi-Fi
+11. Battery/charging
+12. Bluetooth
+13. Audio
+14. S Pen
+15. Sensors/cover/keyboard
+16. USB-C / DisplayPort
+17. Suspend/resume
+18. Cameras
+19. Fingerprint / optional extras
+```
+
+Change the order if actual dependencies demand it, and record why.
+
+---
+
+# Phase 48 — Fedora → One UI acceptance test
+
+This is a required final feature.
+
+From a normal Fedora GNOME session:
+
+1. User selects **Reboot into One UI**.
+2. Fedora validates Android boot set.
+3. Fedora requests privilege via polkit.
+4. Helper validates device and partition sizes.
+5. Helper writes all four Android images.
+6. Helper reads all four back.
+7. SHA-256 values match.
+8. Helper records transaction.
+9. System reboots.
+10. One UI boots.
+11. Android `userdata` remains intact.
+
+Repeat multiple times.
+
+No TWRP interaction should be needed in ordinary use.
+
+---
+
+# Phase 49 — One UI → Fedora acceptance test
+
+Preferred final behavior:
+
+1. User taps **Reboot into Fedora** in Android app or Quick Settings.
+2. Root authorization is obtained.
+3. Fedora boot set is validated.
+4. Four partitions are written.
+5. Read-back hashes match.
+6. Android reboots.
+7. Fedora boots from `linuxroot`.
+
+Repeat multiple times.
+
+If Android root cannot be made robust, document this as an incomplete feature but do not weaken the Fedora-to-OneUI path.
+
+---
+
+# Phase 50 — Dual-boot stress tests
+
+Once both systems work, perform a substantial sequence such as:
+
+```text
+One UI → Fedora
+Fedora → One UI
+One UI → Fedora
+Fedora → One UI
+...
+```
+
+for at least ten complete round trips.
+
+Also test:
+
+* cold power-on after selecting each set;
+* forced shutdown;
+* boot with charger attached;
+* boot with USB device attached;
+* boot after Fedora update;
+* boot after Android reboot;
+* recovery access from each state.
+
+After the test, verify the four live boot partitions exactly match the selected set.
+
+---
+
+# Phase 51 — Hardware acceptance matrix
+
+For release-quality status, test at minimum:
+
+## Core
+
+* cold boot;
+* reboot;
+* shutdown;
+* Fedora internal-UFS root;
+* One UI;
+* dual boot both ways;
+* TWRP recovery.
+
+## Display/input
+
+* native resolution;
+* brightness;
+* refresh rate;
+* touch;
+* S Pen;
+* rotation;
+* cover;
+* keyboard if available.
+
+## Graphics/media
+
+* Adreno hardware acceleration;
+* Vulkan;
+* video decode;
+* external display.
+
+## Network
+
+* Wi-Fi;
+* Bluetooth;
+* suspend reconnect.
+
+## Power
+
+* battery reporting;
+* USB charging;
+* PD;
+* suspend;
+* wake;
+* thermal behavior.
+
+## Audio
+
+* speakers;
+* microphones;
+* Bluetooth audio;
+* volume routing.
+
+## Peripherals
+
+* USB host;
+* dock;
+* keyboard cover;
+* S Pen dock.
+
+## Cameras
+
+* identify each camera;
+* capture where supported.
+
+Track exact limitations honestly.
+
+---
+
+# Phase 52 — Stability gates
+
+Do not call the port stable merely because GNOME appears.
+
+Before stable status, aim for:
+
+* repeated cold boots;
+* repeated warm reboots;
+* at least 10 dual-boot round trips;
+* extended idle;
+* extended Wi-Fi use;
+* video playback;
+* GPU load;
+* charging;
+* multiple suspend/resume cycles;
+* no recurring kernel panic;
+* no unexplained secure firmware reset;
+* no filesystem errors;
+* no unexpected writes to protected partitions.
+
+Keep logs.
+
+---
+
+# Phase 53 — Finished user experience
+
+The desired finished experience is approximately:
+
+```text
+Power on
+   ↓
+boots whichever OS was selected last
+
+Fedora GNOME
+   └── Quick Settings / Device Control
+       └── Reboot into One UI
+
+One UI
+   └── Quick Settings
+       └── Reboot into Fedora
+```
+
+There is no GRUB requirement.
+
+The Samsung bootloader continues doing what it already does.
+
+The selected OS is represented by which coherent four-image boot set is present on:
+
+```text
+boot
+init_boot
+vendor_boot
+dtbo
+```
+
+The actual OS roots remain independent:
+
+```text
+One UI → super + userdata
+Fedora → linuxroot
+```
+
+TWRP remains recovery.
+
+`vbmeta` remains fixed.
+
+---
+
+# Phase 54 — Do not overengineer a boot menu prematurely
+
+Do not begin by writing a custom preboot menu, replacing ABL, porting U-Boot, or implementing EFI.
+
+Those may be interesting later, but there is already a proven Samsung-family mechanism requiring far less boot-chain risk.
+
+First deliver reliable boot-set switching.
+
+Only investigate a preboot graphical selector after the core port and dual boot are mature, and only if it materially improves the experience.
+
+---
+
+# Phase 55 — Keep recovery more reliable than convenience features
+
+A GNOME extension is disposable.
+
+A boot-set writer is not.
+
+Architect layers:
+
+```text
+low-level validated boot-set library/helper
+            ↑
+CLI
+            ↑
+polkit integration
+            ↑
+GUI / GNOME Quick Settings
+```
+
+The low-level helper should work even if GNOME is broken.
+
+Likewise the TWRP recovery script should work even if Fedora itself is unbootable.
+
+---
+
+# Phase 56 — Deliverables expected from you
+
+By the end, produce at least:
+
+## Source
+
+* X810 mainline DTS;
+* X810-specific kernel patches/drivers;
+* kernel configuration;
+* Fedora packaging;
+* firmware extraction/staging;
+* rootfs build;
+* boot bundle builder;
+* installer;
+* UFS split tool;
+* boot-set manager;
+* Android switcher if implemented;
+* GNOME integration.
+
+## Documentation
+
+* `README.md`
+* `INSTALL.md`
+* `docs/HARDWARE-X810.md`
+* `docs/BOOT-STRATEGY.md`
+* `docs/DUAL-BOOT.md`
+* `docs/MEMORY-MAP.md`
+* `docs/PARTITION-LAYOUT.md`
+* `docs/RECOVERY.md`
+* `docs/PORTING-LOG.md`
+* `docs/KNOWN-ISSUES.md`
+* `docs/TEST-MATRIX.md`
+* `docs/SOURCE-PROVENANCE.md`
+* `docs/DECISIONS.md`
+
+## Tools
+
+At least equivalents of:
+
+```text
+probe-android.sh
+extract-stock.sh / .py
+extract-device-tree.sh
+compare-dts.py
+validate-memory-map.py
+validate-boot-bundle.py
+validate-gpt.py
+split-ufs installer
+build-rootfs
+build-kernel
+build-boot-bundle
+restore-boot-set.sh
+gts9p-bootctl
+```
+
+## Evidence
+
+* device probe archive;
+* original GPT dump;
+* original boot-set hashes;
+* tested Fedora boot-set hashes;
+* kernel logs;
+* hardware test results;
+* dual-boot switch logs.
+
+---
+
+# Phase 57 — Final technical report
+
+When the work reaches a meaningful stable point, produce a detailed report explaining:
+
+1. What the actual X810 hardware turned out to be.
+2. Which parts match X710.
+3. Which parts match X910.
+4. Which parts are unique.
+5. How ABL selects the X810 DTB.
+6. Exact protected-memory requirements.
+7. Exact boot image format.
+8. Exact internal-UFS layout.
+9. How dual boot works.
+10. Why `vbmeta` remains fixed.
+11. How Fedora → One UI switching works.
+12. How One UI → Fedora switching works.
+13. Recovery process.
+14. Hardware status.
+15. Known limitations.
+16. Kernel patches still carried.
+17. Upstreamable work.
+18. Proprietary firmware requirements.
+19. Update strategy.
+20. Remaining technical debt.
+
+Do not summarize uncertainty away. Mark open questions explicitly.
+
+---
+
+# Immediate first actions
+
+Begin now with research and read-only tablet inspection.
+
+Do not ask for a summary of the repositories from the owner; inspect them yourself.
+
+Your first concrete sequence should be:
+
+```text
+1. Verify ADB target and identity.
+2. Create the project repository and research logs.
+3. Clone the active X710 Fedora source.
+4. Clone the X910 Ubuntu source.
+5. Clone the historical X910 postmarketOS source.
+6. Locate the strongest available Samsung X810 downstream sources.
+7. Record every source commit.
+8. Run the comprehensive Android probe.
+9. Determine root availability.
+10. Map the UFS and Android logical partitions.
+11. Obtain the exact matching stock X810 firmware.
+12. Extract/decompile its boot images and device trees.
+13. Build the X810/X710/X910 subsystem comparison.
+14. Resolve the X810 protected-memory map.
+15. Resolve Samsung ABL DT selectors.
+16. Design the X810 DTS.
+17. Establish USB/TWRP/Download-Mode recovery access.
+18. Back up the live boot chain and GPT.
+19. Design and validate the internal-UFS split.
+20. Only then begin destructive installation and Linux boot testing.
+```
+
+You have permission to continue through the destructive stages once the stated technical gates are satisfied.
+
+Do not repeatedly return to the owner asking whether you should continue.
+
+Research, reason, implement, test, record evidence, and iterate.
+
+The goal is not merely "Fedora booted once."
+
+The goal is a **reproducible, maintainable, native Fedora + One UI dual-boot port for the SM-X810 that has been proven on the physical tablet**.

@@ -1,0 +1,79 @@
+#!/bin/sh
+# Minimal, non-destructive probe: only writes a diagnostic log in /cache.
+PATH=/bin
+export PATH
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+exec 3>/dev/console 2>/dev/null
+
+echo 'X810 Linux init entered' >&3
+exec >/dev/kmsg 2>&1
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t configfs none /sys/kernel/config 2>/dev/null || true
+mkdir -p /dev/pts /mnt/cache
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+
+# Locate cache by GPT PARTNAME rather than assuming UFS enumeration order.
+cachedev=
+for u in /sys/class/block/*/uevent; do
+	[ -r "$u" ] || continue
+	if grep -qx 'PARTNAME=cache' "$u"; then
+		n=${u%/uevent}; cachedev=/dev/${n##*/}; break
+	fi
+done
+if [ -n "$cachedev" ] && mount -t ext4 -o noatime "$cachedev" /mnt/cache; then
+	mkdir -p /mnt/cache/x810-linux-probe
+	{
+		echo 'X810 diagnostic init reached'
+		cat /proc/uptime /proc/cmdline /proc/version
+		echo "cache_device=$cachedev"
+		echo 'phase=cache_logger_started'
+	} > /mnt/cache/x810-linux-probe/boot.log
+	# Keep a live printk copy on persistent cache; periodic sync lets recovery
+	# read it even if the kernel later hangs or is manually rebooted.
+	cat /dev/kmsg >> /mnt/cache/x810-linux-probe/boot.log &
+	while :; do sleep 3; sync; done &
+else
+	echo "cache mount failed: $cachedev"
+fi
+
+# Retain the ACM diagnostic gadget as a secondary signal; it may fail
+# independently of Linux due to the Type-C/DWC3 path.
+g=/sys/kernel/config/usb_gadget/x810-smoke
+if [ -d /sys/kernel/config/usb_gadget ]; then
+	mkdir -p "$g/strings/0x409" "$g/configs/c.1/strings/0x409"
+	echo 0x18d1 > "$g/idVendor"
+	echo 0xd001 > "$g/idProduct"
+	echo 0x0100 > "$g/bcdDevice"
+	echo 0x0200 > "$g/bcdUSB"
+	echo x810smoke > "$g/strings/0x409/serialnumber"
+	echo Samsung > "$g/strings/0x409/manufacturer"
+	echo 'X810 Linux smoke console' > "$g/strings/0x409/product"
+	echo 100 > "$g/configs/c.1/MaxPower"
+	echo 'USB serial console' > "$g/configs/c.1/strings/0x409/configuration"
+	mkdir -p "$g/functions/acm.usb0"
+	ln -sf "$g/functions/acm.usb0" "$g/configs/c.1/acm.usb0"
+	while :; do
+		for u in /sys/class/udc/*; do
+			[ -e "$u" ] || continue
+			echo "binding ACM gadget to $(basename "$u")"
+			if echo "$(basename "$u")" > "$g/UDC"; then
+				echo 'ACM gadget UDC bind succeeded'
+				break 2
+			fi
+		done
+		sleep 1
+	done
+fi
+echo "ACM tty sysfs=$(cat /sys/class/tty/ttyGS0/dev 2>/dev/null || echo missing) node=$( [ -c /dev/ttyGS0 ] && echo present || echo missing )"
+# devtmpfs normally creates this node. Create it from the kernel-published
+# major:minor if devtmpfs did not, so the host ACM port can still reach a shell.
+ttydev=$(cat /sys/class/tty/ttyGS0/dev 2>/dev/null)
+if [ -n "$ttydev" ] && [ ! -c /dev/ttyGS0 ]; then
+	/bin/busybox mknod /dev/ttyGS0 c "${ttydev%:*}" "${ttydev#*:}" 2>/dev/null || true
+fi
+echo "ACM tty node after fallback=$( [ -c /dev/ttyGS0 ] && echo present || echo missing )"
+while [ ! -c /dev/ttyGS0 ]; do sleep 1; done
+echo 'ACM shell starting (direct tty; no setsid/cttyhack)'
+export PS1='x810-smoke# '
+exec /bin/sh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1

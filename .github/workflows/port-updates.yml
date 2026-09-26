@@ -1,0 +1,96 @@
+name: Build X810 Fedora port update
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: x810-fedora-port-update-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      FEDORA_VERSION: "44"
+      BUILD_RUN_ID: ${{ github.run_id }}
+      BUILD_RUN_NUMBER: ${{ github.run_number }}
+      BUILD_COMMIT: ${{ github.sha }}
+      BUILD_BRANCH: ${{ github.ref_name }}
+    steps:
+      - name: Check out the workflow commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install package metadata tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes rpm
+
+      - name: Run updater contract tests
+        run: |
+          set -euo pipefail
+          bash -n tools/build-port-support-rpm.sh
+          python3 tools/test-port-metadata.py
+          python3 tools/test-port-update-bundle.py
+          python3 tools/test-port-release-index.py
+
+      - name: Stage port identity and this successful-build identity
+        run: |
+          set -euo pipefail
+          PORT_VERSION="$(tr -d '\r\n ' < PORT_VERSION)"
+          [[ "$PORT_VERSION" =~ ^(0|[1-9][0-9]{0,19})\.(0|[1-9][0-9]{0,19})\.(0|[1-9][0-9]{0,19})$ ]]
+          echo "PORT_VERSION=$PORT_VERSION" >> "$GITHUB_ENV"
+          mkdir -p _ci/rootfs/usr/share/tab-companion _ci/out _ci/release
+          cp rootfs/overlay/usr/share/tab-companion/port.json \
+            _ci/rootfs/usr/share/tab-companion/port.json
+          python3 tools/stamp-port-metadata.py _ci/rootfs "$PORT_VERSION" "$FEDORA_VERSION"
+          python3 tools/write-port-build-info.py \
+            _ci/rootfs/usr/share/tab-companion/port-build.json \
+            "$PORT_VERSION" "$BUILD_RUN_ID" "$BUILD_RUN_NUMBER" "$BUILD_COMMIT" "$BUILD_BRANCH"
+
+      - name: Build one noarch Fedora support RPM
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" -w /work \
+            -e PORT_VERSION -e BUILD_RUN_NUMBER \
+            fedora:44 bash -euc '
+              dnf -y install rpm-build tar findutils python3 coreutils
+              bash tools/build-port-support-rpm.sh \
+                _ci/rootfs "$PORT_VERSION" _ci/out \
+                "1000000.${BUILD_RUN_NUMBER}" \
+                _ci/rootfs/usr/share/tab-companion/port-build.json
+            '
+
+      - name: Create the updater manifest and package ZIP
+        run: |
+          set -euo pipefail
+          mapfile -t rpms < <(find _ci/out -maxdepth 1 -type f -name 'x810-fedora-port-*.noarch.rpm' -print)
+          [[ ${#rpms[@]} -eq 1 ]]
+          python3 tools/make-port-update-bundle.py \
+            --rpm "${rpms[0]}" \
+            --build-info _ci/rootfs/usr/share/tab-companion/port-build.json \
+            --output _ci/release/x810-fedora-port.zip
+
+      - name: Publish the public build release (not the installer's latest release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="x810-fedora-port-build-${GITHUB_RUN_ID}"
+          asset=_ci/release/x810-fedora-port.zip
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$tag" "$asset" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "X810 Fedora port update #${GITHUB_RUN_NUMBER}" \
+              --notes "Tab Companion updater package for Fedora 44 on SM-X810. Kernel and boot images are not included." \
+              --latest=false
+          fi
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --latest=false

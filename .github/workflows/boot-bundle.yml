@@ -1,0 +1,138 @@
+name: Boot bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_release_tag:
+        description: "This repository's kernel build tag; use the same tag for its rootfs and full-set release"
+        default: "kernel-7.2.0-gts9wifi-1"
+        type: string
+      firmware_url:
+        description: "Device firmware payload (GPU/ADSP blobs for the initramfs)"
+        default: "https://github.com/nacht20-de/gts9wifi-fedora/releases/download/kernel-7.2.0-rc3-gts9wifi-2/firmware-samsung-gts9wifi-v2.tar.gz"
+        type: string
+      firmware_sha256:
+        description: "sha256 of the firmware payload"
+        default: "30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5"
+        type: string
+      release_tag:
+        description: "Release tag to (re)publish the boot bundle and TWRP zip to, e.g. kernel-7.2.0-gts9wifi-1 (required: there is no artifact upload anymore)"
+        default: ""
+        type: string
+
+env:
+  KVER: 7.2.0-gts9wifi
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    # Fast path: fetch the prebuilt kernel RPM and assemble initramfs +
+    # Android-v4 bundle + TWRP zip.  No kernel compile (~5 min instead of ~55).
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Require a release tag
+        run: |
+          [ -n "${{ inputs.release_tag }}" ] || {
+            echo "release_tag is required: assets go straight to the release," >&2
+            echo "and the run no longer uploads Actions artifacts." >&2
+            exit 1
+          }
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download the exact RPM from this repository's X810 kernel release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KERNEL_RELEASE_TAG: ${{ inputs.kernel_release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p _ci/kernel
+          gh release download "$KERNEL_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'linux-gts9wifi-*.rpm' --pattern RPM-SHA256SUMS --dir _ci/kernel
+          (cd _ci/kernel && sha256sum -c RPM-SHA256SUMS)
+          shopt -s nullglob
+          rpms=(_ci/kernel/linux-gts9wifi-*.rpm)
+          [ "${#rpms[@]}" -eq 1 ] || {
+            echo "REFUSING: kernel release must contain exactly one X810 linux-gts9wifi RPM." >&2
+            exit 1
+          }
+          cp "${rpms[0]}" _ci/kernel.rpm
+
+      - name: Build initramfs, boot bundle and TWRP zip
+        env:
+          FIRMWARE_URL: ${{ inputs.firmware_url }}
+          FIRMWARE_SHA256: ${{ inputs.firmware_sha256 }}
+        run: |
+          docker run --rm \
+            -e KVER \
+            -e KERNEL_RPM=/work/_ci/kernel.rpm \
+            -e FIRMWARE_URL \
+            -e FIRMWARE_SHA256 \
+            -v "$PWD:/work" -w /work \
+            quay.io/fedora/fedora:44 \
+            bash -lc '
+              set -euxo pipefail
+              dnf -y install dracut cpio lz4 iproute curl dtc findutils python3 >/dev/null
+
+              # --- checksum-verified X810 kernel RPM from this repository ---
+              dnf -y install "$KERNEL_RPM"
+              depmod -a "$KVER"
+              ls /boot/vmlinuz-"$KVER" /boot/dtbs-7.2.0-gts9wifi/qcom/sm8550-samsung-gts9wifi.dtb
+
+              # --- device firmware: the initramfs needs it ---
+              # The Adreno driver is built-in and probes during the initramfs,
+              # before the real root (which carries the payload) is mounted, so
+              # gts9wifi.conf install_items pulls the a740 zap/GMU files into
+              # the image.  Without this extract dracut-install silently drops
+              # them and GNOME comes up on llvmpipe.
+              curl -sfL "$FIRMWARE_URL" -o /tmp/fw.tar.gz
+              echo "$FIRMWARE_SHA256  /tmp/fw.tar.gz" | sha256sum -c -
+              tar xzf /tmp/fw.tar.gz -C /
+
+              # --- initramfs ---
+              cp -a /work/boot/dracut/90gts9wifi-usbnet /usr/lib/dracut/modules.d/
+              cp /work/boot/dracut/dracut.conf.d/gts9wifi.conf /usr/lib/dracut/dracut.conf.d/
+              dracut --kver "$KVER" --force /tmp/initramfs.img
+
+              # --- bundle + TWRP zip ---
+              mkdir -p out-bundle out-twrp
+              bash /work/boot/build-bundle.sh \
+                --vmlinuz /boot/vmlinuz-"$KVER" \
+                --dtb "/boot/dtbs-7.2.0-gts9wifi/qcom/sm8550-samsung-gts9wifi.dtb" \
+                --initramfs /tmp/initramfs.img \
+                --cmdline /work/boot/cmdline.txt \
+                --bootconfig /work/boot/bootconfig.txt \
+                --out out-bundle
+              kernel_rpm_nevra=$(rpm -qp --qf "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}" "$KERNEL_RPM")
+              kernel_rpm_sha256=$(sha256sum "$KERNEL_RPM" | cut -d" " -f1)
+              firmware_sha256=$(sha256sum /tmp/fw.tar.gz | cut -d" " -f1)
+              {
+                printf "kernel_rpm_nevra=%s\\n" "$kernel_rpm_nevra"
+                printf "kernel_rpm_sha256=%s\\n" "$kernel_rpm_sha256"
+                printf "firmware_sha256=%s\\n" "$firmware_sha256"
+                printf "firmware_source_url=%s\\n" "$FIRMWARE_URL"
+              } >> out-bundle/BUILD-METADATA.txt
+              python3 /work/tools/make-twrp-zip.py out-bundle \
+                out-twrp/gts9wifi-fedora-"$KVER".zip --project /work
+            '
+
+      # Same model as the rootfs workflow: publish straight from the runner to
+      # the named release instead of uploading Actions artifacts.  The release
+      # is created when it does not exist yet; --clobber replaces same-named
+      # assets, so re-running against the same tag keeps a stable asset set.
+      - name: Publish assets to the named release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REL: ${{ inputs.release_tag }}
+        run: |
+          gh release view "$REL" >/dev/null 2>&1 || \
+            gh release create "$REL" --title "$REL" --latest=false \
+              --notes "Built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh release edit "$REL" --latest=false
+          gh release upload "$REL" --clobber \
+            out-bundle/*.img out-bundle/SHA256SUMS out-bundle/BUILD-METADATA.txt \
+            out-twrp/*.zip

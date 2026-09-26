@@ -1,0 +1,38 @@
+#!/bin/sh
+# Grow the Fedora ext4 filesystem to the end of its existing X810 linuxroot
+# partition.  The X810 split gives linuxroot a fixed GPT boundary; this service
+# must never resize or rewrite any partition table.
+set -eu
+
+STAMP="${GTS9_ROOTFS_GROWN_STAMP:-/var/lib/gts9wifi-rootfs-grown}"
+
+log() { echo "gts9wifi-grow-rootfs: $*"; }
+
+[ -e "$STAMP" ] && { log "already done"; exit 0; }
+
+root_src=$(findmnt -no SOURCE /)
+case "$root_src" in
+	/dev/*) ;;
+	*) log "root is not a block device ($root_src); nothing to grow"; exit 0 ;;
+esac
+
+fstype=$(findmnt -no FSTYPE /)
+if [ "$fstype" != ext4 ]; then
+	log "root is $fstype, not ext4; refusing to resize"
+	exit 0
+fi
+
+# Limit this one-shot to the named Fedora root partition.  It only enlarges
+# ext4 inside the partition's current, kernel-reported size; it does not alter
+# GPT or attempt to make another model/layout fit.
+part_label=$(lsblk -nro PARTLABEL "$root_src" 2>/dev/null | head -n 1)
+if [ "$part_label" != linuxroot ]; then
+	log "root partition label is ${part_label:-unknown}, not linuxroot; refusing to resize"
+	exit 0
+fi
+
+log "growing the ext4 filesystem within the existing $root_src partition"
+resize2fs "$root_src"
+mkdir -p "$(dirname "$STAMP")"
+: > "$STAMP"
+log "done: $(df -h / | tail -1)"

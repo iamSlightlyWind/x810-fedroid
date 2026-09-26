@@ -1,0 +1,15 @@
+# Decisions and working hypotheses
+
+This is an append-only decision register. “Provisional” choices can change as
+new X810 evidence arrives; record reversals rather than rewriting history.
+
+| ID | Date | Decision / hypothesis | Basis | Status |
+|---|---|---|---|---|
+| R-001 | 2026-09-24 | Use Fedora 44 + Linux 7.2.0 as the initial X810 engineering baseline; do not combine bring-up with a version upgrade. | X710 maintainer's current pinned release boots the shared WCN6855 family; the maintainer reports 7.2.1–7.2.6 fail WCN6855 MHI power-up. Linux 7.2.7 is available but has not been tested on that device in the inspected repository. The 7.2.0 source tarball has been verified against kernel.org's Greg KH PGP signature. | Provisional; re-evaluate 7.2.7 after the first known-good X810 boot/WLAN baseline. |
+| R-002 | 2026-09-24 | X810 WLAN should initially be investigated as WCN6855 / ath11k, not X910 WCN7850 / ath12k. | Measured X810 PCI ID `17cb:1103`, subsystem `17cb:0108`, plus upstream ath11k PCI ID table maps 0x1103 to WCN6855. | Strong family ID; firmware/calibration and cold-start unverified. |
+| R-003 | 2026-09-24 | No restart, recovery test, or boot experiment while the owner is using the tablet; when explicitly authorized, limit initial recovery inspection to non-destructive reads. | Owner first prohibited restarts while in use, then said the tablet was idle and authorized recovery access. | Recovery USB ADB is now verified; no writes or boot experiment performed. |
+| R-004 | 2026-09-24 | Treat the current live stock FDT's secure-memory reservations as a hard gate; do not boot a converted DTB until reconciled. | Live FDT contains many QTEE, TrustUI, Gunyah, MPSS, ADSP/CDSP/SPSS/SPU and Samsung regions; semantics remain unresolved. | Active. |
+| R-005 | 2026-09-24 | The `sda` user-data LUN is the only candidate for a future Fedora split; do not borrow space from `super` or any named middle partition. | CRC-validated live GPT places `userdata` at the tail; the intervening extents are all named Samsung partitions. | Geometry measured; split design and recovery gate remain open. |
+| R-006 | 2026-09-24 | Never include `vbmeta` in OS boot-set switching. | X910 prior-art failure analysis shows changing AVB state invalidates Android metadata-encryption assumptions; X810's `vbmeta` resides on live read-only sde. | Strong safety rule; exact installed AVB descriptors still unknown. |
+| R-007 | 2026-09-24 | Do not choose an Android/Linux space ratio yet. | Current userdata size is measured (240,465,702,912 bytes), but the owner use-case/space requirements and minimum root image growth are not measured. | Open; make configurable if/when split design is approved. |
+| R-008 | 2026-09-24 | Recovery observations do not authorize partition/flash/boot testing; preserve the current installed TWRP/KernelSU/modified-vbmeta set. | The host has a working USB ADB shell in TWRP, but recovery write behavior and boot fallback have not been tested. | Active safety boundary. |

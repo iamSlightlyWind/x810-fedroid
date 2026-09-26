@@ -1,0 +1,54 @@
+# Extracted device assets never belong in git (blobs + size):
+# firmware payload, kernel modules, boot images, ssh keys.
+local-assets/
+
+# Build output
+out/
+build/
+_ci/
+.local/
+artifacts/
+
+# Disk images
+*.img
+*.img.xz
+*.raw
+
+# Never commit firmware blobs even outside local-assets
+firmware-samsung-gts9wifi.tar.gz
+
+# Local scratch / sibling project — never tracked here
+assets/
+ubuntu-galaxy-tab-s9-ultra/
+
+# Pi agent tooling
+.pi/
+
+# The project wiki
+.llm-wiki/
+
+# Build outputs / checksums / large blobs
+SHA256SUMS
+gts9wifi-fedora-*.tar.gz
+gts9wifi-fedora-*.zip
+
+# X810 live-device evidence and generated artifacts
+work/
+probes/android-baseline/*
+!probes/android-baseline/README.md
+probes/twrp-current/
+x810-gpt-backup-*/
+*.tar.lz4
+*.img
+*.bin
+*.log
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+.DS_Store
+*.swp
