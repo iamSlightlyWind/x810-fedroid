@@ -160,6 +160,10 @@ jobs:
               # --- TWRP zip ---
               python3 /work/tools/make-twrp-zip.py out-bundle \
                 out-twrp/gts9wifi-fedora-"$KVER".zip --project /work
+
+              # The container owns this bind-mounted directory; rename here
+              # before returning to the runner, which cannot write to it.
+              mv out-bundle/SHA256SUMS out-bundle/BUNDLE-SHA256SUMS
             '
 
       # Same model as the rootfs workflow: publish straight from the runner to
@@ -176,10 +180,6 @@ jobs:
             gh release create "$REL" --title "$REL" --latest=false \
               --notes "Built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           gh release edit "$REL" --latest=false
-          # Rename the bundle checksums so kernel and rootfs runs can publish
-          # into the SAME release tag without clobbering each other's
-          # SHA256SUMS asset (the rootfs run uploads its own).
-          mv out-bundle/SHA256SUMS out-bundle/BUNDLE-SHA256SUMS
           gh release upload "$REL" --clobber \
             out-kernel/*.rpm \
             out-kernel/RPM-SHA256SUMS \
