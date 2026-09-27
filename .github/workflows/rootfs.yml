@@ -132,6 +132,7 @@ jobs:
           echo "$KERNEL_RPM_SHA256  _ci/kernel.rpm" | sha256sum -c -
 
       - name: Build rootfs in Fedora aarch64 container
+        id: build_rootfs_image
         env:
           PORT_VERSION: ${{ inputs.port_version }}
           FEDORA_RELEASE: ${{ inputs.fedora_release }}
@@ -161,10 +162,29 @@ jobs:
           # the key and checksum files can be added next to the build output.
           sudo chown -R "$(id -u):$(id -g)" out
           printf '%s\n' "$BUILD_KEY" > out/ROOTFS-BUILD-KEY.txt
-          sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/x810-dnf-rootfs-cache"
+
+      # DNF packages and metadata are immutable-compose inputs, separate from
+      # the freshly created installroot. Preserve valid downloads even when a
+      # later RPM/file-conflict check fails inside build-rootfs.sh. DNF checks
+      # package checksums and signatures again when the cache is reused.
+      - name: Finalize external DNF cache after build attempt
+        id: finalize_dnf_cache
+        if: ${{ always() && !cancelled() && steps.build_rootfs_image.outcome != 'skipped' }}
+        run: |
+          set -euo pipefail
+          cache_dir="$RUNNER_TEMP/x810-dnf-rootfs-cache"
+          mkdir -p "$cache_dir"
+          sudo chown -R "$(id -u):$(id -g)" "$cache_dir"
+          # Never persist an interrupted package/metadata download fragment.
+          find "$cache_dir" -type f \( -name '*.part' -o -name '*.tmp' \) -delete
+          if find "$cache_dir" -type f -print -quit | grep -q .; then
+            echo "has_cache=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_cache=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Save DNF cache for exact immutable Fedora composes
-        if: success()
+        if: ${{ always() && !cancelled() && steps.finalize_dnf_cache.outcome == 'success' && steps.finalize_dnf_cache.outputs.has_cache == 'true' }}
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ runner.temp }}/x810-dnf-rootfs-cache

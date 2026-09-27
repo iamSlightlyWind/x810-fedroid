@@ -39,6 +39,12 @@ def rpm_query(rpm_path, query):
 def check(rootfs, manifest_path, version, rpm_path=None):
     rootfs = Path(rootfs)
     manifest = parse_manifest(manifest_path)
+    zram_config = rootfs / "etc/systemd/zram-generator.conf"
+    if not zram_config.is_file():
+        fail("rootfs is missing the local zram-generator override in /etc")
+    zram_text = zram_config.read_text(encoding="utf-8")
+    if "[zram0]" not in zram_text or not re.search(r"^zram-size\s*=\s*4096\s*$", zram_text, re.MULTILINE):
+        fail("rootfs zram-generator override must cap zram0 at 4096 MiB")
     port_path = rootfs / PORT_FILE.lstrip("/")
     document = json.loads(port_path.read_text(encoding="utf-8"))
     expected = {
@@ -113,6 +119,10 @@ def check(rootfs, manifest_path, version, rpm_path=None):
     files = subprocess.check_output(["rpm", "-qpl", str(package_path)], text=True).splitlines()
     if PORT_FILE not in files:
         fail("support RPM does not own port.json")
+    if "/usr/lib/systemd/zram-generator.conf" in files:
+        fail("support RPM must not replace Fedora's zram-generator-defaults file")
+    if "/etc/systemd/zram-generator.conf" not in files:
+        fail("support RPM does not own the /etc zram-generator override")
     if any(re.match(r"^/(?:boot(?:/|$)|lib/modules/|usr/lib/modules/|usr/lib/firmware/|lib/firmware/)", item) for item in files):
         fail("support RPM contains kernel, boot, or firmware payload")
 

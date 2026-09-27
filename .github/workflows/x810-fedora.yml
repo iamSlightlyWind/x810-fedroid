@@ -72,6 +72,7 @@ jobs:
         run: |
           python3 tools/test-x810-build-fingerprint.py
           python3 tools/test-rootfs-repo-gpg.py
+          python3 tools/test-rootfs-zram-config.py
           python3 tools/test-x810-rootfs-archive.py
 
       - name: Compare inputs with successful component releases
