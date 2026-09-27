@@ -6,10 +6,17 @@ sensor as **`hi1337-gts9u`**.
 
 ## Scope
 
-This helper affects AGC and black-level correction only after the HI1337
-camera has been enumerated and libcamera has selected the simple software IPA.
-It does not fix sensor enumeration, portal/preview connection failures, or
-camera permissions.
+The helper and its matching IPA tuning profile affect gain/black-level and
+processed-image behavior only after the HI1337 camera has been enumerated and
+libcamera has selected the simple software IPA. The port-specific
+`hi1337-gts9u.yaml` profile is installed at libcamera's standard
+`/usr/share/libcamera/ipa/simple/` path. Without it, libcamera falls back to
+`uncalibrated.yaml`; the runtime warning for that fallback is what this profile
+addresses.
+
+This does **not** fix intermittent sensor enumeration, PipeWire portal or
+preview-target failures, missing DMA-BUF providers/software-ISP initialization,
+or camera permissions. It also does not add autofocus.
 
 ## Why
 
@@ -20,15 +27,17 @@ model:
 IPASoft: Failed to create camera sensor helper for hi1337-gts9u
 ```
 
-The helper is what converts between real analogue gain and the sensor's gain
-register, and it is what supplies the sensor's black level. Without it the
-IPA's AGC is inert — the sensor simply keeps whatever analogue gain it was
-left at, in practice the **maximum (240 = 16×)**, giving a violently noisy
-image — and the black-level correction is skipped, which shows as a **heavy
-green cast** in the processed output.
+The helper converts between real analogue gain and the sensor's gain register,
+and supplies its black level. The camera-specific tuning profile configures
+the simple IPA's black-level, auto-white-balance, colour-correction and
+auto-gain algorithms. The live X810 inspection found the helper loading but
+the profile missing, so libcamera selected the generic uncalibrated fallback.
+Shipping the matching profile fixes that specific missing-tuning fallback; it
+does not make a camera node appear or repair a broken PipeWire stream.
 
-Adding the helper fixes both: AGC actively meters and adjusts again, and the
-processed image is correctly coloured.
+The profile used here is the CC0-1.0 HI1337 configuration from
+`agcarbajo/ubuntu-galaxy-tab-s9-ultra`. It is reference tuning, not factory
+calibration for the X810.
 
 ## Values used
 
@@ -43,7 +52,9 @@ The Fedora 44 support build compiles this helper against the exact pinned
 Fedora 44 libcamera source package and installs it in the separate
 `/usr/lib64/libcamera/ipa-x810/` directory. It does **not** replace Fedora's
 `/usr/lib64/libcamera/ipa/ipa_soft_simple.so`, so normal Fedora updates can
-continue replacing the vendor module safely.
+continue replacing the vendor module safely. The CC0 tuning YAML is shipped
+under `/usr/share/libcamera/ipa/simple/` by the same overlay, so both a fresh
+rootfs and the cumulative support-RPM update receive it.
 
 For a local developer build, use the repo's native Fedora 44/aarch64 build
 container and run `tools/build-libcamera-hi1337-ipa.sh STAGING_ROOT`. The
@@ -66,15 +77,17 @@ this is not a claim of bit-for-bit reproducibility.
 
 ## Verified
 
-On a Galaxy Tab S9 Wi-Fi, while streaming through libcamera, the sensor's
-`analogue_gain` now moves (`64 → 89 → 135 → 204 → 240`) as AGC meters,
-where previously it never changed. A processed frame captured through
-`libcamerasrc` shows natural colour instead of the previous green cast.
+An earlier X810 stream test of the helper recorded `analogue_gain` changes
+(`64 → 89 → 135 → 204 → 240`) as the scene was metered. In the current
+read-only audit, `cam -l` loaded the custom helper and enumerated both cameras,
+but logged that `hi1337-gts9u.yaml` was missing and fell back to
+`uncalibrated.yaml`. This change packages the reference profile; no new frame
+was captured to validate its image quality on the current installation.
 
 ## Known limitation
 
-This unlocks **AGC and correct colour**, but *not* focus control: libcamera
-0.7.1's simple pipeline handler has no lens support at all (no `CameraLens`,
-no `LensPosition` control), so no sensor helper can expose it. Driving the
-`dw9808` VCM still requires direct V4L2 control of the lens subdev — see
-docs/Hardware-Notes.md, Cameras.
+Focus is separate: Fedora's libcamera 0.7.1 simple pipeline handler has no
+lens support (`CameraLens` / `LensPosition`), so neither the sensor helper nor
+this tuning YAML adds autofocus. The port uses a fixed V4L2 lens position via
+udev; driving the `dw9808` VCM still requires direct V4L2 control of the lens
+subdevice — see `docs/Hardware-Notes.md`, Cameras.

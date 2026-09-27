@@ -11,7 +11,9 @@ from pathlib import Path
 
 VERSION_RE = re.compile(r"^(?:0|[1-9][0-9]{0,19})\.(?:0|[1-9][0-9]{0,19})\.(?:0|[1-9][0-9]{0,19})$")
 PORT_FILE = "/usr/share/tab-companion/port.json"
+HI1337_TUNING_FILE = "/usr/share/libcamera/ipa/simple/hi1337-gts9u.yaml"
 PACKAGE_NAME = "x810-fedora-port"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def fail(message):
@@ -38,6 +40,15 @@ def rpm_query(rpm_path, query):
 
 def check(rootfs, manifest_path, version, rpm_path=None):
     rootfs = Path(rootfs)
+    tuning_overlay = REPO_ROOT / "rootfs/overlay" / HI1337_TUNING_FILE.lstrip("/")
+    tuning_image = rootfs / HI1337_TUNING_FILE.lstrip("/")
+    if not tuning_overlay.is_file() or tuning_overlay.is_symlink():
+        fail("source overlay is missing the HI1337 IPA tuning YAML")
+    if not tuning_image.is_file() or tuning_image.is_symlink():
+        fail("fresh rootfs is missing the HI1337 IPA tuning YAML")
+    if tuning_image.read_bytes() != tuning_overlay.read_bytes():
+        fail("fresh rootfs HI1337 IPA tuning YAML differs from the source overlay")
+
     manifest = parse_manifest(manifest_path)
     zram_config = rootfs / "etc/systemd/zram-generator.conf"
     if not zram_config.is_file():
@@ -121,6 +132,7 @@ def check(rootfs, manifest_path, version, rpm_path=None):
         fail("support RPM does not own port.json")
     for required_camera_file in (
         "/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so",
+        HI1337_TUNING_FILE,
         "/etc/libcamera/configuration.yaml",
         "/etc/environment.d/90-x810-libcamera.conf",
     ):
@@ -157,15 +169,18 @@ def check(rootfs, manifest_path, version, rpm_path=None):
     records = subprocess.check_output(
         ["rpm", "-qp", "--qf", "[%{FILENAMES}\\t%{FILEDIGESTS}\\n]", str(package_path)], text=True
     ).splitlines()
-    payload_digest = None
+    payload_digests = {}
     for record in records:
         filename, separator, digest = record.partition("\t")
-        if separator and filename == PORT_FILE:
-            payload_digest = digest
-            break
-    image_digest = hashlib.sha256(port_path.read_bytes()).hexdigest()
-    if payload_digest != image_digest:
-        fail("support RPM port.json payload differs from the rootfs metadata")
+        if separator and filename in (PORT_FILE, HI1337_TUNING_FILE):
+            payload_digests[filename] = digest
+    for filename, image_path in (
+        (PORT_FILE, port_path),
+        (HI1337_TUNING_FILE, tuning_image),
+    ):
+        image_digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
+        if payload_digests.get(filename) != image_digest:
+            fail(f"support RPM {filename} payload differs from the fresh rootfs")
 
 
 def main(argv=None):

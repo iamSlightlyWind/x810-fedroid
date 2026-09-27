@@ -2,7 +2,7 @@ Name:           x810-fedora-port
 Version:        %{port_version}
 Release:        %{port_release}%{?dist}
 Summary:        Fedora device support for Samsung Galaxy Tab S9+ Wi-Fi
-License:        MIT AND LGPL-2.1-or-later AND BSD-2-Clause
+License:        CC0-1.0 AND MIT AND LGPL-2.1-or-later AND BSD-2-Clause
 BuildArch:      aarch64
 # This is a payload-only support RPM; the separately built libcamera module's
 # sources are in the repository and no compiled debugsource package is needed.

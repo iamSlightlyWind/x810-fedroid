@@ -12,6 +12,43 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SupportRpmStagingTests(unittest.TestCase):
+    def test_hi1337_tuning_flows_to_fresh_image_and_support_rpm(self):
+        tuning = ROOT / (
+            "rootfs/overlay/usr/share/libcamera/ipa/simple/hi1337-gts9u.yaml"
+        )
+        self.assertTrue(tuning.is_file())
+        contents = tuning.read_text(encoding="utf-8")
+        self.assertIn("SPDX-License-Identifier: CC0-1.0", contents)
+        for algorithm in ("BlackLevel:", "Awb:", "Ccm:", "Agc:"):
+            self.assertIn(algorithm, contents)
+
+        rootfs_builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")
+        support_builder = (ROOT / "tools/build-port-support-rpm.sh").read_text(
+            encoding="utf-8"
+        )
+        spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
+        contract = (ROOT / "tools/test-port-build-contract.py").read_text(
+            encoding="utf-8"
+        )
+        # Both build paths stage the full overlay. The built-image contract
+        # verifies the actual RPM file list, its payload digest, and the file
+        # installed in the fresh rootfs.
+        self.assertIn('cp -a "$repo_dir/rootfs/overlay/." "$rootfs/"', rootfs_builder)
+        self.assertIn('cp -a "$repo_dir/rootfs/overlay/." "$stage/"', support_builder)
+        self.assertIn(
+            "License:        CC0-1.0 AND MIT AND LGPL-2.1-or-later AND BSD-2-Clause",
+            spec,
+        )
+        self.assertIn('"/usr/share/libcamera/ipa/simple/hi1337-gts9u.yaml"', contract)
+        self.assertIn("fresh rootfs is missing the HI1337 IPA tuning YAML", contract)
+        self.assertIn(
+            'HI1337_TUNING_FILE = "/usr/share/libcamera/ipa/simple/hi1337-gts9u.yaml"',
+            contract,
+        )
+        self.assertIn(
+            "support RPM {filename} payload differs from the fresh rootfs", contract
+        )
+
     def test_rootfs_build_prunes_both_support_rpm_arches(self):
         builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")
         command = re.search(
