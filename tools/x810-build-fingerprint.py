@@ -44,7 +44,7 @@ FULL_SET_PATHS = (
     "tools/verify-x810-build-match.py",
     "tools/verify-x810-rootfs-archive.py",
     "tools/x810-build-fingerprint.py",
-    ".github/workflows/full-set.yml",
+    "tools/publish-x810-full-set.sh",
 )
 
 

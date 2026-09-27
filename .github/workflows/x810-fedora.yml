@@ -10,9 +10,6 @@ on:
       - "rootfs/**"
       - "specs/**"
       - "tools/**"
-      - ".github/workflows/kernel.yml"
-      - ".github/workflows/rootfs.yml"
-      - ".github/workflows/full-set.yml"
       - ".github/workflows/x810-fedora.yml"
   workflow_dispatch:
     inputs:
@@ -44,6 +41,9 @@ on:
 
 permissions:
   contents: write
+
+env:
+  KVER: 7.2.0-gts9wifi
 
 concurrency:
   group: x810-fedora-build-release
@@ -198,16 +198,191 @@ jobs:
   build_kernel:
     needs: plan
     if: needs.plan.outputs.build_kernel == 'true'
-    uses: ./.github/workflows/kernel.yml
-    permissions:
-      contents: write
-    with:
-      release_tag: ${{ needs.plan.outputs.kernel_tag }}
-      build_key: ${{ needs.plan.outputs.kernel_key }}
-      firmware_url: https://github.com/nacht20-de/gts9wifi-fedora/releases/download/kernel-7.2.0-rc3-gts9wifi-2/firmware-samsung-gts9wifi-v2.tar.gz
-      firmware_sha256: 30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5
-      fedora_base_compose: ${{ needs.plan.outputs.fedora_base_compose }}
-      fedora_updates_compose: ${{ needs.plan.outputs.fedora_updates_compose }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify planned kernel fingerprint
+        env:
+          FIRMWARE_SHA256: 30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5
+          FEDORA_BASE_COMPOSE: ${{ needs.plan.outputs.fedora_base_compose }}
+          FEDORA_UPDATES_COMPOSE: ${{ needs.plan.outputs.fedora_updates_compose }}
+          EXPECTED_BUILD_KEY: ${{ needs.plan.outputs.kernel_key }}
+        run: |
+          set -euo pipefail
+          actual="$(python3 tools/x810-build-fingerprint.py kernel \
+            --firmware-sha256 "$FIRMWARE_SHA256" \
+            --fedora-base-compose "$FEDORA_BASE_COMPOSE" \
+            --fedora-updates-compose "$FEDORA_UPDATES_COMPOSE")"
+          [ "$actual" = "$EXPECTED_BUILD_KEY" ] || {
+            echo "REFUSING: kernel build inputs changed after planning." >&2; exit 1;
+          }
+
+      - name: Restore kernel source and ccache
+        id: restore_kernel_cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-kernel-cache
+          key: x810-kernel-${{ runner.arch }}-linux72-${{ hashFiles('kernel/**') }}
+          restore-keys: |
+            x810-kernel-${{ runner.arch }}-linux72-
+
+      - name: Restore Fedora DNF cache for pinned kernel composes
+        id: restore_kernel_dnf
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-dnf-kernel-cache
+          key: x810-dnf-kernel-${{ runner.arch }}-${{ needs.plan.outputs.fedora_base_compose }}-${{ needs.plan.outputs.fedora_updates_compose }}
+
+      - name: Build kernel RPM, initramfs, boot bundle and TWRP zip
+        env:
+          FIRMWARE_URL: https://github.com/nacht20-de/gts9wifi-fedora/releases/download/kernel-7.2.0-rc3-gts9wifi-2/firmware-samsung-gts9wifi-v2.tar.gz
+          FIRMWARE_SHA256: 30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5
+          FEDORA_BASE_COMPOSE: ${{ needs.plan.outputs.fedora_base_compose }}
+          FEDORA_UPDATES_COMPOSE: ${{ needs.plan.outputs.fedora_updates_compose }}
+          LINUX_SOURCE_SHA256: "f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
+          BUILD_SOURCE_SHA: ${{ github.sha }}
+          BUILD_KEY: ${{ needs.plan.outputs.kernel_key }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/x810-kernel-cache/ccache" "$RUNNER_TEMP/x810-dnf-kernel-cache"
+          docker run --rm \
+            -e KVER -e FIRMWARE_URL -e FIRMWARE_SHA256 \
+            -e FEDORA_BASE_COMPOSE -e FEDORA_UPDATES_COMPOSE \
+            -e LINUX_SOURCE_SHA256 -e BUILD_SOURCE_SHA -e BUILD_KEY \
+            -e CCACHE_DIR=/x810-cache/ccache \
+            -e CCACHE_COMPILERCHECK=content -e CCACHE_MAXSIZE=6G \
+            -v "$PWD:/work" -w /work \
+            -v "$RUNNER_TEMP/x810-kernel-cache:/x810-cache" \
+            -v "$RUNNER_TEMP/x810-dnf-kernel-cache:/var/cache/libdnf5" \
+            quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a \
+            bash -lc '
+              set -euxo pipefail
+              repo_root=https://kojipkgs.fedoraproject.org/compose
+              [[ "$FEDORA_BASE_COMPOSE" =~ ^Fedora-44-[0-9]{8}\.[0-9]+$ ]]
+              [[ "$FEDORA_UPDATES_COMPOSE" =~ ^Fedora-44-updates-[0-9]{8}\.[0-9]+$ ]]
+              base_url="$repo_root/44/$FEDORA_BASE_COMPOSE/compose/Everything/aarch64/os/"
+              updates_url="$repo_root/updates/$FEDORA_UPDATES_COMPOSE/compose/Everything/aarch64/os/"
+              repo_args=(--disablerepo="*" \
+                --repofrompath=x810-fedora-snapshot,"$base_url" \
+                --repofrompath=x810-updates-snapshot,"$updates_url" \
+                --setopt=cachedir=/var/cache/libdnf5 \
+                --setopt=system_cachedir=/var/cache/libdnf5 \
+                --setopt=keepcache=True \
+                --setopt=x810-fedora-snapshot.gpgcheck=1 \
+                --setopt=x810-updates-snapshot.gpgcheck=1 \
+                --enablerepo=x810-fedora-snapshot --enablerepo=x810-updates-snapshot)
+              dnf -y "${repo_args[@]}" install make gcc clang lld llvm bc flex bison perl \
+                  openssl openssl-devel elfutils-libelf-devel python3 tar xz \
+                  zstd rpm-build ccache dtc findutils dwarves dracut \
+                  cpio lz4 iproute >/dev/null
+              mkdir -p /x810-cache/ccache-bin
+              ln -sf "$(command -v ccache)" /x810-cache/ccache-bin/clang
+              export PATH="/x810-cache/ccache-bin:$PATH"
+              mkdir -p /x810-cache
+              if [ ! -s /x810-cache/linux-7.2.tar.xz ] || \
+                 [ "$(sha256sum /x810-cache/linux-7.2.tar.xz | cut -d" " -f1)" != "$LINUX_SOURCE_SHA256" ]; then
+                rm -f /x810-cache/linux-7.2.tar.xz /x810-cache/linux-7.2.tar.xz.part
+                curl -sfL https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.tar.xz \
+                  -o /x810-cache/linux-7.2.tar.xz.part
+                echo "$LINUX_SOURCE_SHA256  /x810-cache/linux-7.2.tar.xz.part" | sha256sum -c -
+                mv /x810-cache/linux-7.2.tar.xz.part /x810-cache/linux-7.2.tar.xz
+              fi
+              echo "$LINUX_SOURCE_SHA256  /x810-cache/linux-7.2.tar.xz" | sha256sum -c -
+              tar xf /x810-cache/linux-7.2.tar.xz
+              cd linux-7.2
+              export SOURCE_DATE_EPOCH=0
+              export KBUILD_BUILD_TIMESTAMP="1970-01-01 00:00:00 UTC"
+              export KBUILD_BUILD_USER=x810-reproducible KBUILD_BUILD_HOST=x810-reproducible
+              export LC_ALL=C
+              bash /work/kernel/prepare.sh .
+              echo "-gts9wifi" > localversion-gts9wifi
+              cd ..
+              mv linux-7.2 linux-prepared
+              tar --sort=name --mtime="@0" --owner=0 --group=0 --numeric-owner \
+                --format=gnu -C . -cf - linux-prepared | gzip -n -9 > linux-prepared.tar.gz
+              rm -rf linux-prepared
+              mkdir -p ~/rpmbuild/SOURCES out-kernel out-bundle out-twrp
+              cp linux-prepared.tar.gz ~/rpmbuild/SOURCES/
+              rpmbuild -bb --define "kversion 7.2.0" /work/kernel/kernel.spec
+              cp ~/rpmbuild/RPMS/aarch64/*.rpm out-kernel/
+              dnf -y "${repo_args[@]}" install out-kernel/*.rpm
+              curl -sfL "$FIRMWARE_URL" -o /tmp/fw.tar.gz
+              echo "$FIRMWARE_SHA256  /tmp/fw.tar.gz" | sha256sum -c -
+              tar xzf /tmp/fw.tar.gz -C /
+              cp -a /work/boot/dracut/90gts9wifi-usbnet /usr/lib/dracut/modules.d/
+              cp /work/boot/dracut/dracut.conf.d/gts9wifi.conf /usr/lib/dracut/dracut.conf.d/
+              dracut --kver "$KVER" --force /tmp/initramfs.img
+              bash /work/boot/build-bundle.sh \
+                --vmlinuz /boot/vmlinuz-"$KVER" \
+                --dtb /boot/dtbs-7.2.0-gts9wifi/qcom/sm8550-samsung-gts9wifi.dtb \
+                --initramfs /tmp/initramfs.img \
+                --cmdline /work/boot/cmdline.txt \
+                --bootconfig /work/boot/bootconfig.txt --out out-bundle
+              shopt -s nullglob
+              kernel_rpms=(out-kernel/linux-gts9wifi-*.rpm)
+              [ "${#kernel_rpms[@]}" -eq 1 ] || { echo "expected exactly one linux-gts9wifi RPM" >&2; exit 1; }
+              (cd out-kernel && sha256sum "$(basename "${kernel_rpms[0]}")" > RPM-SHA256SUMS)
+              kernel_rpm_nevra=$(rpm -qp --qf "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}" "${kernel_rpms[0]}")
+              kernel_rpm_sha256=$(sha256sum "${kernel_rpms[0]}" | cut -d" " -f1)
+              firmware_sha256=$(sha256sum /tmp/fw.tar.gz | cut -d" " -f1)
+              builder_rpm_inventory_sha256=$(rpm -qa --qf "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\\n" | LC_ALL=C sort | sha256sum | cut -d" " -f1)
+              {
+                printf "kernel_rpm_nevra=%s\\n" "$kernel_rpm_nevra"
+                printf "kernel_rpm_sha256=%s\\n" "$kernel_rpm_sha256"
+                printf "firmware_sha256=%s\\n" "$firmware_sha256"
+                printf "firmware_source_url=%s\\n" "$FIRMWARE_URL"
+                printf "repository_commit=%s\\n" "$BUILD_SOURCE_SHA"
+                printf "builder_image=quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a\\n"
+                printf "fedora_base_compose=%s\\n" "$FEDORA_BASE_COMPOSE"
+                printf "fedora_updates_compose=%s\\n" "$FEDORA_UPDATES_COMPOSE"
+                printf "builder_rpm_inventory_sha256=%s\\n" "$builder_rpm_inventory_sha256"
+                printf "kernel_source_url=https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.tar.xz\\n"
+                printf "kernel_source_sha256=%s\\n" "$LINUX_SOURCE_SHA256"
+                printf "kernel_source=linux-7.2.0 plus repository kernel/prepare.sh and patches\\n"
+                printf "x810_build_key=%s\\n" "$BUILD_KEY"
+              } >> out-bundle/BUILD-METADATA.txt
+              python3 /work/tools/make-twrp-zip.py out-bundle out-twrp/gts9wifi-fedora-"$KVER".zip --project /work
+              printf "%s\\n" "$BUILD_KEY" > out-bundle/KERNEL-BUILD-KEY.txt
+              (cd out-bundle && sha256sum KERNEL-BUILD-KEY.txt >> SHA256SUMS)
+              ccache --show-stats
+              mv out-bundle/SHA256SUMS out-bundle/BUNDLE-SHA256SUMS
+            '
+
+      - name: Make cache files readable by the runner
+        if: success()
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" \
+            "$RUNNER_TEMP/x810-kernel-cache" "$RUNNER_TEMP/x810-dnf-kernel-cache" || true
+
+      - name: Save kernel source and ccache
+        if: success() && steps.restore_kernel_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-kernel-cache
+          key: x810-kernel-${{ runner.arch }}-linux72-${{ hashFiles('kernel/**') }}
+
+      - name: Save Fedora DNF cache
+        if: success() && steps.restore_kernel_dnf.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-dnf-kernel-cache
+          key: x810-dnf-kernel-${{ runner.arch }}-${{ needs.plan.outputs.fedora_base_compose }}-${{ needs.plan.outputs.fedora_updates_compose }}
+
+      - name: Publish assets to the named kernel release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REL: ${{ needs.plan.outputs.kernel_tag }}
+        run: |
+          gh release view "$REL" >/dev/null 2>&1 || \
+            gh release create "$REL" --title "$REL" --latest=false \
+              --notes "Built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh release edit "$REL" --latest=false
+          gh release upload "$REL" --clobber \
+            out-kernel/*.rpm out-kernel/RPM-SHA256SUMS \
+            out-bundle/*.img out-bundle/BUNDLE-SHA256SUMS out-bundle/BUILD-METADATA.txt out-bundle/KERNEL-BUILD-KEY.txt \
+            out-twrp/*.zip
 
   resolve_rootfs:
     needs: [plan, build_kernel]
@@ -351,21 +526,143 @@ jobs:
       always() && needs.plan.result == 'success' && needs.resolve_rootfs.result == 'success' &&
       (needs.build_kernel.result == 'success' || needs.build_kernel.result == 'skipped') &&
       needs.resolve_rootfs.outputs.build_rootfs == 'true'
-    uses: ./.github/workflows/rootfs.yml
-    permissions:
-      contents: write
-    with:
-      release_tag: ${{ needs.resolve_rootfs.outputs.rootfs_tag }}
-      build_key: ${{ needs.resolve_rootfs.outputs.rootfs_key }}
-      kernel_release_tag: ${{ needs.plan.outputs.kernel_tag }}
-      kernel_rpm_sha256: ${{ needs.resolve_rootfs.outputs.kernel_rpm_sha256 }}
-      port_version: ${{ needs.plan.outputs.port_version }}
-      desktop: ${{ needs.plan.outputs.desktop }}
-      fedora_release: "44"
-      fedora_base_compose: ${{ needs.plan.outputs.fedora_base_compose }}
-      fedora_updates_compose: ${{ needs.plan.outputs.fedora_updates_compose }}
-      firmware_url: https://github.com/nacht20-de/gts9wifi-fedora/releases/download/kernel-7.2.0-rc3-gts9wifi-2/firmware-samsung-gts9wifi-v2.tar.gz
-      firmware_sha256: 30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run rootfs Fedora signing-key contract test
+        run: python3 tools/test-rootfs-repo-gpg.py
+
+      - name: Verify planned rootfs fingerprint
+        env:
+          FEDORA_RELEASE: "44"
+          FEDORA_BASE_COMPOSE: ${{ needs.plan.outputs.fedora_base_compose }}
+          FEDORA_UPDATES_COMPOSE: ${{ needs.plan.outputs.fedora_updates_compose }}
+          GTS9_DESKTOP: ${{ needs.plan.outputs.desktop }}
+          PORT_VERSION: ${{ needs.plan.outputs.port_version }}
+          FIRMWARE_SHA256: 30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5
+          KERNEL_RPM_SHA256: ${{ needs.resolve_rootfs.outputs.kernel_rpm_sha256 }}
+          EXPECTED_BUILD_KEY: ${{ needs.resolve_rootfs.outputs.rootfs_key }}
+        run: |
+          set -euo pipefail
+          actual="$(python3 tools/x810-build-fingerprint.py rootfs \
+            --fedora-release "$FEDORA_RELEASE" \
+            --fedora-base-compose "$FEDORA_BASE_COMPOSE" \
+            --fedora-updates-compose "$FEDORA_UPDATES_COMPOSE" \
+            --desktop "$GTS9_DESKTOP" --port-version "$PORT_VERSION" \
+            --firmware-sha256 "$FIRMWARE_SHA256" \
+            --kernel-rpm-sha256 "$KERNEL_RPM_SHA256")"
+          [ "$actual" = "$EXPECTED_BUILD_KEY" ] || {
+            echo "REFUSING: rootfs build inputs changed after planning." >&2; exit 1;
+          }
+
+      - name: Restore DNF cache for exact immutable Fedora composes
+        id: restore_dnf_cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-dnf-rootfs-cache
+          key: x810-dnf-rootfs-${{ runner.arch }}-44-${{ needs.plan.outputs.fedora_base_compose }}-${{ needs.plan.outputs.fedora_updates_compose }}
+
+      - name: Fetch pinned firmware payload
+        env:
+          FIRMWARE_URL: https://github.com/nacht20-de/gts9wifi-fedora/releases/download/kernel-7.2.0-rc3-gts9wifi-2/firmware-samsung-gts9wifi-v2.tar.gz
+          FIRMWARE_SHA256: 30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5
+        run: |
+          mkdir -p _ci
+          curl -sfL "$FIRMWARE_URL" -o _ci/firmware.tar.gz
+          echo "$FIRMWARE_SHA256  _ci/firmware.tar.gz" | sha256sum -c -
+
+      - name: Download the exact RPM from this repository's X810 kernel release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KERNEL_RELEASE_TAG: ${{ needs.plan.outputs.kernel_tag }}
+          KERNEL_RPM_SHA256: ${{ needs.resolve_rootfs.outputs.kernel_rpm_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p _ci/kernel
+          gh release download "$KERNEL_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'linux-gts9wifi-*.rpm' --pattern RPM-SHA256SUMS --dir _ci/kernel
+          (cd _ci/kernel && sha256sum -c RPM-SHA256SUMS)
+          shopt -s nullglob
+          rpms=(_ci/kernel/linux-gts9wifi-*.rpm)
+          [ "${#rpms[@]}" -eq 1 ] || {
+            echo "REFUSING: kernel release must contain exactly one X810 linux-gts9wifi RPM." >&2
+            exit 1
+          }
+          cp "${rpms[0]}" _ci/kernel.rpm
+          echo "$KERNEL_RPM_SHA256  _ci/kernel.rpm" | sha256sum -c -
+
+      - name: Build rootfs in Fedora aarch64 container
+        id: build_rootfs_image
+        env:
+          PORT_VERSION: ${{ needs.plan.outputs.port_version }}
+          FEDORA_RELEASE: "44"
+          FEDORA_BASE_COMPOSE: ${{ needs.plan.outputs.fedora_base_compose }}
+          FEDORA_UPDATES_COMPOSE: ${{ needs.plan.outputs.fedora_updates_compose }}
+          GTS9_DESKTOP: ${{ needs.plan.outputs.desktop }}
+          FIRMWARE_URL: https://github.com/nacht20-de/gts9wifi-fedora/releases/download/kernel-7.2.0-rc3-gts9wifi-2/firmware-samsung-gts9wifi-v2.tar.gz
+          BUILD_KEY: ${{ needs.resolve_rootfs.outputs.rootfs_key }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/x810-dnf-rootfs-cache"
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -v "$RUNNER_TEMP/x810-dnf-rootfs-cache:/x810-dnf-cache" \
+            -e FEDORA_RELEASE -e FEDORA_BASE_COMPOSE -e FEDORA_UPDATES_COMPOSE \
+            -e GTS9_DESKTOP -e PORT_VERSION \
+            -e FIRMWARE_TARBALL=/work/_ci/firmware.tar.gz \
+            -e FIRMWARE_SOURCE_URL="$FIRMWARE_URL" \
+            -e KERNEL_RPM=/work/_ci/kernel.rpm \
+            -e X810_DNF_CACHE_DIR=/x810-dnf-cache \
+            -e BUILDER_IMAGE=quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a \
+            quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a \
+            ./rootfs/build-rootfs.sh
+          sudo chown -R "$(id -u):$(id -g)" out
+          printf '%s\n' "$BUILD_KEY" > out/ROOTFS-BUILD-KEY.txt
+
+      - name: Finalize external DNF cache after build attempt
+        id: finalize_dnf_cache
+        if: ${{ always() && !cancelled() && steps.build_rootfs_image.outcome != 'skipped' }}
+        run: |
+          set -euo pipefail
+          cache_dir="$RUNNER_TEMP/x810-dnf-rootfs-cache"
+          mkdir -p "$cache_dir"
+          sudo chown -R "$(id -u):$(id -g)" "$cache_dir"
+          find "$cache_dir" -type f \( -name '*.part' -o -name '*.tmp' \) -delete
+          if find "$cache_dir" -type f -print -quit | grep -q .; then
+            echo "has_cache=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_cache=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save DNF cache for exact immutable Fedora composes
+        if: ${{ always() && !cancelled() && steps.restore_dnf_cache.outputs.cache-hit != 'true' && steps.finalize_dnf_cache.outcome == 'success' && steps.finalize_dnf_cache.outputs.has_cache == 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-dnf-rootfs-cache
+          key: x810-dnf-rootfs-${{ runner.arch }}-44-${{ needs.plan.outputs.fedora_base_compose }}-${{ needs.plan.outputs.fedora_updates_compose }}
+
+      - name: Checksum
+        run: |
+          cd out
+          shopt -s nullglob
+          assets=( *.tar.gz *.rpm rootfs-manifest.txt ROOTFS-BUILD-KEY.txt )
+          sha256sum "${assets[@]}" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish assets to the named rootfs release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REL: ${{ needs.resolve_rootfs.outputs.rootfs_tag }}
+        run: |
+          gh release view "$REL" >/dev/null 2>&1 || \
+            gh release create "$REL" --title "$REL" --latest=false \
+              --notes "Built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh release edit "$REL" --latest=false
+          shopt -s nullglob
+          assets=(out/*.tar.gz out/*.rpm out/rootfs-manifest.txt out/SHA256SUMS out/ROOTFS-BUILD-KEY.txt)
+          gh release upload "$REL" --clobber "${assets[@]}"
 
   publish_full_set:
     needs: [plan, build_kernel, resolve_rootfs, build_rootfs]
@@ -374,13 +671,26 @@ jobs:
       (needs.build_kernel.result == 'success' || needs.build_kernel.result == 'skipped') &&
       (needs.build_rootfs.result == 'success' || needs.build_rootfs.result == 'skipped') &&
       needs.resolve_rootfs.outputs.build_full_set == 'true'
-    uses: ./.github/workflows/full-set.yml
-    permissions:
-      contents: write
-    with:
-      kernel_release: ${{ needs.plan.outputs.kernel_tag }}
-      kernel_build_key: ${{ needs.plan.outputs.kernel_key }}
-      rootfs_release: ${{ needs.resolve_rootfs.outputs.rootfs_tag }}
-      port_version: ${{ needs.plan.outputs.port_version }}
-      release_tag: ${{ needs.resolve_rootfs.outputs.full_set_tag }}
-      full_set_key: ${{ needs.resolve_rootfs.outputs.full_set_key }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install RPM inspection tools
+        run: |
+          if ! command -v rpm >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y rpm
+          fi
+
+      - name: Validate, assemble, and publish the combined release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KREL: ${{ needs.plan.outputs.kernel_tag }}
+          RREL: ${{ needs.resolve_rootfs.outputs.rootfs_tag }}
+          REL: ${{ needs.resolve_rootfs.outputs.full_set_tag }}
+          PORT_VERSION: ${{ needs.plan.outputs.port_version }}
+          KERNEL_BUILD_KEY: ${{ needs.plan.outputs.kernel_key }}
+          EXPECTED_FULL_SET_KEY: ${{ needs.resolve_rootfs.outputs.full_set_key }}
+        run: bash tools/publish-x810-full-set.sh

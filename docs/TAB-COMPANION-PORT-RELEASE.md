@@ -18,8 +18,9 @@ Pushing a change to `main` runs `.github/workflows/port-updates.yml`. It:
    Tab Companion self-updater, including Fedora 44/aarch64/SM-X810 target,
    package NEVRA, size, and SHA-256;
 4. publishes `x810-fedora-port.zip` to a run-keyed public GitHub release;
-5. after success, removes older releases with the dedicated
-   `x810-fedora-port-build-` tag prefix.
+5. after success, removes only older releases with the dedicated
+   `x810-fedora-port-build-` tag prefix (a delayed older run cannot delete a
+   newer release).
 
 For a maintainer, that means: add the fix to `rootfs/overlay/`, run the local
 contract tests, then push to `main`. For a tablet user, open Tab Companion's
@@ -36,8 +37,9 @@ The package's RPM release changes on every run, so DNF sees a real upgrade even
 when `PORT_VERSION` is unchanged. After installation, its build metadata
 prevents offering that same successful build again.
 
-Kernel and boot-image changes are intentionally not included. They remain
-separate kernel RPM / TWRP workflows and are not written by the in-OS updater.
+Kernel and boot-image changes are intentionally not included in this updater.
+They are handled by the single image pipeline (`x810-fedora.yml`) and are not
+written by the in-OS updater.
 
 ## Full installer releases are a separate channel
 

@@ -149,15 +149,17 @@ fresh, and cache data is kept outside the installroot/image. Kernel source
 downloads are hash-verified before entering the cache. Cache misses affect
 build time, not release correctness.
 
-The component workflows (`kernel.yml`, `rootfs.yml`, and `full-set.yml`) are
-reusable implementation jobs and are not meant to be started individually.
-`port-updates.yml` remains a separate compatibility workflow: older Fedora
-Tab Companion clients query its successful run records and corresponding
+The user-facing `x810-fedora.yml` workflow is the single image pipeline: it
+plans content fingerprints, builds only changed kernel/rootfs components, then
+assembles the matched full-set release. Its build and publish jobs are defined
+in the same workflow; the deterministic full-set publisher is a checked-in
+shell script for readability and local testing. `port-updates.yml` remains a
+separate compatibility workflow: existing Fedora Tab Companion clients query
+its successful run records and corresponding
 `x810-fedora-port-build-<runid>` releases for in-place Linux support-RPM
-updates. It does not build the install image. `boot-bundle.yml` is likewise a
-reusable kernel build helper, not the user-facing entry point.
+updates. It does not build the install image.
 
-The full-set workflow publishes the updater index and a separate deterministic
+The full-set job publishes the updater index and a separate deterministic
 `x810-fedora-sm-x810-<tag>-clean-install.tar.gz` with a schema-1 manifest,
 SHA-256/size inventory, matched rootfs and kernel module release, and exactly
 four boot images. The bundle excludes `vbmeta` and recovery images. Integrity

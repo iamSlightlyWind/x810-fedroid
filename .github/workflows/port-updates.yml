@@ -3,6 +3,18 @@ name: Build X810 Fedora port update
 on:
   push:
     branches: [main]
+    paths:
+      - "PORT_VERSION"
+      - "rootfs/overlay/**"
+      - "specs/x810-fedora-port.spec"
+      - "tools/build-port-support-rpm.sh"
+      - "tools/make-port-update-bundle.py"
+      - "tools/stamp-port-metadata.py"
+      - "tools/write-port-build-info.py"
+      - "tools/test-port-metadata.py"
+      - "tools/test-port-update-bundle.py"
+      - "tools/test-port-release-index.py"
+      - ".github/workflows/port-updates.yml"
 
 permissions:
   contents: write
@@ -94,3 +106,19 @@ jobs:
               --latest=false
           fi
           gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --latest=false
+
+      - name: Remove superseded updater releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # A delayed run may finish after a newer one; only remove smaller IDs.
+          tags=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
+            --json tagName --jq '.[].tagName | select(startswith("x810-fedora-port-build-"))')
+          while IFS= read -r tag; do
+            [[ "$tag" =~ ^x810-fedora-port-build-([0-9]+)$ ]] || continue
+            old_run_id="${BASH_REMATCH[1]}"
+            if (( old_run_id < GITHUB_RUN_ID )); then
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            fi
+          done <<< "$tags"

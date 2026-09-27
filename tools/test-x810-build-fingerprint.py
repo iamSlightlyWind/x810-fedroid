@@ -40,7 +40,7 @@ class FingerprintTests(unittest.TestCase):
             ("tools/build-x810-clean-install-bundle.py", "bundle one\n"),
             ("tools/verify-x810-build-match.py", "match one\n"),
             ("tools/x810-build-fingerprint.py", "fingerprint one\n"),
-            (".github/workflows/full-set.yml", "full set one\n"),
+            ("tools/publish-x810-full-set.sh", "full set one\n"),
             ("tools/bdftool.py", "bdf one\n"),
         ):
             path = self.root / rel
@@ -131,6 +131,10 @@ class FingerprintTests(unittest.TestCase):
         self.assertNotEqual(base, self.key("full-set", **{**common, "full_set_recipe_revision": "2"}))
         (self.root / "tools/make-port-release-index.py").write_text("index two\n", encoding="utf-8")
         self.commit_change("tools/make-port-release-index.py")
+        after_index_change = self.key("full-set", **common)
+        (self.root / "tools/publish-x810-full-set.sh").write_text("full set two\n", encoding="utf-8")
+        self.commit_change("tools/publish-x810-full-set.sh")
+        self.assertNotEqual(after_index_change, self.key("full-set", **common))
         self.assertNotEqual(base, self.key("full-set", **common))
         self.assertEqual(kernel_before, self.key("kernel"))
         self.assertEqual(rootfs_before, self.key("rootfs"))
