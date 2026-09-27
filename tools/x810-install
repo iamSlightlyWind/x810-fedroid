@@ -196,12 +196,13 @@ def release_checks(release: dict[str, Any] | None) -> list[Check]:
     """Distinguish legacy full-set metadata from the clean-install bundle.
 
     ``port-release.json`` is retained for compatibility, but the current
-    Tab Companion Fedora updater reads per-build ``port-updates.yml`` releases.
+    Tab Companion Fedora updater reads per-build releases produced by the
+    support-package job in ``x810-fedora.yml``.
     A clean-install bundle is validated independently before install.
     """
     if release is None:
         return [
-            Check("Legacy release index", "INFO", "no combined release is available to inspect; current in-OS updates use the separate port-updates.yml channel"),
+            Check("Legacy release index", "INFO", "no combined release is available to inspect; in-OS support updates are a separate release channel from x810-fedora.yml"),
             Check("From-stock install", "BLOCKED", "no validated X810 dual-boot installer package is available"),
         ]
     assets = release.get("assets", [])
@@ -217,11 +218,11 @@ def release_checks(release: dict[str, Any] | None) -> list[Check]:
         update = Check(
             "Legacy release index",
             "INFO",
-            f"{tag} contains legacy port-release metadata; current Tab Companion Fedora updates use port-updates.yml, not this index",
+            f"{tag} contains legacy port-release metadata; Tab Companion Fedora updates use the run-keyed support release from x810-fedora.yml, not this index",
         )
     else:
         missing = ", ".join(sorted(feed_required - names))
-        update = Check("Legacy release index", "INFO", f"{tag} is missing legacy metadata {missing}; the current Fedora update channel is separate")
+        update = Check("Legacy release index", "INFO", f"{tag} is missing legacy metadata {missing}; the Fedora support update is published separately by x810-fedora.yml")
 
     clean_bundles = sorted(name for name in names
                            if name.startswith("x810-fedora-sm-x810-")

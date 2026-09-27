@@ -72,12 +72,141 @@ env:
   KVER: 7.2.0-gts9wifi
 
 concurrency:
-  # The manual reset wrapper holds the normal build lock while it flushes
-  # caches; its reusable image child uses a distinct lock to avoid deadlock.
+  # The manual reset wrapper holds the normal build lock; its reusable child
+  # uses a distinct lock to avoid parent/child deadlock.
   group: ${{ github.workflow == 'Reset X810 Fedora builds' && 'x810-fedora-build-release-reset-child' || 'x810-fedora-build-release' }}
   cancel-in-progress: false
 
 jobs:
+  # The in-OS support package and the full bootable image are separate jobs in
+  # this one release workflow. They run independently, so a userspace fix does
+  # not wait for the kernel/rootfs build; publication pruning is deferred until
+  # the complete push workflow succeeds so a failed image build cannot remove
+  # the last update visible to installed tablets.
+  build_port_update:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      FEDORA_VERSION: "44"
+      BUILD_RUN_ID: ${{ github.run_id }}
+      BUILD_RUN_NUMBER: ${{ github.run_number }}
+      BUILD_COMMIT: ${{ github.sha }}
+      BUILD_BRANCH: ${{ github.ref_name }}
+      PORT_VERSION_INPUT: ${{ inputs.port_version || '' }}
+    steps:
+      - name: Check out the workflow commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Run updater contract tests
+        run: |
+          set -euo pipefail
+          bash -n tools/build-port-support-rpm.sh
+          python3 tools/test-port-metadata.py
+          python3 tools/test-port-update-bundle.py
+          python3 tools/test-port-release-index.py
+
+      - name: Restore Fedora 44 DNF tool cache
+        id: restore_port_dnf
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-dnf-port-cache
+          # Bump toolchain-v1 if the Fedora package install list below changes.
+          key: x810-dnf-port-${{ runner.arch }}-fedora44-toolchain-v1
+
+      - name: Stage the versioned overlay and this build identity
+        run: |
+          set -euo pipefail
+          port_version="$PORT_VERSION_INPUT"
+          if [ -z "$port_version" ]; then port_version="$(tr -d '\r\n ' < PORT_VERSION)"; fi
+          [[ "$port_version" =~ ^(0|[1-9][0-9]{0,19})\.(0|[1-9][0-9]{0,19})\.(0|[1-9][0-9]{0,19})$ ]]
+          echo "PORT_VERSION=$port_version" >> "$GITHUB_ENV"
+          mkdir -p _ci/rootfs/usr/share/tab-companion _ci/out _ci/release
+          cp rootfs/overlay/usr/share/tab-companion/port.json \
+            _ci/rootfs/usr/share/tab-companion/port.json
+          python3 tools/stamp-port-metadata.py _ci/rootfs "$port_version" "$FEDORA_VERSION"
+          python3 tools/write-port-build-info.py \
+            _ci/rootfs/usr/share/tab-companion/port-build.json \
+            "$port_version" "$BUILD_RUN_ID" "$BUILD_RUN_NUMBER" "$BUILD_COMMIT" "$BUILD_BRANCH"
+
+      - name: Build the noarch Fedora support RPM
+        id: build_port_rpm
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/x810-dnf-port-cache"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" -w /work \
+            -v "$RUNNER_TEMP/x810-dnf-port-cache:/x810-dnf-cache" \
+            -e PORT_VERSION -e BUILD_RUN_NUMBER \
+            fedora:44 bash -euc '
+              dnf -y \
+                --setopt=cachedir=/x810-dnf-cache \
+                --setopt=system_cachedir=/x810-dnf-cache \
+                --setopt=keepcache=True \
+                install rpm-build tar findutils python3 coreutils
+              bash tools/build-port-support-rpm.sh \
+                _ci/rootfs "$PORT_VERSION" _ci/out \
+                "1000000.${BUILD_RUN_NUMBER}" \
+                _ci/rootfs/usr/share/tab-companion/port-build.json
+            '
+          sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/x810-dnf-port-cache"
+
+      - name: Finalize DNF dependency cache
+        id: finalize_port_dnf
+        if: ${{ always() && !cancelled() }}
+        run: |
+          set -euo pipefail
+          cache_dir="$RUNNER_TEMP/x810-dnf-port-cache"
+          mkdir -p "$cache_dir"
+          sudo chown -R "$(id -u):$(id -g)" "$cache_dir"
+          find "$cache_dir" -type f \( -name '*.part' -o -name '*.tmp' \) -delete
+          if find "$cache_dir" -type f -print -quit | grep -q .; then
+            echo "has_cache=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_cache=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save Fedora 44 DNF tool cache
+        if: ${{ always() && !cancelled() && steps.restore_port_dnf.outputs.cache-hit != 'true' && steps.finalize_port_dnf.outcome == 'success' && steps.finalize_port_dnf.outputs.has_cache == 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-dnf-port-cache
+          key: x810-dnf-port-${{ runner.arch }}-fedora44-toolchain-v1
+
+      - name: Install RPM inspection tool for the bundle manifest
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes rpm
+
+      - name: Create updater manifest and ZIP
+        run: |
+          set -euo pipefail
+          mapfile -t rpms < <(find _ci/out -maxdepth 1 -type f -name 'x810-fedora-port-*.noarch.rpm' -print)
+          [[ ${#rpms[@]} -eq 1 ]]
+          python3 tools/make-port-update-bundle.py \
+            --rpm "${rpms[0]}" \
+            --build-info _ci/rootfs/usr/share/tab-companion/port-build.json \
+            --output _ci/release/x810-fedora-port.zip
+
+      - name: Publish the run-keyed port support release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="x810-fedora-port-build-${GITHUB_RUN_ID}"
+          asset=_ci/release/x810-fedora-port.zip
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$tag" "$asset" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "X810 Fedora port update #${GITHUB_RUN_NUMBER}" \
+              --notes "Tab Companion updater package for Fedora 44 on SM-X810. Kernel and boot images are not included." \
+              --latest=false
+          fi
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --latest=false
+
   plan:
     runs-on: ubuntu-24.04
     outputs:
@@ -722,3 +851,30 @@ jobs:
           KERNEL_BUILD_KEY: ${{ needs.plan.outputs.kernel_key }}
           EXPECTED_FULL_SET_KEY: ${{ needs.resolve_rootfs.outputs.full_set_key }}
         run: bash tools/publish-x810-full-set.sh
+
+  prune_port_update_releases:
+    needs: [plan, build_port_update, build_kernel, resolve_rootfs, build_rootfs, publish_full_set]
+    if: >-
+      always() && github.event_name == 'push' &&
+      needs.plan.result == 'success' && needs.build_port_update.result == 'success' &&
+      (needs.build_kernel.result == 'success' || needs.build_kernel.result == 'skipped') &&
+      needs.resolve_rootfs.result == 'success' &&
+      (needs.build_rootfs.result == 'success' || needs.build_rootfs.result == 'skipped') &&
+      (needs.publish_full_set.result == 'success' || needs.publish_full_set.result == 'skipped')
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Remove superseded updater releases after the complete build succeeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tags=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
+            --json tagName --jq '.[].tagName | select(startswith("x810-fedora-port-build-"))')
+          while IFS= read -r tag; do
+            [[ "$tag" =~ ^x810-fedora-port-build-([0-9]+)$ ]] || continue
+            old_run_id="${BASH_REMATCH[1]}"
+            if (( old_run_id < GITHUB_RUN_ID )); then
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            fi
+          done <<< "$tags"

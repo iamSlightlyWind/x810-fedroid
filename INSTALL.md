@@ -149,15 +149,19 @@ fresh, and cache data is kept outside the installroot/image. Kernel source
 downloads are hash-verified before entering the cache. Cache misses affect
 build time, not release correctness.
 
-The user-facing `x810-fedora.yml` workflow is the single image pipeline: it
-plans content fingerprints, builds only changed kernel/rootfs components, then
-assembles the matched full-set release. Its build and publish jobs are defined
-in the same workflow; the deterministic full-set publisher is a checked-in
-shell script for readability and local testing. `port-updates.yml` remains a
-separate compatibility workflow: existing Fedora Tab Companion clients query
-its successful run records and corresponding
-`x810-fedora-port-build-<runid>` releases for in-place Linux support-RPM
-updates. It does not build the install image.
+The user-facing `x810-fedora.yml` workflow is the single image and port-update
+pipeline: it plans content fingerprints, builds only changed kernel/rootfs
+components, assembles the matched full-set release, and independently builds
+the updater-installable support RPM in a separate job. Both the image and
+support-package releases are published from this workflow. Existing installed
+Tab Companion versions that still name the retired `port-updates.yml` are
+mapped to `x810-fedora.yml` by the app updater compatibility path. The
+deterministic full-set publisher remains a checked-in shell script for
+readability and local testing.
+
+The manual reset workflow forces source rebuilds and prunes old published
+releases/artifacts, but preserves Actions dependency caches (kernel ccache and
+Fedora package caches) to keep the rebuild efficient.
 
 The full-set job publishes the updater index and a separate deterministic
 `x810-fedora-sm-x810-<tag>-clean-install.tar.gz` with a schema-1 manifest,

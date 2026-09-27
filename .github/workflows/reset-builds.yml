@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       confirmation:
-        description: Type RESET X810 FEDORA BUILDS to rebuild every component and prune prior releases
+        description: Type RESET X810 FEDORA BUILDS to rebuild every component and prune old releases (dependency caches are kept)
         required: true
         type: string
 
@@ -12,14 +12,14 @@ permissions:
   actions: write
   contents: write
 
-# Hold the same lock as ordinary image builds while clearing caches. The
-# reusable image child has its own lock to avoid parent/child deadlock.
+# Serialize the reset against ordinary builds. The combined reusable workflow
+# child has its own lock to avoid parent/child deadlock. Build caches are kept.
 concurrency:
   group: x810-fedora-build-release
   cancel-in-progress: false
 
 jobs:
-  validate-and-clear-caches:
+  validate-reset:
     runs-on: ubuntu-24.04
     steps:
       - name: Require explicit destructive-action confirmation
@@ -31,27 +31,12 @@ jobs:
             echo "Reset is allowed only from main." >&2; exit 1;
           }
           [[ "$CONFIRMATION" == "RESET X810 FEDORA BUILDS" ]] || {
-            echo "Type the exact confirmation phrase; no caches or releases were changed." >&2
+            echo "Type the exact confirmation phrase; no releases were changed." >&2
             exit 1
           }
 
-      - name: Flush old GitHub Actions build caches
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          ids=$(gh api --paginate \
-            "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100" \
-            --jq '.actions_caches[].id')
-          while IFS= read -r id; do
-            [[ "$id" =~ ^[0-9]+$ ]] || continue
-            gh api --method DELETE \
-              "repos/$GITHUB_REPOSITORY/actions/caches/$id" >/dev/null
-          done <<< "$ids"
-          echo "Cleared the repository's old Actions caches."
-
   full-image:
-    needs: validate-and-clear-caches
+    needs: validate-reset
     uses: ./.github/workflows/x810-fedora.yml
     permissions:
       contents: write
@@ -59,14 +44,8 @@ jobs:
       force_rebuild: true
       desktop: gnome
 
-  support-rpm:
-    needs: validate-and-clear-caches
-    uses: ./.github/workflows/port-updates.yml
-    permissions:
-      contents: write
-
   prune-old-releases:
-    needs: [full-image, support-rpm]
+    needs: [full-image]
     if: success()
     runs-on: ubuntu-24.04
     steps:
@@ -77,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           latest_push_run=$(gh api \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/port-updates.yml/runs?branch=main&event=push&status=completed&per_page=100" \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/x810-fedora.yml/runs?branch=main&event=push&status=completed&per_page=100" \
             --jq '[.workflow_runs[] | select(.conclusion == "success")] | max_by(.run_number).id // empty' 2>/dev/null || true)
           keep_push_tag=""
           [[ -z "$latest_push_run" ]] || keep_push_tag="x810-fedora-port-build-${latest_push_run}"
@@ -103,4 +82,4 @@ jobs:
                 ;;
             esac
           done <<< "$tags"
-          echo "Kept the freshly rebuilt kernel, rootfs, full-set, and support-RPM releases."
+          echo "Kept this reset's rebuilt kernel, rootfs, full-set, and support-RPM releases plus the latest push updater; dependency caches were preserved."

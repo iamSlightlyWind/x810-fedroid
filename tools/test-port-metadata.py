@@ -32,7 +32,7 @@ class PortMetadataTests(unittest.TestCase):
         self.assertEqual(result["version"], "unknown")
         self.assertEqual(result["os_version"], "44")
         self.assertEqual(result["port_id"], "x810-fedora")
-        self.assertEqual(result["workflow_file"], "port-updates.yml")
+        self.assertEqual(result["workflow_file"], "x810-fedora.yml")
         self.assertEqual(result["branch"], "main")
         self.assertEqual(result["artifact_name"], "x810-fedora-port")
         self.assertIs(result["public_release"], True)

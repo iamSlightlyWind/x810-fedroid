@@ -2,8 +2,9 @@
 """Create the legacy/full-set schema-1 port-release.json for one support RPM.
 
 The combined full-set release continues to carry this index for installer
-validation and compatibility. The in-OS Tab Companion port updater now consumes
-the push-to-main run-keyed public build release produced by port-updates.yml.
+validation and compatibility. The in-OS Tab Companion updater consumes the
+run-keyed public support-package release produced by the support job in
+x810-fedora.yml.
 """
 import argparse
 import hashlib

@@ -124,7 +124,7 @@ class InstallerTests(unittest.TestCase):
     def test_release_check_distinguishes_legacy_index_from_clean_installer(self):
         checks = installer.release_checks(None)
         self.assertEqual([check.state for check in checks], ["INFO", "BLOCKED"])
-        self.assertIn("separate port-updates.yml", checks[0].detail)
+        self.assertIn("separate release channel from x810-fedora.yml", checks[0].detail)
 
         # The full-set index is compatibility metadata, not the current
         # Tab Companion port-update feed or a package that installs Fedora.
@@ -135,7 +135,7 @@ class InstallerTests(unittest.TestCase):
         update, install = installer.release_checks(release)
         self.assertEqual(update.state, "INFO")
         self.assertIn("legacy port-release metadata", update.detail)
-        self.assertIn("port-updates.yml", update.detail)
+        self.assertIn("x810-fedora.yml", update.detail)
         self.assertEqual(install.state, "BLOCKED")
         self.assertIn("install Fedora from stock Android", install.detail)
 

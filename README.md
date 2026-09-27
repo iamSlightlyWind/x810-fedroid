@@ -59,11 +59,12 @@ and verifies the image/RPM contract before publishing; unknown or mismatched
 images cannot become combined releases. The rootfs build downloads its kernel
 RPM from a named release of this X810 repository, and full-set assembly checks
 the exact RPM bytes and firmware digest against the boot bundle metadata, not
-just matching version strings. A separate push-to-main workflow publishes
-only the overlay support RPM for Tab Companion's port updater and prunes older
-updater releases after success. The full-set release still carries
+just matching version strings. The combined `x810-fedora.yml` workflow has a
+separate support-package job that publishes only the overlay RPM for Tab
+Companion's port updater; it prunes older updater releases only after the
+complete workflow succeeds. The full-set release still carries
 `port-release.json` as legacy compatibility metadata and remains the GitHub
 `latest` release. The clean installer validates the self-contained manifest
 inside its clean-install bundle; the current in-OS Fedora updater uses the
-separate per-build `port-updates.yml` release channel. See
+separate per-build release channel from the support-package job. See
 [`docs/TAB-COMPANION-PORT-RELEASE.md`](docs/TAB-COMPANION-PORT-RELEASE.md).
