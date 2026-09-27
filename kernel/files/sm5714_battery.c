@@ -34,6 +34,8 @@
 #include <linux/power_supply.h>
 #include <linux/workqueue.h>
 
+#include "x810_pd_limits.h"
+
 #define SM5714_MUIC_I2C_ADDR		0x25
 #define SM5714_FG_I2C_ADDR		0x71
 
@@ -491,13 +493,21 @@ int sm5714_battery_set_pd_contract(unsigned int mv, unsigned int ma)
 	struct sm5714_battery *sm;
 	int ret = 0;
 
-	if ((mv && (mv < 5000 || mv > 9000)) || ma > 3000)
-		return -ERANGE;
-
 	mutex_lock(&sm5714_global_lock);
 	sm = sm5714_primary;
 	if (!sm) {
 		ret = -EPROBE_DEFER;
+		goto out;
+	}
+	/*
+	 * Fixed-PD operation is limited to the board's 5/9 V, 3 A sink PDOs.
+	 * While the SM5440 has Q4 open, also record its negotiated PPS point up
+	 * to the pump's 10.5 V OVP margin and its supported 5 A ceiling.  The
+	 * default requester remains 3 A and TCPM rejects values above the source
+	 * APDO before transmitting a Request.
+	 */
+	if (!x810_pd_contract_is_valid(sm->direct_charging, mv, ma)) {
+		ret = -ERANGE;
 		goto out;
 	}
 

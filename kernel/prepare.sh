@@ -76,6 +76,7 @@ cp "$here/files/wacom_wez01.h" include/linux/
 
 # Silicon Mitus SM5714 charger / fuel gauge.
 cp "$here/files/sm5714_battery.c" drivers/power/supply/
+cp "$here/files/x810_pd_limits.h" drivers/power/supply/
 grep -q 'BATTERY_SM5714' drivers/power/supply/Kconfig || sed -i '/^endif # POWER_SUPPLY$/i \
 config BATTERY_SM5714\
 \ttristate "Silicon Mitus SM5714 charger and fuel gauge"\

@@ -20,6 +20,8 @@
 #include <linux/suspend.h>
 #include <linux/workqueue.h>
 
+#include "x810_pd_limits.h"
+
 /*
  * Interrupt latches.  They are read-to-clear, and they are the only thing that
  * says *why* the chip cut the pump off -- otherwise a stop is just "CHG_ON went
@@ -92,8 +94,8 @@
  * cable and an adapter that grants it can go higher; whatever the source refuses
  * is discovered at run time by walking down from this value.
  */
-#define SM5440_MAX_PPS_MA		3000
-#define SM5440_PPS_CAP_MA		5000
+#define SM5440_MAX_PPS_MA		X810_PPS_DEFAULT_MA
+#define SM5440_PPS_CAP_MA		X810_PPS_MAX_MA
 #define SM5440_MIN_PPS_MA		1800
 #define SM5440_PPS_STEP_MA		250
 #define SM5440_IBUS_MARGIN_MA		300
@@ -125,7 +127,7 @@ MODULE_PARM_DESC(max_pps_ma,
  * 3 A x 320 mOhm = 960 mV on top of twice the cell voltage -- so clamping lower
  * would starve the pump exactly where the current matters.
  */
-#define SM5440_MAX_PPS_MV		10500
+#define SM5440_MAX_PPS_MV		X810_PPS_MAX_MV
 
 /*
  * Direct charging is opt-in.
