@@ -130,6 +130,33 @@ def check(rootfs, manifest_path, version, rpm_path=None):
     files = subprocess.check_output(["rpm", "-qpl", str(package_path)], text=True).splitlines()
     if PORT_FILE not in files:
         fail("support RPM does not own port.json")
+    sensor_runtime_files = (
+        "/usr/libexec/iio-sensor-proxy",
+        "/usr/bin/monitor-sensor",
+        "/usr/bin/ssccli",
+        "/usr/lib64/libssc.so.2",
+        "/usr/lib/systemd/system/iio-sensor-proxy.service",
+        "/usr/lib/udev/rules.d/80-iio-sensor-proxy.rules",
+        "/usr/share/dbus-1/system.d/net.hadess.SensorProxy.conf",
+        "/usr/share/polkit-1/actions/net.hadess.SensorProxy.policy",
+    )
+    for sensor_file in sensor_runtime_files:
+        if sensor_file not in files:
+            fail(f"support RPM does not own the SSC sensor runtime file: {sensor_file}")
+    if not any(re.match(r"^/usr/lib64/libssc\.so\.[0-9]", item) for item in files):
+        fail("support RPM does not own the libssc runtime shared library")
+    provides = subprocess.check_output(
+        ["rpm", "-qp", "--provides", str(package_path)], text=True
+    ).splitlines()
+    if "iio-sensor-proxy = 3.9" not in provides:
+        fail("support RPM does not provide iio-sensor-proxy = 3.9")
+    if "libssc.so.2()(64bit)" not in provides:
+        fail("support RPM does not provide libssc.so.2 runtime ABI")
+    requires = subprocess.check_output(
+        ["rpm", "-qp", "--requires", str(package_path)], text=True
+    ).splitlines()
+    if "libssc.so.2()(64bit)" not in requires:
+        fail("support RPM does not declare its libssc.so.2 runtime requirement")
     for required_camera_file in (
         "/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so",
         HI1337_TUNING_FILE,
@@ -153,6 +180,10 @@ def check(rootfs, manifest_path, version, rpm_path=None):
     # Rootfs builds first copy the overlay unowned, then install this RPM to
     # make those exact existing files package-managed. Check that ownership
     # transfer succeeded for every packaged file (not just port.json).
+    for sensor_file in sensor_runtime_files:
+        image_file = rootfs / sensor_file.lstrip("/")
+        if not image_file.is_file():
+            fail(f"rootfs is missing the packaged sensor runtime file: {sensor_file}")
     for filename in files:
         image_file = rootfs / filename.lstrip("/")
         if not image_file.is_file():

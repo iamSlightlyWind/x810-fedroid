@@ -12,7 +12,7 @@ reused, and a retired number is simply absent rather than reassigned
 | 3 | Bluetooth lag under 2.4 GHz Wi-Fi | fixed — Samsung NVM/rampatch substituted for the generic ones |
 | 4 | Rear camera (13 MP HI1337 + DW9808 lens) | works — manual focus only; a fixed focus of 384 ships |
 | 4b | Front camera (12 MP HI1337) | works |
-| 5 | No rotation sensor | works — needed a patched `iio-sensor-proxy` |
+| 5 | No rotation sensor | partial — the port builds an SSC-linked proxy, but the installed tablet currently lacks QRTR service 400; see #25 |
 | 6 | USB debug link flaky | fixed — RNDIS gadget converted to ECM |
 | 7 | Weak 5 GHz Wi-Fi RX | fixed — board-data (BDF) substitution, ~47 dB improvement |
 | 9 | Discord/Roblox unreachable (DPI) | fixed — kernel rebuilt with `nfqueue` |
@@ -30,8 +30,8 @@ reused, and a retired number is simply absent rather than reassigned
 | 22 | GNOME camera clients cannot open `root:video` camera nodes | fixed in installer and support-RPM upgrade path; fresh-login/device validation pending |
 | 23 | No 120 Hz display mode | fixed — user confirmed 120 Hz works on-device; 60 Hz remains the default |
 | 24 | ADSP/sensorspd start ordering around panel coldboot recovery | fixed in source: the sensor-proxy unit requests `sensorspd` only after required panel recovery; live package update / clean-boot validation pending |
-| 25 | SSC QMI service absent; tablet rotation unavailable | open — live registry tree is normalized and `sensorspd` is active, but QRTR service 400 is absent; root cause remains below libssc/iio-sensor-proxy |
-| 26 | No GNOME power-profile/governor switcher | implemented in source with TuneD's PPD API on CPUFreq; update/install validation pending |
+| 25 | SSC QMI service absent; tablet rotation unavailable | open — current boot has `sensorspd` and `iio-sensor-proxy` inactive, the sensor wait unit failed, and QRTR service 400 is absent; source-side recovery changes remain unvalidated |
+| 26 | No GNOME power-profile/governor switcher | TuneD PPD API is live and exposes power-saver, balanced, and performance; GNOME UI/thermal behavior still needs owner validation |
 
 Haptics are also enabled in the kernel source (stock-active-high GPIO18 plus
 `gpio-vibra`), but still need a kernel update and on-device ff-rumble check.
@@ -98,15 +98,20 @@ port-owned HexagonFS tree `fastrpc:fastrpc` writable, then wait for the SSC
 endpoint before starting the desktop proxy. The tree now has the cached JSON
 mtimes and ownership expected by Samsung's registry code.
 
-On the remote tablet, the cache and registry were normalized and the
-`fastrpc`-owned daemon is active, but `qrtr-lookup 400` remains empty and
-`ssccli` reports that SSC QMI service is not found. QRTR service 66 / sensor-PD
-service registration is visible, so the remaining failure is below
-`iio-sensor-proxy` and is not explained by package ordering alone. The tablet
-was not rebooted and its ADSP firmware was not replaced. The next validation is
-a clean, correctly ordered boot with an on-device recovery path available;
-avoid remoteproc/ADSP restarts while the tablet is unattended because that can
-interrupt audio.
+The latest read-only check on the installed tablet found `gts9wifi-adsp-boot`
+active but `hexagonrpcd-adsp-sensorspd`, `iio-sensor-proxy`, and the sensor wait
+unit inactive/failed; `qrtr-lookup 400` returned no service. Earlier snapshots
+showed QRTR service 66, but that does not imply the required SSC service is
+registered. The root cause is still below `iio-sensor-proxy`; package ordering
+alone has not explained it.
+
+The next support update uses the same hash-locked `libssc`/`iio-sensor-proxy`
+builder as a clean image and adds an early-claim race guard in the proxy. This
+removes image-versus-update build drift and addresses one userspace race; it
+cannot create a missing QRTR service. The update has not yet been installed or
+validated on the tablet. Next, use a supervised, correctly ordered boot with a
+recovery path available; do not manually restart remoteproc or sensorspd while
+the tablet is unattended, since a failed attach can interrupt audio.
 
 ### 13 — Charging bypass on 25 W+ chargers
 

@@ -130,6 +130,8 @@ source_inputs_sha256() {
             sha256sum rootfs/build-rootfs.sh rootfs/stage-public-firmware.sh \
                 tools/bdftool.py tools/stamp-port-metadata.py \
                 tools/build-port-support-rpm.sh tools/build-libcamera-hi1337-ipa.sh \
+                tools/build-x810-sensor-proxy.sh tools/test-x810-sensor-proxy-claim-race.py \
+                tools/test-x810-sensor-proxy-stack.py \
                 tools/test-port-build-contract.py \
                 tools/verify-x810-rootfs-archive.py
             find rootfs/overlay specs -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
@@ -269,25 +271,6 @@ dnf -y -q "${dnf_repo_args[@]}" install systemd meson ninja-build gcc gcc-c++ gi
     libqmi-devel protobuf-c-devel qrtr-devel xz-devel \
     python3-devel python3-protobuf
 
-echo ">>> Building libssc 0.4.4 (not in Fedora)"
-# Same source the pmOS port uses; provides libssc.so + ssccli.
-# Upstream commit 0cf77b93b55752da34dca2dcecc06fca8665184b.
-sscdir="$(mktemp -d)"
-fetch_locked_source "libssc 0.4.4" \
-    "https://codeberg.org/DylanVanAssche/libssc/archive/0cf77b93b55752da34dca2dcecc06fca8665184b.tar.gz" \
-    716d6bd6b34d2d753060c6b54c9a87e34fae75b724c763bf9ef487efa3621587 \
-    "$sscdir"
-meson setup "$sscdir/build" "$sscdir" -Dprefix=/usr -Db_lto=true
-meson compile -C "$sscdir/build"
-DESTDIR="$sscdir/staging" meson install --no-rebuild -C "$sscdir/build"
-cp -a "$sscdir/staging/." "$rootfs/"
-# Also install libssc into the build container itself: the iio-sensor-proxy
-# meson check links against the .pc's libdir, which only resolves if the
-# library really exists at /usr/lib64 in the container.  Without this the
-# proxy silently builds the kernel-IIO backend and serves no sensors.
-cp -a "$sscdir/staging/." /
-export PKG_CONFIG_PATH="/usr/lib64/pkgconfig:/usr/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-
 echo ">>> Building pd-mapper 1.1 (not in Fedora)"
 # Binary only: the sm8550 ADSP boots without service-registry JSONs (verified
 # on the pmOS device).  Ships its own systemd unit.
@@ -336,22 +319,8 @@ fi
 # rpmdb entry; our libssc-linked build overwrites the files anyway.
 chroot "$rootfs" rpm -e --nodeps iio-sensor-proxy || true
 
-echo ">>> Building iio-sensor-proxy 3.9 with libssc support"
-# Fedora's own build may not link libssc; build it exactly like the pmOS port
-# (libssc + notify-slow-sensor-discovery + start-polling-claimed-while-starting).
-# Upstream tag 3.9 resolves to commit 0085ddf8ecb173a1c5fcf2344aa40e561125354f.
-ispdir="$(mktemp -d)"
-fetch_locked_source "iio-sensor-proxy 3.9" \
-    "https://gitlab.freedesktop.org/hadess/iio-sensor-proxy/-/archive/0085ddf8ecb173a1c5fcf2344aa40e561125354f/iio-sensor-proxy-0085ddf8ecb173a1c5fcf2344aa40e561125354f.tar.gz" \
-    800682aa591fc672e959d2f3a43d1f4f7160a4c1cdabffd0ebff2bb8f3bb29be \
-    "$ispdir"
-for p in "$repo_dir"/specs/iio-sensor-proxy-libssc/patches/*.patch; do
-    patch -d "$ispdir" -p1 < "$p"
-done
-meson setup "$ispdir/build" "$ispdir" -Dprefix=/usr -Dssc-support=enabled
-meson compile -C "$ispdir/build"
-DESTDIR="$ispdir/staging" meson install --no-rebuild -C "$ispdir/build"
-cp -a "$ispdir/staging/." "$rootfs/"
+echo ">>> Building shared, pinned SSC sensor stack for the image and update RPM"
+bash "$repo_dir/tools/build-x810-sensor-proxy.sh" "$rootfs"
 
 # hexagonrpcd units run as the fastrpc system user (Alpine pre-install equivalent)
 groupadd --root "$rootfs" -r fastrpc

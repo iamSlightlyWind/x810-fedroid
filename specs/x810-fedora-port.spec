@@ -12,6 +12,8 @@ Requires:       python3
 Requires:       device-mapper
 Requires:       libcamera-ipa%{?_isa} = 0.7.1-1.fc44
 Requires:       tuned-ppd
+Requires:       libssc.so.2()(64bit)
+Provides:       iio-sensor-proxy = 3.9
 
 Source0:        port-overlay.tar.gz
 Source1:        port-overlay.filelist
@@ -19,9 +21,10 @@ Source2:        port-license.txt
 
 %description
 Port-owned Fedora device integration for the Samsung Galaxy Tab S9+ Wi-Fi
-(SM-X810), including the X810 HI1337 libcamera software-IPA helper. The helper
-is built for Fedora 44 aarch64 against the exact Fedora libcamera 0.7.1 build.
-This package deliberately excludes the kernel, boot images, and firmware.
+(SM-X810), including its SSC-backed sensor proxy and the HI1337 libcamera
+software-IPA helper. The helper is built for Fedora 44 aarch64 against the
+exact Fedora libcamera 0.7.1 build. This package deliberately excludes the
+kernel, boot images, and firmware.
 
 %prep
 %setup -q -c -T
@@ -71,6 +74,12 @@ if command -v systemctl >/dev/null 2>&1; then
         fi
     fi
     systemctl daemon-reload >/dev/null 2>&1 || :
+    # The support RPM owns the pinned SSC-linked iio-sensor-proxy binary and
+    # service files. Refresh an already-running proxy after replacement so
+    # GNOME reclaims the sensor and receives the corrected startup properties.
+    if systemctl is-active --quiet iio-sensor-proxy.service; then
+        systemctl try-restart iio-sensor-proxy.service >/dev/null 2>&1 || :
+    fi
     # The Android super mapping and vendor mount are read-only. Enable and
     # start them after installing the support update; a missing/unsupported
     # LP layout is fail-closed and must not make the RPM transaction fail.

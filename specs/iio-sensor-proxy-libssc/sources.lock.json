@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "libssc": {
+    "version": "0.4.4",
+    "commit": "0cf77b93b55752da34dca2dcecc06fca8665184b",
+    "url": "https://codeberg.org/DylanVanAssche/libssc/archive/0cf77b93b55752da34dca2dcecc06fca8665184b.tar.gz",
+    "sha256": "716d6bd6b34d2d753060c6b54c9a87e34fae75b724c763bf9ef487efa3621587"
+  },
+  "iio_sensor_proxy": {
+    "version": "3.9",
+    "commit": "0085ddf8ecb173a1c5fcf2344aa40e561125354f",
+    "url": "https://gitlab.freedesktop.org/hadess/iio-sensor-proxy/-/archive/0085ddf8ecb173a1c5fcf2344aa40e561125354f/iio-sensor-proxy-0085ddf8ecb173a1c5fcf2344aa40e561125354f.tar.gz",
+    "sha256": "800682aa591fc672e959d2f3a43d1f4f7160a4c1cdabffd0ebff2bb8f3bb29be"
+  }
+}

@@ -112,16 +112,18 @@ jobs:
           set -euo pipefail
           bash -n tools/build-port-support-rpm.sh
           bash -n tools/build-libcamera-hi1337-ipa.sh
+          bash -n tools/build-x810-sensor-proxy.sh
           python3 tools/test-port-metadata.py
           python3 tools/test-port-update-bundle.py
+          python3 tools/test-x810-sensor-proxy-stack.py
 
       - name: Restore Fedora 44 DNF tool cache
         id: restore_port_dnf
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/x810-dnf-port-cache
-          # Bump toolchain-v2 if the Fedora package install list below changes.
-          key: x810-dnf-port-${{ runner.arch }}-fedora44-toolchain-v2
+          # Bump toolchain-v3 if the Fedora package install list below changes.
+          key: x810-dnf-port-${{ runner.arch }}-fedora44-toolchain-v3
 
       - name: Stage the versioned overlay and this build identity
         run: |
@@ -155,7 +157,9 @@ jobs:
                 install rpm-build tar findutils python3 coreutils cpio patch curl \
                 gcc-c++ meson ninja-build openssl openssl-devel libyaml-devel \
                 libevent-devel libjpeg-turbo-devel libtiff-devel gnutls-devel \
-                glib2-devel libudev-devel pkgconf-pkg-config systemd-devel \
+                glib2-devel libgudev-devel libudev-devel systemd-devel polkit-devel \
+                libqmi-devel protobuf-c-devel qrtr-devel xz-devel python3-devel \
+                python3-protobuf pkgconf-pkg-config \
                 python3-jinja2 python3-ply python3-pyyaml
               bash tools/build-port-support-rpm.sh \
                 _ci/rootfs "$PORT_VERSION" _ci/out \
@@ -184,7 +188,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/x810-dnf-port-cache
-          key: x810-dnf-port-${{ runner.arch }}-fedora44-toolchain-v2
+          key: x810-dnf-port-${{ runner.arch }}-fedora44-toolchain-v3
 
       - name: Install RPM inspection tool for the bundle manifest
         run: |
@@ -248,6 +252,8 @@ jobs:
           python3 tools/test-rootfs-repo-gpg.py
           python3 tools/test-rootfs-zram-config.py
           python3 tools/test-port-rpm-staging.py
+          python3 tools/test-x810-sensor-proxy-stack.py
+          python3 tools/test-x810-dmic-ucm.py
           python3 tools/test-x810-moonlight-v4l2.py
           python3 tools/test-x810-rootfs-archive.py
           python3 tools/test-x810-sensor-attach-recovery.py

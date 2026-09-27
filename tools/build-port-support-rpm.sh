@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the updater-installable Fedora support RPM from the X810 rootfs overlay
-# and its hash-pinned, Fedora 44 aarch64 HI1337 libcamera IPA.
+# Build the updater-installable Fedora support RPM from the X810 rootfs overlay,
+# its pinned SSC-backed sensor proxy stack, and the Fedora 44 aarch64 HI1337 IPA.
 # The kernel, boot chain, and firmware remain excluded.
 set -euo pipefail
 
@@ -91,6 +91,10 @@ mkdir -p "$top/BUILD" "$top/BUILDROOT" "$top/RPMS" \
 # Stage only the repository-owned overlay. Use the already-stamped rootfs
 # port.json instead of the source overlay's deliberately-unknown template.
 cp -a "$repo_dir/rootfs/overlay/." "$stage/"
+# Use the same source locks, patches and builder as the fresh rootfs. This
+# makes the slow-SSC/auto-rotation fix reach existing installs through the
+# existing single-RPM Tab Companion update channel.
+bash "$repo_dir/tools/build-x810-sensor-proxy.sh" "$stage" >&2
 # Fedora's systemd package owns these two machine-local configuration files.
 # They are staged into a fresh image, but claiming them from this separate
 # updater RPM creates duplicate ownership and breaks contract verification (or
@@ -161,6 +165,33 @@ if ! grep -Fxq '/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so' "$work/package
    ! grep -Fxq '/usr/share/licenses/x810-fedora-port/libcamera/LGPL-2.1-or-later.txt' "$work/package-files" || \
    ! grep -Fxq '/usr/share/licenses/x810-fedora-port/libcamera/BSD-2-Clause.txt' "$work/package-files"; then
 	echo "build-port-support-rpm: package omits the X810 libcamera helper/configuration" >&2
+	exit 1
+fi
+for required in \
+	/usr/libexec/iio-sensor-proxy \
+	/usr/bin/monitor-sensor \
+	/usr/bin/ssccli \
+	/usr/lib64/libssc.so.2 \
+	/usr/lib/systemd/system/iio-sensor-proxy.service \
+	/usr/lib/udev/rules.d/80-iio-sensor-proxy.rules \
+	/usr/share/dbus-1/system.d/net.hadess.SensorProxy.conf \
+	/usr/share/polkit-1/actions/net.hadess.SensorProxy.policy; do
+	if ! grep -Fxq "$required" "$work/package-files"; then
+		echo "build-port-support-rpm: package omits the SSC sensor stack file $required" >&2
+		exit 1
+	fi
+done
+if ! grep -Eq '^/usr/lib64/libssc\.so\.[0-9]' "$work/package-files"; then
+	echo "build-port-support-rpm: package omits the libssc runtime shared library" >&2
+	exit 1
+fi
+if ! rpm -qp --provides "$rpm_path" | grep -Fxq 'iio-sensor-proxy = 3.9'; then
+	echo "build-port-support-rpm: package does not provide the iio-sensor-proxy capability" >&2
+	exit 1
+fi
+if ! rpm -qp --provides "$rpm_path" | grep -Fxq 'libssc.so.2()(64bit)' || \
+   ! rpm -qp --requires "$rpm_path" | grep -Fxq 'libssc.so.2()(64bit)'; then
+	echo "build-port-support-rpm: package does not expose/require its libssc.so.2 runtime ABI" >&2
 	exit 1
 fi
 if grep -Fxq '/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so.sign' "$work/package-files"; then
