@@ -213,7 +213,7 @@ if [ "$desktop" = "gnome" ]; then
     dnf -y --installroot="$rootfs" --releasever="$fedora_release" \
         --use-host-config "${dnf_repo_args[@]}" \
         --setopt=install_weak_deps=False --setopt=tsflags=nodocs install \
-        '@^workstation-product-environment'
+        '@^workstation-product-environment' snapshot
     # The first-login welcome wizard has nothing to offer in a pre-provisioned
     # image; drop it so the first boot goes straight to the gdm login.
     dnf -y --installroot="$rootfs" --use-host-config "${dnf_repo_args[@]}" -q remove \
