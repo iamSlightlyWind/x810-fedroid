@@ -125,23 +125,21 @@ mapping.
 
 Not enforced.
 
-### File capabilities are lost when packing the rootfs
+### File capabilities in rootfs archives
 
-The rootfs is packed with plain `tar -C "$rootfs" -czf "$archive" .` — with no
-`--xattrs`, so `security.capability` xattrs are dropped. `rpm -Va` lists exactly
-ten capability mismatches (`/usr/bin/newuidmap`, `/usr/bin/newgidmap`, several
-`sssd` helpers, `/usr/bin/arping`, `/usr/bin/clockdiff`, `/usr/bin/suexec`,
-`/usr/bin/mtr-packet`, `snap-confine`), and the live system's `newuidmap` and
-`arping` have no `security.capability` xattr at all.
+The previous release archive omitted `security.capability` xattrs; `rpm -Va`
+found ten mismatches, including `/usr/bin/newuidmap`, `/usr/bin/newgidmap`,
+`/usr/bin/arping` and `/usr/bin/mtr-packet`. The build now records these xattrs
+in the PAX archive. Host-side GNU tar restores them for the legacy SD-card
+image path. TWRP's bundled Toybox tar does not restore them, so both TWRP-based
+installers now use the installed RPM database's `%{FILECAPS}` metadata and
+`setcap` inside the newly extracted Fedora rootfs.
 
-The failure is **invisible** because unprivileged `ping` still works — the
-`net.ipv4.ping_group_range` sysctl masks it. What actually breaks is rootless
-containers and `unshare -r`, which need `newuidmap`/`newgidmap` to carry their
-capabilities.
-
-Fixing it needs `--xattrs` on **both** the packing and every extraction path,
-including TWRP's `tar` on the flashing path, so it has to be verified on the
-device rather than only in the build.
+Regression tests cover the build/extraction contracts, the GNU-tar xattr
+round-trip, and syntax of the installers. This is fixed in source but still
+needs a fresh install followed by `rpm -Va` and a rootless `unshare -r` check on
+the tablet; the currently running installation has not been changed by this
+source update.
 
 ---
 

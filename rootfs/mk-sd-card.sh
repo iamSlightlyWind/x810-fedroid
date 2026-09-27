@@ -80,7 +80,9 @@ mount "$bp" "$m_boot"
 echo ">>> root partition"
 m_root="$(mktemp -d)"
 mount "$rp" "$m_root"
-tar xzf "$rootfs_tar" -C "$m_root"
+# The release rootfs tar stores security.capability as a GNU PAX xattr.
+# Preserve it when extracting to ext4 (especially newuidmap/newgidmap).
+tar --xattrs --xattrs-include=security.capability -xzf "$rootfs_tar" -C "$m_root"
 # The shared Fedora build is adapted for the supported X810 UFS PARTLABEL.
 # Keep this legacy SD-debug image self-consistent with its UUID-based initramfs.
 cat > "$m_root/etc/fstab" <<EOF

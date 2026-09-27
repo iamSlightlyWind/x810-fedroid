@@ -16,6 +16,8 @@ SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 verifier = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(verifier)
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def add_file(archive, name, data):
     info = tarfile.TarInfo(name)
@@ -55,6 +57,19 @@ def make_archive(path, *, fstab=None, port=None, extra=None, os_release_link=Tru
 
 
 class RootfsArchiveTests(unittest.TestCase):
+    def test_capabilities_are_serialized_and_restored_on_twrp_install_path(self):
+        # The actual gts9p TWRP ramdisk bundles Toybox tar, which only restores
+        # security.selinux PAX metadata. Keep the release builder and install
+        # path coupled to the GNU-tar xattr archive + RPM metadata restoration
+        # contract, rather than pretending TWRP supports --xattrs.
+        build_script = (REPO_ROOT / "rootfs/build-rootfs.sh").read_text()
+        install_script = (REPO_ROOT / "tools/x810-install").read_text()
+        self.assertIn("--xattrs --xattrs-include='security.capability'", build_script)
+        self.assertIn("chroot {shlex.quote(mountpoint)} /usr/bin/bash -c", install_script)
+        self.assertIn("rpm --noplugins -qa --qf '[%{FILECAPS}\\t%{FILENAMES}\\n]'", install_script)
+        self.assertIn('/usr/bin/setcap "$caps" "$path"', install_script)
+        self.assertIn("gzip -dc | tar -xpf -", install_script)
+
     def test_resolves_overlong_relative_symlink_within_mounted_root(self):
         self.assertEqual(
             verifier.resolve_link(

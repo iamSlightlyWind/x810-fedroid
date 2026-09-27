@@ -695,6 +695,7 @@ archive="$outdir/x810-fedora-$fedora_release-rootfs.tar.gz"
 # to be bit-for-bit reproducible across every host/kernel.
 tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
     --format=pax --pax-option=delete=atime,delete=ctime \
+    --xattrs --xattrs-include='security.capability' \
     -C "$rootfs" -cf - . | gzip -n -9 > "$archive"
 python3 "$repo_dir/tools/verify-x810-rootfs-archive.py" \
     "$archive" --manifest "$outdir/rootfs-manifest.txt"

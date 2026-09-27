@@ -155,6 +155,29 @@ if [ -f /tmp/gts9-modules.tar.gz ]; then
     mkdir -p /rmnt/usr/lib/modules
     tar xzf /tmp/gts9-modules.tar.gz -C /rmnt/usr/lib/modules
 fi
+# The TWRP bundled Toybox tar ignores SCHILY.xattr.* PAX records, so the
+# rootfs security.capability attributes are not restored by the
+# extraction above. Reapply the capabilities recorded in the Fedora RPM DB;
+# this only touches paths whose installed-package metadata declares caps.
+cat > /rmnt/tmp/gts9-restore-filecaps.sh <<\CAPS
+set -euo pipefail
+test -x /usr/bin/rpm && test -x /usr/bin/setcap
+tmpdir=$(/usr/bin/mktemp -d /tmp/gts9-caprestore.XXXXXX)
+cleanup() { /usr/bin/rm -rf "$tmpdir"; }
+trap cleanup EXIT
+/usr/bin/rpm --noplugins -qa --qf "[%{FILECAPS}\\t%{FILENAMES}\\n]" > "$tmpdir/rpm-files"
+found=0
+while read -r caps path; do
+    [ -n "$path" ] || continue
+    [ "$caps" != "(none)" ] || continue
+    [ -e "$path" ] || { echo "capability-bearing file is missing: $path" >&2; exit 1; }
+    /usr/bin/setcap "$caps" "$path"
+    found=1
+done < "$tmpdir/rpm-files"
+[ "$found" -eq 1 ] || { echo "RPM database has no file-capability records" >&2; exit 1; }
+CAPS
+chroot /rmnt /usr/bin/bash /tmp/gts9-restore-filecaps.sh
+rm -f /rmnt/tmp/gts9-restore-filecaps.sh
 # Root-only fstab: the tarball one mounts /boot by the SD ext2 UUID, and
 # no such partition exists here (90 s device timeout, then emergency mode).
 printf "UUID='"$root_uuid"' /     ext4 defaults 0 0\n" > /rmnt/etc/fstab
