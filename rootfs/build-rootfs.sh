@@ -562,7 +562,6 @@ for unit in \
     pd-mapper \
     gts9wifi-wait-sensor-proxy \
     gts9wifi-bt-provision bluetooth gts9wifi-mem-reclaim \
-    gts9wifi-adsp-boot \
     gts9wifi-panel-coldboot-recover \
     gts9wifi-grow-rootfs \
     gts9wifi-usb-net gts9wifi-wifi-recover gts9wifi-sensor-registry-perms \
@@ -572,6 +571,11 @@ do
     systemctl --root="$rootfs" enable "$unit" >/dev/null 2>&1 \
         || echo "    WARN: unit not found (check name after hexagonrpcd patch): $unit"
 done
+# Enforce the known-safe default even if a package preset or earlier image
+# enabled these links. Do not mask them: they remain available for manual,
+# one-at-a-time diagnostics once ADSP startup is understood.
+systemctl --root="$rootfs" disable gts9wifi-adsp-boot.service \
+    hexagonrpcd-adsp-sensorspd.service >/dev/null 2>&1 || true
 # Deliberately NOT enabled, matching hard-won pmOS experience:
 # - hexagonrpcd-adsp-sensorspd: pulls in gts9wifi-adsp-boot via the hexagonfs
 #   drop-in's Requires=; the ADSP start can hang or reset the SoC, and doing

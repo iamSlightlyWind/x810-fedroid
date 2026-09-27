@@ -39,6 +39,24 @@ class SupportRpmStagingTests(unittest.TestCase):
         self.assertIn('usermod -a -G video "$desktop_user"', spec)
         self.assertIn("--groups wheel,video", (ROOT / "tools/x810-install").read_text())
 
+    def test_adsp_autostart_is_disabled_in_image_and_on_package_update(self):
+        builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")
+        enabled_units = builder.split("for unit in \\\n", 1)[1].split("\ndo\n", 1)[0]
+        self.assertNotIn("gts9wifi-adsp-boot", enabled_units)
+        self.assertIn(
+            "disable gts9wifi-adsp-boot.service",
+            builder,
+        )
+
+        preset = (ROOT / "rootfs/overlay/usr/lib/systemd/system-preset/"
+                  "85-gts9wifi.preset").read_text(encoding="utf-8")
+        self.assertIn("disable gts9wifi-adsp-boot.service", preset)
+        self.assertIn("disable hexagonrpcd-adsp-sensorspd.service", preset)
+
+        spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
+        self.assertIn("systemctl disable --quiet gts9wifi-adsp-boot.service", spec)
+        self.assertIn("hexagonrpcd-adsp-sensorspd.service", spec)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

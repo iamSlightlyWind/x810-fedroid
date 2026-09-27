@@ -37,6 +37,11 @@ if command -v getent >/dev/null 2>&1 && command -v usermod >/dev/null 2>&1; then
 fi
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || :
+    # This port's ADSP boot path is intentionally manual: it has previously
+    # hung/reset the tablet, especially when raced with panel coldboot resume.
+    # Update the preset and remove old autostart links on existing installs.
+    systemctl disable --quiet gts9wifi-adsp-boot.service \
+        hexagonrpcd-adsp-sensorspd.service >/dev/null 2>&1 || :
 fi
 if command -v udevadm >/dev/null 2>&1; then
     udevadm control --reload >/dev/null 2>&1 || :
