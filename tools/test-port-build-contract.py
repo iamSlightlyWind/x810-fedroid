@@ -119,6 +119,9 @@ def check(rootfs, manifest_path, version, rpm_path=None):
     files = subprocess.check_output(["rpm", "-qpl", str(package_path)], text=True).splitlines()
     if PORT_FILE not in files:
         fail("support RPM does not own port.json")
+    for vendor_config in ("/etc/locale.conf", "/etc/machine-info"):
+        if vendor_config in files:
+            fail(f"support RPM must not claim Fedora systemd config: {vendor_config}")
     if "/usr/lib/systemd/zram-generator.conf" in files:
         fail("support RPM must not replace Fedora's zram-generator-defaults file")
     if "/etc/systemd/zram-generator.conf" not in files:

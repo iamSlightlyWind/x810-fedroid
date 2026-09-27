@@ -90,6 +90,12 @@ mkdir -p "$top/BUILD" "$top/BUILDROOT" "$top/RPMS" \
 # Stage only the repository-owned overlay. Use the already-stamped rootfs
 # port.json instead of the source overlay's deliberately-unknown template.
 cp -a "$repo_dir/rootfs/overlay/." "$stage/"
+# Fedora's systemd package owns these two machine-local configuration files.
+# They are staged into a fresh image, but claiming them from this separate
+# updater RPM creates duplicate ownership and breaks contract verification (or
+# later updates). Keep the tablet identity in the image only; leave Fedora's
+# locale default entirely alone.
+rm -f "$stage/etc/machine-info" "$stage/etc/locale.conf"
 install -Dm0644 "$rootfs/usr/share/tab-companion/port.json" \
 	"$stage/usr/share/tab-companion/port.json"
 if [ -f "$build_info" ]; then
