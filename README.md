@@ -117,10 +117,13 @@ The app includes:
   It checks that the images target X810, verifies them and checks partition
   writes. It does not reboot automatically; reboot manually after a successful
   switch. Android's encrypted `userdata` usage cannot be measured from Fedora.
-- **Keyboard troubleshooting:** collects diagnostics and can reset the
-  EF-DX815 STM32 controller when input stops. It does not read key values or
-  change firmware/storage; input pauses briefly during reset. This is a
-  recovery action, not a permanent fix for the intermittent issue.
+- **Keyboard troubleshooting:** can reset the EF-DX815 STM32 controller when
+  input stops. A separate optional 20-second diagnostic capture records key
+  presses/releases only after explicit authorization; it is saved locally and
+  not sent automatically, so do not type passwords or sensitive information
+  during a capture. The reset pauses input briefly and changes no firmware or
+  storage. It is a recovery action, not a permanent fix for the intermittent
+  issue.
 - **Updates:** separate update checks for Tab Companion and Fedora device
   support. Hardware controls not listed as confirmed above should be treated as
   experimental.
