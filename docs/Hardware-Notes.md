@@ -12,7 +12,7 @@ are included because they are tedious to rediscover.
 |---|---|
 | Panel | 2800×1752 AMOLED, DSI + DSC 1.1, 2×(1400×73) slices |
 | Panel driver | X810-specific `kernel/files/panel-samsung-ana38407.c` |
-| Refresh rates | 60 Hz default; 120 Hz selectable in the rebuilt kernel (hardware check pending) |
+| Refresh rates | 60 Hz default; owner confirmed the selectable 120 Hz mode works on-device |
 | DDIC | ANA38407 revision E (`80:00:05`) |
 
 A cold boot from the bootloader does not leave the DDIC in a state Linux can

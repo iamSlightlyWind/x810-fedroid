@@ -86,8 +86,8 @@ or replicate the devicekit approach).
 
 Source of truth: `pmaports/device/testing/linux-samsung-gts9wifi-mainline/`.
 Mainline 7.2 + port patches/ODMs: `fts1ba90a.c` (touch), the X810-specific
-`panel-samsung-ana38407.c` (2800×1752, 60 Hz preferred with a selectable but
-not-yet-hardware-validated 120 Hz mode),
+`panel-samsung-ana38407.c` (2800×1752, 60 Hz preferred with a selectable
+120 Hz mode confirmed working by the owner),
 `sm5714_battery.c` / `sm5714_usbpd.c` / `sm5440_direct.c` / `ps5169.c` / `wacom-wez01.c`,
 plus fixes (eUSB2 phy init, PTN3222-from-DT, WCN pwrseq cold-reset+AOP PDC, DP bridge,
 TCPM roles, PCIe0 pipe mux, sec-log console, split-GPU-KMS). DTS:
