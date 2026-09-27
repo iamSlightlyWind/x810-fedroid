@@ -163,7 +163,34 @@ if [ "$(gh release -R "$GITHUB_REPOSITORY" view "$REL" --json assets \
     --jq '[.assets[].name] | index("port-release.json") != null')" = true ]; then
   gh release -R "$GITHUB_REPOSITORY" delete-asset "$REL" port-release.json --yes
 fi
-gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber k/* r/*
+# KREL/RREL may both resolve to the last aggregate release. In that case both
+# download directories contain the same flattened asset names, so uploading
+# both `*` globs causes GitHub's 422 duplicate-asset error even with --clobber.
+# Publish only each component's owned files; regenerate full-set metadata below.
+full_assets=(
+  k/BUILD-METADATA.txt
+  k/BUNDLE-SHA256SUMS
+  k/KERNEL-BUILD-KEY.txt
+  k/RPM-SHA256SUMS
+  k/*.img
+  k/linux-gts9wifi-*.rpm
+  k/gts9wifi-fedora-*.zip
+  r/ROOTFS-BUILD-KEY.txt
+  r/SHA256SUMS
+  r/rootfs-manifest.txt
+  r/gts9wifi-fedora-*-rootfs.tar.gz
+  r/x810-fedora-port-*.rpm
+)
+declare -A seen_assets=()
+for asset in "${full_assets[@]}"; do
+  [ -f "$asset" ] || { echo "REFUSING: required aggregate asset is missing: $asset" >&2; exit 1; }
+  name="$(basename "$asset")"
+  [ -z "${seen_assets[$name]+x}" ] || {
+    echo "REFUSING: duplicate basename in aggregate inputs: $name" >&2; exit 1;
+  }
+  seen_assets[$name]=1
+done
+gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber "${full_assets[@]}"
 gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber port-release.json FULL-SET-BUILD-KEY.txt
 gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber "$clean_install_asset"
 # Auxiliary kernel/rootfs/boot tags are not latest; reassert that
