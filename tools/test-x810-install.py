@@ -725,7 +725,7 @@ class InstallerTests(unittest.TestCase):
         script = next(call[2] for call in calls if call[:2] == ("push", "/tmp/x810-install-provision.sh"))
         passwd_hash = next(call[2] for call in calls if call[:2] == ("push", "/tmp/x810-install-password"))
         self.assertIn("/usr/sbin/useradd", script)
-        self.assertIn("--groups wheel,video", script)
+        self.assertIn("--groups wheel,video,input", script)
         self.assertIn("--lock root", script)
         self.assertIn("$6$test-hash", passwd_hash)
         self.assertNotIn("plain-password", repr(calls))

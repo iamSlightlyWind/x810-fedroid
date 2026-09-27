@@ -35,6 +35,11 @@ if command -v getent >/dev/null 2>&1 && command -v usermod >/dev/null 2>&1; then
     if [ -n "$desktop_user" ] && getent group video >/dev/null 2>&1; then
         usermod -a -G video "$desktop_user" || :
     fi
+    # Tab Companion opens the gpio-vibrator evdev node as the desktop user.
+    # The udev rule limits this group access to the vibrator event node.
+    if [ -n "$desktop_user" ] && getent group input >/dev/null 2>&1; then
+        usermod -a -G input "$desktop_user" || :
+    fi
 fi
 if command -v systemctl >/dev/null 2>&1; then
     # Remove only the exact old port-created 20s override. It cut off

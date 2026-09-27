@@ -70,7 +70,10 @@ class SupportRpmStagingTests(unittest.TestCase):
         spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
         self.assertIn("desktop_user=$(getent passwd 1000", spec)
         self.assertIn('usermod -a -G video "$desktop_user"', spec)
-        self.assertIn("--groups wheel,video", (ROOT / "tools/x810-install").read_text())
+        self.assertIn('getent group input', spec)
+        self.assertIn('usermod -a -G input "$desktop_user"', spec)
+        install = (ROOT / "tools/x810-install").read_text()
+        self.assertIn("--groups wheel,video,input", install)
 
     def test_adsp_autostart_is_disabled_in_image_and_on_package_update(self):
         builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")

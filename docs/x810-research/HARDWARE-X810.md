@@ -217,10 +217,10 @@ Raw captures are in git-ignored `probes/android-baseline/`.
   high TLMM GPIO18. The X910 port uses the upstream `gpio-vibrator` driver on
   the same line, and its README reports working haptics. The production X810
   DTS now exposes the equivalent node and the kernel config enables
-  `CONFIG_INPUT_GPIO_VIBRA` as a module. The same-numbered GPIO18 in the LPASS
+  `CONFIG_INPUT_GPIO_VIBRA=y` as a built-in driver. The same-numbered GPIO18 in the LPASS
   pin controller is a separate controller and is not a pinmux conflict.
-- The production DTB and `gpio-vibra`/`ff-memless` modules compile against the
-  local Linux 7.2 tree. This
-  is prepared kernel-source work only: it has not been flashed or exercised on
-  the X810, so haptics remain unverified. The user-facing ff-rumble test must
-  be performed on-device after installing the matching kernel RPM.
+- The production DTB and built-in vibrator driver compile against the local
+  Linux 7.2 tree. The live tablet still lacks this DT node because the matching
+  four-image boot set has not been flashed. Haptics therefore remain
+  unverified; validate the evdev `FF_RUMBLE` device and one brief Tab Companion
+  test after installing the matching boot images through TWRP.
