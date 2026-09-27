@@ -1,0 +1,27 @@
+#!/usr/bin/bash
+# Launch the installed Moonlight Flatpak with X810's stateful V4L2 decoders.
+# The per-launch environment leaves the user's default launcher and all other
+# Flatpak apps unchanged; it does not persist an override or force DRM/KMS.
+set -euo pipefail
+
+readonly app_id="com.moonlight_stream.Moonlight"
+
+if ! command -v flatpak >/dev/null 2>&1; then
+	echo "x810-moonlight-v4l2: Flatpak is not installed." >&2
+	exit 127
+fi
+
+if ! flatpak --system info --show-ref "$app_id" >/dev/null 2>&1; then
+	echo "x810-moonlight-v4l2: system-installed Moonlight Flatpak was not found." >&2
+	exit 1
+fi
+
+# Moonlight Flatpak includes FFmpeg's stateful V4L2 M2M wrappers. These hints
+# select the tablet's qcom-iris path for matching streams only. H264 is the
+# verified X810 decode path; HEVC is exposed by the decoder but remains a
+# hardware/stream validation item. Moonlight may fall back if a hinted decoder
+# cannot initialize. Do not set DRM_FORCE_DIRECT: this launcher is for GNOME.
+exec flatpak --system run \
+	--env=H264_DECODER_HINT=h264_v4l2m2m \
+	--env=HEVC_DECODER_HINT=hevc_v4l2m2m \
+	"$app_id" "$@"

@@ -248,6 +248,7 @@ jobs:
           python3 tools/test-rootfs-repo-gpg.py
           python3 tools/test-rootfs-zram-config.py
           python3 tools/test-port-rpm-staging.py
+          python3 tools/test-x810-moonlight-v4l2.py
           python3 tools/test-x810-rootfs-archive.py
           python3 tools/test-x810-sensor-attach-recovery.py
           python3 tools/test-x810-pd-limits.py

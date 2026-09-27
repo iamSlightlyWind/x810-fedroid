@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Moonlight (X810 V4L2 decode)
+Comment=Experimental per-app H.264/HEVC hardware decoder hints for this tablet
+Exec=/usr/bin/x810-moonlight-v4l2 %U
+TryExec=/usr/bin/x810-moonlight-v4l2
+Icon=com.moonlight_stream.Moonlight
+Terminal=false
+Categories=Game;Network;
+StartupNotify=true
