@@ -26,7 +26,7 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 |---|:---:|---|
 | Display | ✅ | 2800×1752 AMOLED; 120 Hz is selectable and the owner has confirmed it works. 60 Hz remains the default. |
 | Desktop | ✅ | Fedora GNOME on Wayland/GDM boots and is usable. |
-| GPU / rendering | 🟡 | Adreno 740 hardware acceleration works through Mesa Freedreno (OpenGL) and Turnip (Vulkan). A GTK Vulkan setting currently avoids previously reported app artifacts; this is a workaround, not a demonstrated Mesa/driver root-cause fix. |
+| GPU / rendering | 🟡 | Adreno 740 hardware acceleration works through Mesa Freedreno (OpenGL) and Turnip (Vulkan). GTK app/widget artifacts have appeared inconsistently in testing; a GTK/Vulkan setting removed them in one test, but the result was not a reproducible driver-level fix. |
 | Touchscreen | 🟡 | Touch and normal orientation work; the pointer remains about 1 cm offset and dragging can be finicky. |
 | S Pen | 🟡 | Pen input and kernel-level palm rejection work. Tilt and some dock/Bluetooth features are unimplemented or unverified. |
 | EF-DX815 keyboard cover | 🟡 | Keyboard input works but may stop intermittently. Tab Companion offers a controller reset; it is recovery, not a confirmed permanent fix. |
@@ -38,12 +38,12 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 | Cameras | 🟡 | Front/rear sensors enumerate and libcamera support is integrated; a normal desktop capture flow still needs validation. Rear focus is fixed/manual, not autofocus. |
 | Hardware video decode | 🟡 | Stateful V4L2 decode was verified with owner-supplied X810 CYG1 firmware. Public releases omit that proprietary firmware; browser/VLC acceleration and encoding are not established. |
 | Qualcomm NPU / HTP | ❌ | CDSP remains disabled and no Fedora QNN/HTP runtime is integrated. The port now preserves the X810 CDSP firmware carveouts, but inference has not been enabled or tested. |
-| Motion sensors / auto-rotation | ❌ | Current startup still does not reliably expose the required SSC service. A source-side startup-order fix is committed, but update/clean-boot validation remains; rotation is unavailable on the current system. |
+| Motion sensors / auto-rotation | ❌ | Rotation is unavailable on the installed system: the SSC QRTR service is still absent. Source changes address sensor-registry setup and ADSP/sensorspd startup ordering, but the service recovery and auto-rotation have not been validated after an update or clean boot. |
 | Battery / charging | 🟡 | Battery telemetry and charging work; the prior 96% cap is fixed. Not all chargers and charge behaviors have been validated. |
 | USB-C / powered USB hub | ✅ | The owner has confirmed that a powered USB hub supplies power to the tablet. Data passthrough and other host, dock, and display combinations are not all tested. |
 | Haptics | 🟡 | Kernel support is prepared; physical vibration validation with the matching updated kernel is pending. |
-| Suspend / resume | 🟡 | Not qualified for dependable daily use; freezes have been reported. Save work and avoid unattended suspend experiments. |
-| Fingerprint reader | ❌ | Fingerprint login is not available. Source now fixes and checks kernel-module packaging, but the reader stack, secure-world/provisioning, and Linux authentication path have not been validated end-to-end. |
+| Suspend / resume | 🟡 | Double-tap-to-wake ended one 12.7-second suspend test, but suspend/resume is not qualified for dependable daily use and freezes have been reported. Save work; avoid unattended suspend. |
+| Fingerprint reader | ❌ | Fingerprint login is not available. Kernel-module packaging is still experimental; the reader stack, secure-world/provisioning, and Linux authentication path have not been validated end-to-end. |
 | Charging bypass | ❌ | No safe, verified Linux control is available. |
 
 These statuses describe what has been observed on this device, not promises for
