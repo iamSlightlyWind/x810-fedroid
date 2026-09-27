@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /*
- * Initial mainline device tree for the Samsung Galaxy Tab S9 Wi-Fi
- * (SM-X710, gts9wifi).
+ * Mainline device tree for the Samsung Galaxy Tab S9+ Wi-Fi
+ * (SM-X810, gts9pwifi), carried under the port's existing gts9wifi filename.
  *
  * Only hardware evidenced by the live downstream tree is enabled here.
  * Native display support remains disabled; Samsung ABL's preserved splash
@@ -27,14 +27,14 @@
 /delete-node/ &adspslpi_mem;
 
 / {
-	model = "Samsung Galaxy Tab S9 Wi-Fi";
+	model = "Samsung Galaxy Tab S9+ Wi-Fi";
 	/*
 	 * The first three strings and the legacy IDs are consumed by Samsung ABL
 	 * when it selects the base DTB.  Keep the upstream compatibles as well so
 	 * Linux still identifies the actual board and SoC normally.
 	 */
 	compatible = "qcom,kalama-mtp", "qcom,kalama", "qcom,mtp",
-		     "samsung,gts9wifi", "qcom,sm8550";
+		     "samsung,gts9pwifi", "samsung,gts9wifi", "qcom,sm8550";
 	qcom,msm-id = <0x218 0x20000 0x207 0x20000
 		       0x207 0x10000 0x218 0x10000>;
 	qcom,board-id = <0x10008 0x04>;
@@ -43,6 +43,14 @@
 	aliases {
 		serial0 = &uart7;
 		mmc1 = &sdhc_2;
+	};
+
+	/* CYG1 stock X810 coin motor; active-high on the main TLMM GPIO18.
+	 * The LPASS-local GPIO18 elsewhere in this file is a separate controller.
+	 */
+	vibrator {
+		compatible = "gpio-vibrator";
+		enable-gpios = <&tlmm 18 GPIO_ACTIVE_HIGH>;
 	};
 
 	chosen {
@@ -1513,7 +1521,7 @@
 	status = "okay";
 
 	panel@0 {
-		compatible = "samsung,ana38407-amsa10fa01";
+		compatible = "samsung,ana38407-amsa24vu05";
 		reg = <0>;
 
 		vddio-supply = <&vreg_l12b_1p8>;

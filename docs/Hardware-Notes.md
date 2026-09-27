@@ -10,11 +10,12 @@ are included because they are tedious to rediscover.
 
 | Item | Value |
 |---|---|
-| Panel | 2560×1600 AMOLED, DSI + DSC |
-| Panel driver | `panel-samsung-ana38407.c` (out-of-tree) |
-| DDIC | ANA38407 |
+| Panel | 2800×1752 AMOLED, DSI + DSC 1.1, 2×(1400×73) slices |
+| Panel driver | X810-specific `kernel/files/panel-samsung-ana38407.c` |
+| Refresh rates | 60 Hz default; 120 Hz selectable in the rebuilt kernel (hardware check pending) |
+| DDIC | ANA38407 revision E (`80:00:05`) |
 
-A cold boot from the bootloader does not leave the DDIC in a state mainline can
+A cold boot from the bootloader does not leave the DDIC in a state Linux can
 take over, so the port ships a cold-boot revive service that runs a
 `pm_test=platform` suspend cycle automatically at boot; without it the panel
 stays dark on a cold start. Warm paths have two related workarounds: a DRM

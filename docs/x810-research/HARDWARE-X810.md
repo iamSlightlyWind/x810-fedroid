@@ -43,19 +43,27 @@ Raw captures are in git-ignored `probes/android-baseline/`.
   `vendor/qcom/opensource/display-drivers/msm/samsung/`, matching the live
   panel string. This establishes the stock panel implementation identity, not
   that its vendor driver can be used as-is in mainline.
-- **Promising prior art:** X710 Fedora contains a mainline ANA38407 panel
-  driver, and its source describes the same DDIC family. It explicitly keeps
-  board-specific initialization/timings separate; therefore the driver is a
-  code reference, not an X810-ready panel configuration.
+- **Prior art versus device source:** the X710 Fedora mainline driver was a
+  code reference only; its X710-specific timings and init sequence are not
+  safe unchanged on X810.
 - **Exact X810 panel facts:** live LCD ID `0x800005` maps to panel revision E
   in the CYG1 downstream panel driver. The selected stock DT timing is
   2800×1752, with 30/60/120 Hz modes and DSC 1.1 at 8 bpp, two 1400×73-pixel
   slices. The Samsung data file's D-to-Z branches include revision E for the
   shared TSP-sync sequence, so the ANA38407 initialization is a promising
   base.
-- **Concrete X710 mismatch:** its mainline driver hardcodes the expected DDIC
-  ID to revision D (`80:00:04`), and uses 2560×1600, two 1280×100 DSC slices,
-  and X710 board-specific timings. X810's live FDT maps panel reset to TLMM
+- **Production-source correction (2026-09-27):** the released kernel build now
+  stages the X810-specific panel driver at
+  `kernel/files/panel-samsung-ana38407.c`, sourced from the CYG1 panel data.
+  It recognizes LCD ID `80:00:05`, uses the 2800×1752 / 2×(1400×73) geometry,
+  keeps 60 Hz preferred, and adds a selectable 120 Hz mode with the matching
+  stock VRR writes. A small DRM panel-bridge callback patch records a requested
+  mode without doing panel I/O until `prepare`, when DSI is ready. The driver
+  and bridge objects compile locally; the mode has not been selected on the
+  tablet, so 120 Hz scanout is not yet confirmed.
+- **Concrete X710 mismatch:** the old mainline driver hardcodes the expected
+  DDIC ID to revision D (`80:00:04`), and uses 2560×1600, two 1280×100 DSC
+  slices, and X710 board-specific timings. X810's live FDT maps panel reset to TLMM
   GPIO 125 and TE to TLMM GPIO 86, matching the X710 mainline panel node. Its
   `panel_ldo_en` is a 1.8 V fixed regulator on TLMM GPIO 187 with a 100 mA
   enable load, 11 ms post-on and 15 ms pre-off waits; X710's mainline DTS
@@ -67,14 +75,11 @@ Raw captures are in git-ignored `probes/android-baseline/`.
   establish the same GPIO-backed implementation used by X710. Thus the four
   mainline regulator names have stock X810 rail counterparts, but the exact
   `avdd` backend and sequencing still need confirmation before reuse. X810's
-  rev-E ID is not rejected by the driver but triggers its
-  dark-until-DSI-reinitialization warning. The X710 driver must not be used
-  unchanged; port X810's exact timing/DSC/rail/GPIO parameters and accept/test
-  the rev-E ID first.
-- **Open:** compare the X810 PHY timings, porch values, DSC PPS and full
-  regulator ordering against mainline before selecting first-light mode; in
-  particular, identify the physical `avdd` switch and active supply-table
-  selection. Physical cold-boot/resume validation remains necessary.
+  rev-E ID is explicitly expected by the X810-specific driver. **Open:** verify
+  cold boot, selecting each exposed refresh rate, touch alignment during
+  120-Hz scanout, and suspend/resume on hardware. In particular, identify the
+  physical `avdd` switch and confirm the active supply-table selection before
+  relying on cold-start panel power behavior.
 
 ### X810-specific display power evidence (CYG1)
 
@@ -206,12 +211,16 @@ Raw captures are in git-ignored `probes/android-baseline/`.
   current package name together with the camera stack. This local fix has not
   yet been rebuilt or installed on the tablet.
 
-## Haptic support preparation (2026-09-25)
+## Haptic support source fix (2026-09-27)
 
 - The X810 CYG1 overlay explicitly describes its coin-DC vibrator on active-
   high TLMM GPIO18. The X910 port uses the upstream `gpio-vibrator` driver on
-  the same line, and its README reports working haptics. I added the equivalent
-  device-tree node to the X810 research DTS and enabled `CONFIG_INPUT_GPIO_VIBRA`.
-- The X810 DTS target and vibrator driver compile locally. This is prepared
-  kernel-source work only: it has not been flashed or exercised on the X810,
-  so the haptics status remains unverified. No vibration test was sent.
+  the same line, and its README reports working haptics. The production X810
+  DTS now exposes the equivalent node and the kernel config enables
+  `CONFIG_INPUT_GPIO_VIBRA` as a module. The same-numbered GPIO18 in the LPASS
+  pin controller is a separate controller and is not a pinmux conflict.
+- The production DTB and `gpio-vibra`/`ff-memless` modules compile against the
+  local Linux 7.2 tree. This
+  is prepared kernel-source work only: it has not been flashed or exercised on
+  the X810, so haptics remain unverified. The user-facing ff-rumble test must
+  be performed on-device after installing the matching kernel RPM.

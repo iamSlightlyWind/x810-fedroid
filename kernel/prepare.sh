@@ -37,7 +37,7 @@ register_driver() {
         echo "$objline" >> "$(dirname "$kcfg")/Makefile"
 }
 
-# ANA38407 DSI panel.
+# X810 ANA38407 DSI panel (2800x1752; default 60 Hz and optional 120 Hz).
 cp "$here/files/panel-samsung-ana38407.c" drivers/gpu/drm/panel/
 grep -q 'DRM_PANEL_SAMSUNG_ANA38407' drivers/gpu/drm/panel/Kconfig || sed -i '/^endmenu$/i \
 config DRM_PANEL_SAMSUNG_ANA38407\

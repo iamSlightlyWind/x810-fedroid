@@ -28,6 +28,10 @@ reused, and a retired number is simply absent rather than reassigned
 | 20 | Wi-Fi dead on the 7.2.1–7.2.6 stable kernels | open — pinned to 7.2.0 |
 | 21 | PipeWire speaker streams fail to link | fixed in the live configuration; reproducible system-wide WirePlumber fix now ships in the overlay and support RPM; pending clean-install validation |
 | 22 | GNOME camera clients cannot open `root:video` camera nodes | fixed in installer and support-RPM upgrade path; fresh-login/device validation pending |
+| 23 | No 120 Hz display mode | kernel source now includes the X810 60/120 Hz panel modes with 60 Hz preferred; install and on-device validation pending |
+
+Haptics are also enabled in the kernel source (stock-active-high GPIO18 plus
+`gpio-vibra`), but still need a kernel update and on-device ff-rumble check.
 
 Also outstanding, not in the numbered register:
 

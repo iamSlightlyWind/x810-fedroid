@@ -18,6 +18,9 @@ CONFIG_FB=y
 CONFIG_FRAMEBUFFER_CONSOLE=y
 CONFIG_PM_DEBUG=y
 
+# CYG1 coin vibrator on TLMM GPIO18 (available from first input-device probe).
+CONFIG_INPUT_GPIO_VIBRA=y
+
 # Root filesystem on the external microSD must not depend on modules.
 CONFIG_MMC=y
 CONFIG_MMC_BLOCK=y

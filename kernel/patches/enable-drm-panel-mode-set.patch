@@ -1,0 +1,58 @@
+--- a/drivers/gpu/drm/bridge/panel.c
++++ b/drivers/gpu/drm/bridge/panel.c
+@@ -194,6 +194,17 @@
+ 	return drm_panel_get_modes(panel_bridge->panel, connector);
+ }
+ 
++static void panel_bridge_mode_set(struct drm_bridge *bridge,
++				  const struct drm_display_mode *mode,
++				  const struct drm_display_mode *adjusted_mode)
++{
++	struct panel_bridge *panel_bridge = drm_bridge_to_panel_bridge(bridge);
++	struct drm_panel *panel = panel_bridge->panel;
++
++	if (panel->funcs->mode_set)
++		panel->funcs->mode_set(panel, mode, adjusted_mode);
++}
++
+ static void panel_bridge_debugfs_init(struct drm_bridge *bridge,
+ 				      struct dentry *root)
+ {
+@@ -212,6 +223,7 @@
+ 	.atomic_enable = panel_bridge_atomic_enable,
+ 	.atomic_disable = panel_bridge_atomic_disable,
+ 	.atomic_post_disable = panel_bridge_atomic_post_disable,
++	.mode_set = panel_bridge_mode_set,
+ 	.get_modes = panel_bridge_get_modes,
+ 	.atomic_reset = drm_atomic_helper_bridge_reset,
+ 	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
+--- a/include/drm/drm_panel.h
++++ b/include/drm/drm_panel.h
+@@ -34,6 +34,7 @@
+ struct dentry;
+ struct device_node;
+ struct drm_connector;
++struct drm_display_mode;
+ struct drm_panel_follower;
+ struct drm_panel;
+ struct display_timing;
+@@ -108,6 +109,19 @@
+ 	int (*unprepare)(struct drm_panel *panel);
+ 
+ 	/**
++	 * @mode_set:
++	 *
++	 * Notify the panel of a modeset before it is prepared. Panels which
++	 * need mode-specific programming may record the requested mode here
++	 * and apply it from @prepare, when the DSI host is ready for commands.
++	 * This callback must not perform I/O because the panel may be powered
++	 * down at this point.
++	 */
++	void (*mode_set)(struct drm_panel *panel,
++			 const struct drm_display_mode *mode,
++			 const struct drm_display_mode *adjusted_mode);
++
++	/**
+ 	 * @get_modes:
+ 	 *
+ 	 * Add modes to the connector that the panel is attached to

@@ -1,25 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * DRM panel driver for the Samsung AMSA10FA01 (Anapass ANA38407 DDIC) as fitted
- * to the Galaxy Tab S9 Wi-Fi (SM-X710, "gts9wifi").
+ * DRM panel driver for the Samsung AMSA24VU05 (Anapass ANA38407 DDIC) as fitted
+ * to the Galaxy Tab S9+ Wi-Fi (SM-X810, "gts9pwifi").
  *
- * 2560x1600 command-mode DSI panel, 4 lanes, DSC 1.1 (2 slices 1280x100, 8bpp).
+ * 2800x1752 command-mode DSI panel, 4 lanes, DSC 1.1 (2 slices 1400x73, 8bpp).
  * The DCS init/exit sequences and timings were recovered from the Samsung
- * open-source drop (opensource.samsung.com, SM-X710_EUR_16) panel data file and
+ * open-source drop (opensource.samsung.com, SM-X810_EUR_16) panel data file and
  * from the stock DTBO; see docs/panel-ana38407-bringup.md.  Samsung's
  * proprietary gamma/VRR/ACL/mdnie machinery is intentionally NOT ported: the
  * DPU switches refresh rate by mode-set, and brightness goes through the
  * standard DCS 0x51 path.
- *
- * The optical-fingerprint machinery IS ported, from the Tab S9 Ultra port's
- * copy of this driver: the under-display Egis EL721 needs Samsung's short-lived
- * fingerprint HBM sequence (DCS 0x53/0x51 plus the 0xB0/0xE0 indirect
- * registers), the panel's module cell id (DCS 0xA1 RX_MODULE_INFO, which the
- * fingerprint TA binds the optical calibration to), and a watchdog that returns
- * the panel to normal brightness if userspace forgets.  Both boards carry the
- * same revision-D ANA38407, so the register sequences are shared; the
- * board-specific parts of this driver (init sequence, timing modes, DSC config,
- * panel rails, compatible string) remain gts9wifi's own.
  */
 
 #include <linux/backlight.h>
@@ -52,13 +42,13 @@
 #define ANA38407_FOD_WATCHDOG_MS	15000
 #define ANA38407_FOD_SETTLE_MS		35
 
-/* Revision D; the downstream driver knows field ids 0x800003/0x800004. */
-static const u8 ana38407_expected_id[3] = { 0x80, 0x00, 0x04 };
+/* Revision E, as read back by the X810 bootloader (lcd_id=0x800005). */
+static const u8 ana38407_expected_id[3] = { 0x80, 0x00, 0x05 };
 
 /*
- * On a cold boot the DDIC answers 00:00:00 and emits black, even though the
- * link is up and DRM reports the connector enabled; a suspend/resume then
- * recovers it and the id reads 80:00:04.  So the id is a reliable signal, and
+ * On a cold boot the DDIC may answer 00:00:00 even though the link is up and
+ * DRM reports the connector enabled; a suspend/resume can reinitialize it.
+ * The X810 rev-E id is 80:00:05.  So the id is a reliable signal, and
  * the fault is not in this driver: replaying the init sequence, toggling reset
  * and even dropping the panel supplies the way unprepare/prepare does were all
  * measured to leave it at 00:00:00.  What differs on resume is that the DSI
@@ -83,14 +73,15 @@ struct ana38407 {
 	bool enabled;
 	bool fod_mode;
 	bool fod_circle;
+	unsigned int requested_refresh_rate;
 	u8 id[3];
 	char cell_id[23];
 };
 
 /*
- * gts9 panel rails (from the stock DTS): vddio 1.8 V (l12b), vdd 1.2 V,
- * vci 3.0 V (l13b) and the AMOLED ELVDD "avdd" ~5.5 V behind a GPIO load switch.
- * All four must be up before the DDIC will light.
+ * X810 panel rails: vddio 1.8 V (L12B), vdd 1.1–1.2 V (L11B), vci 3.0 V
+ * (L13B), plus AMOLED ELVDD "avdd" (stock FDT says 5.5 V). The X810 FDT
+ * models avdd as a proxy regulator, not a GPIO-backed fixed switch.
  */
 static const struct regulator_bulk_data ana38407_supplies[] = {
 	{ .supply = "vddio" },
@@ -107,8 +98,9 @@ static inline struct ana38407 *to_ana38407(struct drm_panel *panel)
 /*
  * Samsung sequences these rails rather than raising them together: its
  * dsi_panel_pwr_supply brings up vddio first and then waits
- * qcom,supply-post-on-sleep = 0x14 (20 ms) before vdd and vci, with avdd - the
- * AMOLED ELVDD behind a load switch - after them.
+ * qcom,supply-post-on-sleep = 0x14 (20 ms) before vdd, vci and avdd. On X810
+ * the stock FDT does not prove that avdd is GPIO11-controlled; ABL has already
+ * configured the MAX77816 boost by the time this panel driver probes.
  *
  * Enabling all four at once and sleeping afterwards, which is what a plain
  * regulator_bulk_enable() does, left the DDIC unreliable at every enable: a
@@ -138,13 +130,11 @@ static int ana38407_power_on(struct ana38407 *ctx)
 
 static void ana38407_reset(struct ana38407 *ctx)
 {
-	/* Samsung reset-sequence <0 10 1 1>: assert low, release high. */
-	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-	usleep_range(5000, 6000);
+	/* Stock X810 reset sequence: physical low for 10 ms, then high for 1 ms. */
 	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
 	usleep_range(10000, 11000);
 	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-	usleep_range(10000, 11000);
+	usleep_range(1000, 2000);
 }
 
 /*
@@ -191,6 +181,8 @@ static int ana38407_write_fod_locked(struct ana38407 *ctx, bool enable)
 	}
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0xa5, 0xa5);
 	ctx->dsi->mode_flags = mode_flags;
+	if (!dsi_ctx.accum_err)
+		msleep(ANA38407_FOD_SETTLE_MS);
 
 	return dsi_ctx.accum_err;
 }
@@ -284,42 +276,29 @@ static int ana38407_on(struct ana38407 *ctx)
 {
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 	struct drm_dsc_picture_parameter_set pps;
-	u8 module_info[11] = { };
+	u8 module_info[11] = {};
 	u8 id[3] = {};
 	ssize_t module_info_len;
 
 	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
 	/*
-	 * POWER_ON_PRE_SETTING order: the slew-boosting-off and display-on-delay
-	 * register writes come BEFORE sleep-out.  The panel id (0x80 0x00 0x04)
-	 * is revision D, so the rev-B SSCG programming does not apply.
+	 * X810 CYG1 POWER_ON_PRE_SETTING: VBP and display-on-delay writes come
+	 * BEFORE sleep-out. The expected X810 revision-E ID is 80:00:05.
 	 */
 
-	/* SLEW_BOOSTING_OFF */
+	/* VBP_SETTING_FOR_SDC_IP */
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0x5a, 0x5a);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf1, 0x5a, 0x5a);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x2a);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x0a);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x03);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x0f, 0x00, 0x00, 0x00, 0x13, 0x4f, 0x81);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x2a);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x03);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x0f, 0x00, 0x00, 0x00, 0x13, 0x62, 0x81);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x2a);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x03);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x0f, 0x00, 0x00, 0x00, 0x13, 0x75, 0x81);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x2a);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x03);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x0f, 0x00, 0x00, 0x00, 0x13, 0x88, 0x81);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x0f, 0x00, 0x00, 0x00, 0x09, 0xfd, 0x81);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0xa5, 0xa5);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf1, 0xa5, 0xa5);
 
-	/* PM_EN_DISP_ON_DELAY */
+	/* DISPLAY_ON_DELAY_SETTING */
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0x5a, 0x5a);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf1, 0x5a, 0x5a);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x03);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x0f, 0x00, 0x00, 0x00, 0x14, 0x35, 0x81);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x23);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x03);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x0f, 0x00, 0x00, 0x00, 0x01, 0x04, 0x81);
@@ -394,7 +373,7 @@ static int ana38407_on(struct ana38407 *ctx)
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x35, 0x00);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0xa5, 0xa5);
 
-	/* TSP_SYNC_SETTING (rev C+) */
+	/* X810 TSP_SYNC_SETTING (rev D+). */
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0x5a, 0x5a);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x0b, 0xb9);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb9, 0xcc);
@@ -417,9 +396,8 @@ static int ana38407_on(struct ana38407 *ctx)
 
 	/*
 	 * BRIGHTNESS: dimming control (normal) + an explicit non-zero brightness
-	 * level (0x51, 12-bit).  Without a real 0x51 write the DDIC emits black
-	 * even with the display on.  The level is the desktop's current value
-	 * (0x7ff at first light), so a resume does not flash to full brightness.
+	 * level (0x51, 11-bit). Without a real 0x51 write the DDIC emits black
+	 * even with the display on.
 	 */
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0x5a, 0x5a);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x53, 0x28);
@@ -433,23 +411,15 @@ static int ana38407_on(struct ana38407 *ctx)
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc3, 0x02);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0xa5, 0xa5);
 
-	mipi_dsi_msleep(&dsi_ctx, 20);
-
-	/* SLEW_BOOSTING_ON */
+	/* X810 wqxga60hs VRR programming from the stock rev-D-to-Z sequence. */
+	mipi_dsi_msleep(&dsi_ctx, 50);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0x5a, 0x5a);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf1, 0x5a, 0x5a);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x2e);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x03);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x0f, 0x00, 0x00, 0x00, 0x13, 0x4f, 0x81);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x2e);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x03);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x0f, 0x00, 0x00, 0x00, 0x13, 0x62, 0x81);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x2e);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x03);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x0f, 0x00, 0x00, 0x00, 0x13, 0x75, 0x81);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x2e);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x03);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x0f, 0x00, 0x00, 0x00, 0x13, 0x88, 0x81);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x60, 0x10);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x13, 0xdd);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xdd, 0x00);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x10, 0xb9);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb9, 0xaa, 0xaa, 0xaa, 0xaa);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0xa5, 0xa5);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf1, 0xa5, 0xa5);
 
@@ -462,6 +432,54 @@ static int ana38407_on(struct ana38407 *ctx)
 	 * contained coloured noise.
 	 */
 	mipi_dsi_msleep(&dsi_ctx, 100);
+
+	return dsi_ctx.accum_err;
+}
+
+/* CYG1 GTS9P_ANA38407_AMSA24VU05 VRR_SETTING, revisions D through Z. */
+static int ana38407_set_refresh_rate_locked(struct ana38407 *ctx,
+						    unsigned int refresh_rate)
+{
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+	bool is_120hz = refresh_rate >= 90;
+
+	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+
+	/* VRR_SETTING: level-0/1 unlock. */
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0x5a, 0x5a);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf1, 0x5a, 0x5a);
+
+	/* 0x60 selects the 120HS or 60HS scan mode; both use DD=0x00. */
+	if (is_120hz)
+		mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x60, 0x00);
+	else
+		mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x60, 0x10);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x13, 0xdd);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xdd, 0x00);
+
+	/* Revision D-to-Z compensation; the X810 panel reports rev E (80:00:05). */
+	if (ctx->id[0] == 0x80 && ctx->id[1] == 0x00 && ctx->id[2] >= 0x04) {
+		mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x10, 0xb9);
+		if (is_120hz)
+			mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb9,
+						     0x80, 0x00, 0x00, 0x00);
+		else
+			mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb9,
+						     0xaa, 0xaa, 0xaa, 0xaa);
+	} else {
+		dev_warn(&ctx->dsi->dev,
+			 "panel ID not recognized for rev-D+ VRR tuning; applying base %u Hz settings\n",
+			 is_120hz ? 120 : 60);
+	}
+
+	/* VRR_SETTING: relock. */
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf0, 0xa5, 0xa5);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf1, 0xa5, 0xa5);
+
+	if (dsi_ctx.accum_err)
+		dev_err(&ctx->dsi->dev,
+			"failed to program %u Hz panel mode: %d\n",
+			is_120hz ? 120 : 60, dsi_ctx.accum_err);
 
 	return dsi_ctx.accum_err;
 }
@@ -552,6 +570,16 @@ static int ana38407_prepare(struct drm_panel *panel)
 		regulator_bulk_disable(ARRAY_SIZE(ana38407_supplies), ctx->supplies);
 		goto out_unlock;
 	}
+
+	/* Apply the chosen panel-side VRR only after sleep-out/init succeeded. */
+	ret = ana38407_set_refresh_rate_locked(ctx,
+						ctx->requested_refresh_rate);
+	if (ret) {
+		ana38407_sleep_in(ctx);
+		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+		regulator_bulk_disable(ARRAY_SIZE(ana38407_supplies), ctx->supplies);
+		goto out_unlock;
+	}
 	ctx->prepared = true;
 
 	if (memcmp(ctx->id, ana38407_expected_id, sizeof(ctx->id)))
@@ -589,30 +617,42 @@ out_unlock:
 	return ret ?: cleanup_ret;
 }
 
-/* All three timing modes from the stock DTBO, hactive/vactive 2560x1600. */
+/* CYG1 stock DTBO's X810 WQXGA 60HS and 120HS timing profiles. */
 static const struct drm_display_mode ana38407_modes[] = {
-	{	/* 120 Hz */
-		.clock = (2560 + 34 + 64 + 34) * (1600 + 42 + 64 + 32) * 120 / 1000,
-		.hdisplay = 2560, .hsync_start = 2560 + 34, .hsync_end = 2560 + 34 + 64,
-		.htotal = 2560 + 34 + 64 + 34,
-		.vdisplay = 1600, .vsync_start = 1600 + 42, .vsync_end = 1600 + 42 + 64,
-		.vtotal = 1600 + 42 + 64 + 32,
+	{ /* 60 Hz: preferred/default */
+		.clock = (2800 + 256 + 148 + 256) * (1752 + 255 + 129 + 256) * 60 / 1000,
+		.hdisplay = 2800, .hsync_start = 2800 + 256, .hsync_end = 2800 + 256 + 256,
+		.htotal = 2800 + 256 + 148 + 256,
+		.vdisplay = 1752, .vsync_start = 1752 + 255, .vsync_end = 1752 + 255 + 256,
+		.vtotal = 1752 + 255 + 129 + 256,
 	},
-	{	/* 60 Hz */
-		.clock = (2560 + 128 + 512 + 203) * (1600 + 127 + 512 + 257) * 60 / 1000,
-		.hdisplay = 2560, .hsync_start = 2560 + 128, .hsync_end = 2560 + 128 + 512,
-		.htotal = 2560 + 128 + 512 + 203,
-		.vdisplay = 1600, .vsync_start = 1600 + 127, .vsync_end = 1600 + 127 + 512,
-		.vtotal = 1600 + 127 + 512 + 257,
-	},
-	{	/* 30 Hz */
-		.clock = (2560 + 600 + 735 + 512) * (1600 + 512 + 512 + 512) * 30 / 1000,
-		.hdisplay = 2560, .hsync_start = 2560 + 600, .hsync_end = 2560 + 600 + 735,
-		.htotal = 2560 + 600 + 735 + 512,
-		.vdisplay = 1600, .vsync_start = 1600 + 512, .vsync_end = 1600 + 512 + 512,
-		.vtotal = 1600 + 512 + 512 + 512,
+	{ /* 120 Hz */
+		.clock = (2800 + 64 + 48 + 64) * (1752 + 48 + 64 + 48) * 120 / 1000,
+		.hdisplay = 2800, .hsync_start = 2800 + 64,
+		.hsync_end = 2800 + 64 + 64,
+		.htotal = 2800 + 64 + 48 + 64,
+		.vdisplay = 1752, .vsync_start = 1752 + 48,
+		.vsync_end = 1752 + 48 + 64,
+		.vtotal = 1752 + 48 + 64 + 48,
 	},
 };
+
+static void ana38407_mode_set(struct drm_panel *panel,
+			      const struct drm_display_mode *mode,
+			      const struct drm_display_mode *adjusted_mode)
+{
+	struct ana38407 *ctx = to_ana38407(panel);
+	unsigned int refresh_rate = drm_mode_vrefresh(adjusted_mode);
+
+	/* This panel driver deliberately exposes only its validated 60/120 modes. */
+	refresh_rate = refresh_rate >= 90 ? 120 : 60;
+
+	mutex_lock(&ctx->lock);
+	ctx->requested_refresh_rate = refresh_rate;
+	mutex_unlock(&ctx->lock);
+
+	dev_dbg(&ctx->dsi->dev, "requested panel refresh: %u Hz\n", refresh_rate);
+}
 
 static int ana38407_get_modes(struct drm_panel *panel,
 			      struct drm_connector *connector)
@@ -627,15 +667,15 @@ static int ana38407_get_modes(struct drm_panel *panel,
 		mode->type = DRM_MODE_TYPE_DRIVER;
 		if (i == 0)
 			mode->type |= DRM_MODE_TYPE_PREFERRED;
-		mode->width_mm = 236;
-		mode->height_mm = 148;
+		mode->width_mm = 267;
+		mode->height_mm = 167;
 		drm_mode_set_name(mode);
 		drm_mode_probed_add(connector, mode);
 		count++;
 	}
 
-	connector->display_info.width_mm = 236;
-	connector->display_info.height_mm = 148;
+	connector->display_info.width_mm = 267;
+	connector->display_info.height_mm = 167;
 
 	return count;
 }
@@ -645,6 +685,7 @@ static const struct drm_panel_funcs ana38407_panel_funcs = {
 	.enable = ana38407_enable,
 	.disable = ana38407_disable,
 	.unprepare = ana38407_unprepare,
+	.mode_set = ana38407_mode_set,
 	.get_modes = ana38407_get_modes,
 };
 
@@ -855,8 +896,8 @@ static struct backlight_device *ana38407_create_backlight(struct ana38407 *ctx)
 }
 
 /*
- * DSC config decoded from the panel's PPS (WT 0x0A ...): DSC 1.1, 2560x1600,
- * two 1280x100 slices, 8 bpc, 8.0 bpp.  The rc_buf_thresh / rc_range_params are
+ * DSC config decoded from X810 panel's PPS (WT 0x0A ...): DSC 1.1, 2800x1752,
+ * two 1400x73 slices, 8 bpc, 8.0 bpp.  The rc_buf_thresh / rc_range_params are
  * the DSC 8 bpp spec-standard tables (identical across 8 bpp panels).  The msm
  * DSI host fills convert_rgb/line_buf_depth and calls
  * drm_dsc_compute_rc_parameters() for the derived fields, so those are left out.
@@ -864,14 +905,14 @@ static struct backlight_device *ana38407_create_backlight(struct ana38407 *ctx)
 static const struct drm_dsc_config ana38407_dsc_template = {
 	.dsc_version_major = 1,
 	.dsc_version_minor = 1,
-	.slice_height = 100,
-	.slice_width = 1280,
+	.slice_height = 73,
+	.slice_width = 1400,
 	.slice_count = 2,
 	.bits_per_component = 8,
 	.bits_per_pixel = 8 << 4,
 	.block_pred_enable = true,
-	.pic_width = 2560,
-	.pic_height = 1600,
+	.pic_width = 2800,
+	.pic_height = 1752,
 	.rc_buf_thresh = {
 		14, 28, 42, 56, 70, 84, 98, 105, 112, 119, 121, 123, 125, 126
 	},
@@ -903,7 +944,7 @@ static const struct drm_dsc_config ana38407_dsc_template = {
 		{ 9, 12, DSC_BPG_OFFSET(-12)},
 		{12, 13, DSC_BPG_OFFSET(-12)},
 	},
-	.slice_chunk_size = 1280,
+	.slice_chunk_size = 1400,
 };
 
 static void ana38407_dsc_config(struct ana38407 *ctx)
@@ -938,6 +979,7 @@ static int ana38407_probe(struct mipi_dsi_device *dsi)
 	mutex_init(&ctx->lock);
 	INIT_DELAYED_WORK(&ctx->fod_watchdog, ana38407_fod_watchdog_work);
 	ctx->user_brightness = ANA38407_MAX_BRIGHTNESS;
+	ctx->requested_refresh_rate = 60;
 
 	dsi->lanes = 4;
 	dsi->format = MIPI_DSI_FMT_RGB888;
@@ -993,7 +1035,7 @@ static void ana38407_remove(struct mipi_dsi_device *dsi)
 }
 
 static const struct of_device_id ana38407_of_match[] = {
-	{ .compatible = "samsung,ana38407-amsa10fa01" },
+	{ .compatible = "samsung,ana38407-amsa24vu05" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, ana38407_of_match);
@@ -1008,5 +1050,5 @@ static struct mipi_dsi_driver ana38407_driver = {
 };
 module_mipi_dsi_driver(ana38407_driver);
 
-MODULE_DESCRIPTION("Samsung ANA38407 AMSA10FA01 (gts9) DSI panel driver");
+MODULE_DESCRIPTION("Samsung ANA38407 AMSA24VU05 (gts9pwifi) DSI panel driver");
 MODULE_LICENSE("GPL");
