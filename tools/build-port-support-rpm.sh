@@ -107,7 +107,10 @@ fi
 # libcamera configuration selects it first. The generated private build
 # signature is deliberately not staged: Fedora's libcamera will isolate this
 # port-specific module through its stock soft_ipa_proxy.
-bash "$repo_dir/tools/build-libcamera-hi1337-ipa.sh" "$stage"
+# This script is called through command substitution by the rootfs builder,
+# whose stdout contract is a single RPM pathname. Keep verbose compiler and
+# Meson output on stderr so it cannot be mistaken for that pathname.
+bash "$repo_dir/tools/build-libcamera-hi1337-ipa.sh" "$stage" >&2
 plugin="$stage/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so"
 plugin_machine="$(readelf -h "$plugin" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
 if [ "$plugin_machine" != AArch64 ]; then

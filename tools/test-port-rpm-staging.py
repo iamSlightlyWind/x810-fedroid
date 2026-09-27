@@ -113,6 +113,13 @@ class SupportRpmStagingTests(unittest.TestCase):
         install = (ROOT / "tools/x810-install").read_text()
         self.assertIn("--groups wheel,video,input", install)
 
+    def test_support_rpm_builder_keeps_stdout_to_single_path(self):
+        builder = (ROOT / "tools/build-port-support-rpm.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'bash "$repo_dir/tools/build-libcamera-hi1337-ipa.sh" "$stage" >&2',
+            builder,
+        )
+
     def test_gnome_power_profiles_use_tuned_ppd(self):
         builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")
         self.assertIn("install tuned-ppd", builder)
