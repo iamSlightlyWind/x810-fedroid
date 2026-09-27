@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # The DTS descends from the Qualcomm kalama reference tree, so it inherited
 # the full downstream reserved-memory list: modem, CDSP, Samsung ramdump and
-# the Gunyah VM payloads.  None of those have a consumer on this port -- the
-# mpss and cdsp remoteprocs are status=disabled, no rmtfs daemon runs, this is
-# the Wi-Fi SKU, and pmOS never instantiates the VMs -- but the kernel still
-# honours the carveouts, which is why MemTotal comes up around 6.4 GiB on an
-# 8 GiB tablet.  Delete the unused regions from both DTB copies on disk: the
+# the Gunyah VM payloads.  Most currently have no consumer on this port -- the
+# MPSS remoteproc is disabled, no rmtfs daemon runs, this is the Wi-Fi SKU, and
+# pmOS never instantiates the VMs -- but the kernel still honours the carveouts,
+# which is why MemTotal comes up around 6.4 GiB on an 8 GiB tablet.  Delete
+# only regions verified unused from both DTB copies on disk: the
 # DTB appended to the kernel in boot (the one ABL actually loads) and the
 # vendor_boot dtb field.  Idempotent; runs every boot so a reflashed image is
 # re-reclaimed on its first boot.
@@ -46,7 +46,7 @@ PAGE = 4096
 RESERVED = '/reserved-memory'
 
 # Regions to drop, grouped by why they are dead.  Sizes are the measured
-# reservation, totalling about 812 MiB.
+# reservation, totalling about 710 MiB.
 REGIONS = [
     # modem: remoteproc@4080000 is status=disabled, no rmtfs daemon, Wi-Fi SKU
     'mpss-region@8a800000',                     # 264.0M
@@ -66,10 +66,10 @@ REGIONS = [
     'sec-reset-info@8801ff000',
     'google-debug-kinfo@880b00000',
     'hdm@880b01000',
-    # CDSP: remoteproc@32300000 is status=disabled
-    'cdsp-secure-heap-region@82800000',         #  70.0M
-    'cdsp-region@9c900000',                     #  32.0M
-    'q6-cdsp-dtb-region@9e900000',              #   0.5M
+    # CDSP regions stay reserved even while the remoteproc is disabled. They
+    # are the documented X810 firmware/DTB load addresses and losing them would
+    # let Linux reallocate memory that an NPU-capable kernel may need later.
+    # Keep the secure heap too until its owner/consumer has been audited.
     # splash framebuffer and unused multimedia, none of which has a consumer
     # node.  video-region is kept, video-codec@aa00000 (qcom,sm8550-iris) is
     # status=okay; gpu-micro-code-region is kept, gpu@3d00000/zap-shader
@@ -91,11 +91,11 @@ REGIONS = [
 ]
 
 # memory-region properties left dangling once the regions above are gone.
-# Both consumers are status=disabled and every phandle in each property is
-# removed, so the whole property goes.
+# Only the disabled modem remoteproc loses its referenced carveouts.  Keep
+# CDSP's references with its reserved memory so a later X810 NPU build can
+# opt in without first reconstructing the boot DTB.
 DANGLING = [
     ('/soc@0/remoteproc@4080000', 'memory-region'),
-    ('/soc@0/remoteproc@32300000', 'memory-region'),
 ]
 
 
