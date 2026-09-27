@@ -35,7 +35,16 @@ class SupportRpmStagingTests(unittest.TestCase):
         # Every potentially blocking systemd/SSC operation must share the same
         # run_bounded() deadline; per-probe timeout alone was not sufficient.
         self.assertIn("jobs=$(run_bounded systemctl list-jobs", helper)
-        self.assertIn("err=$(run_bounded systemctl restart hexagonrpcd-adsp-sensorspd.service", helper)
+        self.assertIn(
+            "if run_bounded systemctl is-active --quiet hexagonrpcd-adsp-sensorspd.service",
+            helper,
+        )
+        self.assertIn(
+            'if [ "$attempt" -eq 5 ] && [ "$restarted_sensorspd" -eq 0 ]', helper
+        )
+        self.assertIn(
+            "run_bounded systemctl restart hexagonrpcd-adsp-sensorspd.service", helper
+        )
         self.assertIn("output=$(run_bounded timeout 4 ssccli", helper)
         self.assertIn("run_bounded systemctl restart iio-sensor-proxy.service", helper)
         self.assertIn("run_bounded sleep 1", helper)
