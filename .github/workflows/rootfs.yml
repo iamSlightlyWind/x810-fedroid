@@ -1,44 +1,58 @@
 name: Fedora rootfs
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       fedora_release:
         description: "Fedora release to build against"
+        required: false
         default: "44"
         type: string
       fedora_base_compose:
         description: "Immutable Fedora Everything base compose (must match the selected Fedora release)"
+        required: false
         default: "Fedora-44-20260422.1"
         type: string
       fedora_updates_compose:
         description: "Immutable Fedora updates compose (must match the selected Fedora release)"
+        required: false
         default: "Fedora-44-updates-20260926.0"
         type: string
       desktop:
         description: "gnome = release image (Workstation + device stack + firmware + kernel); core = headless debug image"
+        required: false
         default: "gnome"
-        type: choice
-        options: [gnome, core]
+        type: string
       port_version:
         description: "Explicit Tab Companion port version (MAJOR.MINOR.PATCH); use unknown for debug/unreleased builds"
-        default: "unknown"
+        required: false
+        default: "0.1.0"
         type: string
       kernel_release_tag:
         description: "This repository's kernel build tag; the rootfs downloads its checksum-matched X810 RPM from it"
-        default: "kernel-7.2.0-gts9wifi-1"
+        required: true
+        type: string
+      kernel_rpm_sha256:
+        description: "Exact RPM digest used in the rootfs input fingerprint"
+        required: true
         type: string
       firmware_url:
         description: "Device firmware payload (extracted from the stock partitions)"
+        required: false
         default: "https://github.com/nacht20-de/gts9wifi-fedora/releases/download/kernel-7.2.0-rc3-gts9wifi-2/firmware-samsung-gts9wifi-v2.tar.gz"
         type: string
       firmware_sha256:
         description: "sha256 of the firmware payload"
+        required: false
         default: "30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5"
         type: string
       release_tag:
-        description: "Release tag to (re)publish the finished assets to, e.g. rootfs-f44-gnome-3 (required: there is no artifact upload anymore)"
-        default: ""
+        description: "Immutable rootfs release tag selected by the X810 Fedora orchestrator"
+        required: true
+        type: string
+      build_key:
+        description: "Expected rootfs input fingerprint from the orchestrator"
+        required: true
         type: string
 
 permissions:
@@ -52,16 +66,41 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     steps:
-      - name: Require a release tag
-        run: |
-          [ -n "${{ inputs.release_tag }}" ] || {
-            echo "release_tag is required: assets go straight to the release," >&2
-            echo "and the run no longer uploads Actions artifacts." >&2
-            exit 1
-          }
-
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run rootfs Fedora signing-key contract test
+        run: python3 tools/test-rootfs-repo-gpg.py
+
+      - name: Verify planned rootfs fingerprint
+        env:
+          FEDORA_RELEASE: ${{ inputs.fedora_release }}
+          FEDORA_BASE_COMPOSE: ${{ inputs.fedora_base_compose }}
+          FEDORA_UPDATES_COMPOSE: ${{ inputs.fedora_updates_compose }}
+          GTS9_DESKTOP: ${{ inputs.desktop }}
+          PORT_VERSION: ${{ inputs.port_version }}
+          FIRMWARE_SHA256: ${{ inputs.firmware_sha256 }}
+          KERNEL_RELEASE_TAG: ${{ inputs.kernel_release_tag }}
+          KERNEL_RPM_SHA256: ${{ inputs.kernel_rpm_sha256 }}
+          EXPECTED_BUILD_KEY: ${{ inputs.build_key }}
+        run: |
+          set -euo pipefail
+          actual="$(python3 tools/x810-build-fingerprint.py rootfs \
+            --fedora-release "$FEDORA_RELEASE" \
+            --fedora-base-compose "$FEDORA_BASE_COMPOSE" \
+            --fedora-updates-compose "$FEDORA_UPDATES_COMPOSE" \
+            --desktop "$GTS9_DESKTOP" --port-version "$PORT_VERSION" \
+            --firmware-sha256 "$FIRMWARE_SHA256" \
+            --kernel-rpm-sha256 "$KERNEL_RPM_SHA256")"
+          [ "$actual" = "$EXPECTED_BUILD_KEY" ] || {
+            echo "REFUSING: rootfs build inputs changed after planning." >&2; exit 1;
+          }
+
+      - name: Restore DNF cache for exact immutable Fedora composes
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-dnf-rootfs-cache
+          key: x810-dnf-rootfs-${{ runner.arch }}-${{ inputs.fedora_release }}-${{ inputs.fedora_base_compose }}-${{ inputs.fedora_updates_compose }}
 
       - name: Fetch pinned firmware payload
         env:
@@ -76,6 +115,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           KERNEL_RELEASE_TAG: ${{ inputs.kernel_release_tag }}
+          KERNEL_RPM_SHA256: ${{ inputs.kernel_rpm_sha256 }}
         run: |
           set -euo pipefail
           mkdir -p _ci/kernel
@@ -89,6 +129,7 @@ jobs:
             exit 1
           }
           cp "${rpms[0]}" _ci/kernel.rpm
+          echo "$KERNEL_RPM_SHA256  _ci/kernel.rpm" | sha256sum -c -
 
       - name: Build rootfs in Fedora aarch64 container
         env:
@@ -98,9 +139,12 @@ jobs:
           FEDORA_UPDATES_COMPOSE: ${{ inputs.fedora_updates_compose }}
           GTS9_DESKTOP: ${{ inputs.desktop }}
           FIRMWARE_URL: ${{ inputs.firmware_url }}
+          BUILD_KEY: ${{ inputs.build_key }}
         run: |
+          mkdir -p "$RUNNER_TEMP/x810-dnf-rootfs-cache"
           docker run --rm \
             -v "$PWD:/work" -w /work \
+            -v "$RUNNER_TEMP/x810-dnf-rootfs-cache:/x810-dnf-cache" \
             -e FEDORA_RELEASE \
             -e FEDORA_BASE_COMPOSE \
             -e FEDORA_UPDATES_COMPOSE \
@@ -109,18 +153,28 @@ jobs:
             -e FIRMWARE_TARBALL=/work/_ci/firmware.tar.gz \
             -e FIRMWARE_SOURCE_URL="$FIRMWARE_URL" \
             -e KERNEL_RPM=/work/_ci/kernel.rpm \
+            -e X810_DNF_CACHE_DIR=/x810-dnf-cache \
             -e BUILDER_IMAGE=quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a \
             quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a \
             ./rootfs/build-rootfs.sh
-          # The container writes out/ as root; hand it to the runner user
-          # so the checksum step below can add SHA256SUMS next to it.
+          # The container writes out/ as root; hand it to the runner user so
+          # the key and checksum files can be added next to the build output.
           sudo chown -R "$(id -u):$(id -g)" out
+          printf '%s\n' "$BUILD_KEY" > out/ROOTFS-BUILD-KEY.txt
+          sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/x810-dnf-rootfs-cache"
+
+      - name: Save DNF cache for exact immutable Fedora composes
+        if: success()
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-dnf-rootfs-cache
+          key: x810-dnf-rootfs-${{ runner.arch }}-${{ inputs.fedora_release }}-${{ inputs.fedora_base_compose }}-${{ inputs.fedora_updates_compose }}
 
       - name: Checksum
         run: |
           cd out
           shopt -s nullglob
-          assets=( *.tar.gz *.rpm rootfs-manifest.txt )
+          assets=( *.tar.gz *.rpm rootfs-manifest.txt ROOTFS-BUILD-KEY.txt )
           sha256sum "${assets[@]}" > SHA256SUMS
           cat SHA256SUMS
 
@@ -139,5 +193,5 @@ jobs:
               --notes "Built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           gh release edit "$REL" --latest=false
           shopt -s nullglob
-          assets=(out/*.tar.gz out/*.rpm out/rootfs-manifest.txt out/SHA256SUMS)
+          assets=(out/*.tar.gz out/*.rpm out/rootfs-manifest.txt out/SHA256SUMS out/ROOTFS-BUILD-KEY.txt)
           gh release upload "$REL" --clobber "${assets[@]}"

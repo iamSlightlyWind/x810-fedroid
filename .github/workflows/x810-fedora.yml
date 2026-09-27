@@ -1,0 +1,384 @@
+name: X810 Fedora build and release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "PORT_VERSION"
+      - "kernel/**"
+      - "boot/**"
+      - "rootfs/**"
+      - "specs/**"
+      - "tools/**"
+      - ".github/workflows/kernel.yml"
+      - ".github/workflows/rootfs.yml"
+      - ".github/workflows/full-set.yml"
+      - ".github/workflows/x810-fedora.yml"
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Build new kernel, rootfs, and combined release even if matching successful builds exist"
+        type: boolean
+        default: false
+      bootstrap_kernel_tag:
+        description: "Legacy kernel release to use only when its source/input fingerprint matches this checkout"
+        type: string
+        default: "kernel-7.2.0-gts9wifi-1"
+      port_version:
+        description: "Optional MAJOR.MINOR.PATCH override; blank uses PORT_VERSION"
+        type: string
+        default: ""
+      desktop:
+        description: "Fedora image profile"
+        type: choice
+        options: [gnome, core]
+        default: gnome
+      fedora_base_compose:
+        description: "Pinned Fedora Everything compose"
+        type: string
+        default: "Fedora-44-20260422.1"
+      fedora_updates_compose:
+        description: "Pinned Fedora updates compose"
+        type: string
+        default: "Fedora-44-updates-20260926.0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: x810-fedora-build-release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      kernel_key: ${{ steps.plan.outputs.kernel_key }}
+      kernel_tag: ${{ steps.plan.outputs.kernel_tag }}
+      build_kernel: ${{ steps.plan.outputs.build_kernel }}
+      bootstrap_kernel: ${{ steps.plan.outputs.bootstrap_kernel }}
+      force_rebuild: ${{ steps.plan.outputs.force_rebuild }}
+      port_version: ${{ steps.plan.outputs.port_version }}
+      desktop: ${{ steps.plan.outputs.desktop }}
+      fedora_base_compose: ${{ steps.plan.outputs.fedora_base_compose }}
+      fedora_updates_compose: ${{ steps.plan.outputs.fedora_updates_compose }}
+    steps:
+      - name: Checkout full history for legacy fingerprint verification
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Run lightweight planner and rootfs integrity contract tests
+        run: |
+          python3 tools/test-x810-build-fingerprint.py
+          python3 tools/test-rootfs-repo-gpg.py
+          python3 tools/test-x810-rootfs-archive.py
+
+      - name: Compare inputs with successful component releases
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOOTSTRAP_KERNEL_TAG: ${{ inputs.bootstrap_kernel_tag || 'kernel-7.2.0-gts9wifi-1' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
+          PORT_VERSION_INPUT: ${{ inputs.port_version || '' }}
+          DESKTOP: ${{ inputs.desktop || 'gnome' }}
+          FEDORA_BASE_COMPOSE: ${{ inputs.fedora_base_compose || 'Fedora-44-20260422.1' }}
+          FEDORA_UPDATES_COMPOSE: ${{ inputs.fedora_updates_compose || 'Fedora-44-updates-20260926.0' }}
+          FIRMWARE_SHA256: "30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5"
+        run: |
+          set -euo pipefail
+          port_version="$PORT_VERSION_INPUT"
+          if [ -z "$port_version" ]; then port_version="$(tr -d '\r\n ' < PORT_VERSION)"; fi
+          [[ "$port_version" =~ ^(0|[1-9][0-9]{0,19})\.(0|[1-9][0-9]{0,19})\.(0|[1-9][0-9]{0,19})$ ]] || {
+            echo "REFUSING: port version must be numeric MAJOR.MINOR.PATCH." >&2; exit 1;
+          }
+          [[ "$DESKTOP" == gnome || "$DESKTOP" == core ]] || exit 1
+
+          kernel_key="$(python3 tools/x810-build-fingerprint.py kernel \
+            --ref "$GITHUB_SHA" --firmware-sha256 "$FIRMWARE_SHA256" \
+            --fedora-base-compose "$FEDORA_BASE_COMPOSE" \
+            --fedora-updates-compose "$FEDORA_UPDATES_COMPOSE")"
+          kernel_base="x810-kernel-${kernel_key:0:16}"
+          force=false
+          [ "$FORCE_REBUILD" != true ] || force=true
+          if [ "$force" = true ]; then
+            kernel_tag="${kernel_base}-r${GITHUB_RUN_ID}"
+            build_kernel=true
+            bootstrap_kernel=false
+          else
+            reusable=""
+            release_list="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
+              --json tagName,publishedAt --jq \
+              "sort_by(.publishedAt) | reverse | map(select(.tagName | startswith(\"${kernel_base}\"))) | .[].tagName" 2>/dev/null || true)"
+            while IFS= read -r candidate; do
+              [ -n "$candidate" ] || continue
+              dir="$RUNNER_TEMP/kernel-check-${GITHUB_RUN_ID}-${RANDOM}"
+              mkdir -p "$dir"
+              if gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
+                  --pattern KERNEL-BUILD-KEY.txt --pattern BUNDLE-SHA256SUMS \
+                  --pattern RPM-SHA256SUMS --pattern 'linux-gts9wifi-*.rpm' --pattern '*.img' \
+                  --pattern 'gts9wifi-fedora-*.zip' >/dev/null 2>&1 && \
+                 [ "$(cat "$dir/KERNEL-BUILD-KEY.txt" 2>/dev/null || true)" = "$kernel_key" ] && \
+                 (cd "$dir" && sha256sum -c BUNDLE-SHA256SUMS >/dev/null && sha256sum -c RPM-SHA256SUMS >/dev/null); then
+                reusable="$candidate"
+                break
+              fi
+            done <<< "$release_list"
+            if [ -n "$reusable" ]; then
+              kernel_tag="$reusable"
+              build_kernel=false
+              bootstrap_kernel=false
+            else
+              # One-time bootstrap for the existing manual release. Trust it
+              # only if its own metadata proves exact build parameters and its
+              # recorded source commit produces this very same component key.
+              dir="$RUNNER_TEMP/kernel-bootstrap-${GITHUB_RUN_ID}"
+              mkdir -p "$dir"
+              bootstrap_ok=false
+              if gh release download "$BOOTSTRAP_KERNEL_TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
+                  --pattern BUILD-METADATA.txt --pattern BUNDLE-SHA256SUMS --pattern RPM-SHA256SUMS \
+                  --pattern 'linux-gts9wifi-*.rpm' --pattern '*.img' --pattern 'gts9wifi-fedora-*.zip' >/dev/null 2>&1 && \
+                 (cd "$dir" && sha256sum -c BUNDLE-SHA256SUMS >/dev/null && sha256sum -c RPM-SHA256SUMS >/dev/null); then
+                field() {
+                  python3 - "$dir/BUILD-METADATA.txt" "$1" <<'PY'
+          import sys
+          rows = [line.partition('=')[2].rstrip('\n') for line in open(sys.argv[1], encoding='utf-8') if line.startswith(sys.argv[2] + '=')]
+          if len(rows) != 1: raise SystemExit(1)
+          print(rows[0])
+          PY
+                }
+                old_commit="$(field repository_commit || true)"
+                old_key=""
+                if [[ "$old_commit" =~ ^[0-9a-f]{40,64}$ ]] && git cat-file -e "$old_commit^{commit}" 2>/dev/null; then
+                  old_key="$(python3 tools/x810-build-fingerprint.py kernel \
+                    --ref "$old_commit" --firmware-sha256 "$FIRMWARE_SHA256" \
+                    --fedora-base-compose "$FEDORA_BASE_COMPOSE" \
+                    --fedora-updates-compose "$FEDORA_UPDATES_COMPOSE")"
+                fi
+                if [ "$old_key" = "$kernel_key" ] && \
+                   [ "$(field firmware_sha256 || true)" = "$FIRMWARE_SHA256" ] && \
+                   [ "$(field builder_image || true)" = "quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a" ] && \
+                   [ "$(field fedora_base_compose || true)" = "$FEDORA_BASE_COMPOSE" ] && \
+                   [ "$(field fedora_updates_compose || true)" = "$FEDORA_UPDATES_COMPOSE" ]; then
+                  bootstrap_ok=true
+                fi
+              fi
+              if [ "$bootstrap_ok" = true ]; then
+                kernel_tag="$BOOTSTRAP_KERNEL_TAG"
+                build_kernel=false
+                bootstrap_kernel=true
+              else
+                kernel_tag="$kernel_base"
+                build_kernel=true
+                bootstrap_kernel=false
+              fi
+            fi
+          fi
+
+          {
+            echo "kernel_key=$kernel_key"
+            echo "kernel_tag=$kernel_tag"
+            echo "build_kernel=$build_kernel"
+            echo "bootstrap_kernel=$bootstrap_kernel"
+            echo "force_rebuild=$force"
+            echo "port_version=$port_version"
+            echo "desktop=$DESKTOP"
+            echo "fedora_base_compose=$FEDORA_BASE_COMPOSE"
+            echo "fedora_updates_compose=$FEDORA_UPDATES_COMPOSE"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### X810 Fedora release plan"
+            echo "- Kernel/boot: **$([ "$build_kernel" = true ] && echo build || echo reuse)** `$kernel_tag`"
+            echo "- Rootfs: fingerprint and reuse check follows kernel verification."
+            echo "- Port version: `$port_version`; profile: `$DESKTOP`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build_kernel:
+    needs: plan
+    if: needs.plan.outputs.build_kernel == 'true'
+    uses: ./.github/workflows/kernel.yml
+    permissions:
+      contents: write
+    with:
+      release_tag: ${{ needs.plan.outputs.kernel_tag }}
+      build_key: ${{ needs.plan.outputs.kernel_key }}
+      firmware_url: https://github.com/nacht20-de/gts9wifi-fedora/releases/download/kernel-7.2.0-rc3-gts9wifi-2/firmware-samsung-gts9wifi-v2.tar.gz
+      firmware_sha256: 30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5
+      fedora_base_compose: ${{ needs.plan.outputs.fedora_base_compose }}
+      fedora_updates_compose: ${{ needs.plan.outputs.fedora_updates_compose }}
+
+  resolve_rootfs:
+    needs: [plan, build_kernel]
+    if: >-
+      always() && needs.plan.result == 'success' &&
+      (needs.build_kernel.result == 'success' || needs.build_kernel.result == 'skipped')
+    runs-on: ubuntu-24.04
+    outputs:
+      kernel_rpm_sha256: ${{ steps.resolve.outputs.kernel_rpm_sha256 }}
+      rootfs_key: ${{ steps.resolve.outputs.rootfs_key }}
+      rootfs_tag: ${{ steps.resolve.outputs.rootfs_tag }}
+      build_rootfs: ${{ steps.resolve.outputs.build_rootfs }}
+      full_set_tag: ${{ steps.resolve.outputs.full_set_tag }}
+      full_set_key: ${{ steps.resolve.outputs.full_set_key }}
+      build_full_set: ${{ steps.resolve.outputs.build_full_set }}
+    steps:
+      - name: Checkout sources for rootfs key calculation
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify selected kernel release and plan rootfs/full-set
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KERNEL_TAG: ${{ needs.plan.outputs.kernel_tag }}
+          KERNEL_KEY: ${{ needs.plan.outputs.kernel_key }}
+          IS_BOOTSTRAP: ${{ needs.plan.outputs.bootstrap_kernel }}
+          FORCE_REBUILD: ${{ needs.plan.outputs.force_rebuild }}
+          PORT_VERSION: ${{ needs.plan.outputs.port_version }}
+          DESKTOP: ${{ needs.plan.outputs.desktop }}
+          FEDORA_BASE_COMPOSE: ${{ needs.plan.outputs.fedora_base_compose }}
+          FEDORA_UPDATES_COMPOSE: ${{ needs.plan.outputs.fedora_updates_compose }}
+          FIRMWARE_SHA256: 30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5
+        run: |
+          set -euo pipefail
+          kdir="$RUNNER_TEMP/selected-kernel-${GITHUB_RUN_ID}"
+          mkdir -p "$kdir"
+          download_patterns=(
+            --pattern BUILD-METADATA.txt
+            --pattern BUNDLE-SHA256SUMS
+            --pattern RPM-SHA256SUMS
+            --pattern 'linux-gts9wifi-*.rpm'
+            --pattern '*.img'
+            --pattern 'gts9wifi-fedora-*.zip'
+          )
+          # The validated one-time bootstrap kernel predates build-key assets.
+          if [ "$IS_BOOTSTRAP" != true ]; then
+            download_patterns+=(--pattern KERNEL-BUILD-KEY.txt)
+          fi
+          gh release download "$KERNEL_TAG" --repo "$GITHUB_REPOSITORY" --dir "$kdir" "${download_patterns[@]}"
+          (cd "$kdir" && sha256sum -c BUNDLE-SHA256SUMS && sha256sum -c RPM-SHA256SUMS)
+          if [ -f "$kdir/KERNEL-BUILD-KEY.txt" ]; then
+            [ "$(cat "$kdir/KERNEL-BUILD-KEY.txt")" = "$KERNEL_KEY" ] || {
+              echo "REFUSING: kernel release fingerprint doesn't match the plan." >&2; exit 1;
+            }
+          elif [ "$IS_BOOTSTRAP" != true ]; then
+            echo "REFUSING: a non-bootstrap kernel release lacks its build-key asset." >&2; exit 1
+          fi
+          shopt -s nullglob
+          rpms=("$kdir"/linux-gts9wifi-*.rpm)
+          [ "${#rpms[@]}" -eq 1 ] || { echo "REFUSING: expected exactly one kernel RPM." >&2; exit 1; }
+          kernel_rpm_sha256="$(sha256sum "${rpms[0]}" | cut -d' ' -f1)"
+
+          rootfs_key="$(python3 tools/x810-build-fingerprint.py rootfs \
+            --ref "$GITHUB_SHA" --fedora-release 44 \
+            --fedora-base-compose "$FEDORA_BASE_COMPOSE" \
+            --fedora-updates-compose "$FEDORA_UPDATES_COMPOSE" \
+            --desktop "$DESKTOP" --port-version "$PORT_VERSION" \
+            --firmware-sha256 "$FIRMWARE_SHA256" \
+            --kernel-rpm-sha256 "$kernel_rpm_sha256")"
+          rootfs_base="x810-rootfs-f44-${DESKTOP}-${rootfs_key:0:16}"
+          build_rootfs=true
+          if [ "$FORCE_REBUILD" = true ]; then
+            rootfs_tag="${rootfs_base}-r${GITHUB_RUN_ID}"
+          else
+            reusable=""
+            release_list="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
+              --json tagName,publishedAt --jq \
+              "sort_by(.publishedAt) | reverse | map(select(.tagName | startswith(\"${rootfs_base}\"))) | .[].tagName" 2>/dev/null || true)"
+            while IFS= read -r candidate; do
+              [ -n "$candidate" ] || continue
+              rdir="$RUNNER_TEMP/rootfs-check-${GITHUB_RUN_ID}-${RANDOM}"
+              mkdir -p "$rdir"
+              if gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$rdir" \
+                  --pattern ROOTFS-BUILD-KEY.txt --pattern SHA256SUMS \
+                  --pattern '*.tar.gz' --pattern '*.rpm' --pattern rootfs-manifest.txt >/dev/null 2>&1 && \
+                 [ "$(cat "$rdir/ROOTFS-BUILD-KEY.txt" 2>/dev/null || true)" = "$rootfs_key" ] && \
+                 (cd "$rdir" && sha256sum -c SHA256SUMS >/dev/null); then
+                reusable="$candidate"; break
+              fi
+            done <<< "$release_list"
+            if [ -n "$reusable" ]; then
+              rootfs_tag="$reusable"
+              build_rootfs=false
+            else
+              rootfs_tag="$rootfs_base"
+            fi
+          fi
+
+          full_key="$(python3 tools/x810-build-fingerprint.py full-set \
+            --ref "$GITHUB_SHA" --port-version "$PORT_VERSION" \
+            --kernel-build-key "$KERNEL_KEY" --rootfs-build-key "$rootfs_key")"
+          full_tag="x810-fedora-${PORT_VERSION}-${full_key:0:20}"
+          if [ "$FORCE_REBUILD" = true ]; then full_tag="${full_tag}-r${GITHUB_RUN_ID}"; fi
+          build_full_set=true
+          if [ "$FORCE_REBUILD" != true ]; then
+            current_latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            if [ "$current_latest" = "$full_tag" ]; then
+              fdir="$RUNNER_TEMP/fullset-check-${GITHUB_RUN_ID}"
+              mkdir -p "$fdir"
+              if gh release download "$full_tag" --repo "$GITHUB_REPOSITORY" --dir "$fdir" \
+                  --pattern KERNEL-BUILD-KEY.txt --pattern ROOTFS-BUILD-KEY.txt \
+                  --pattern FULL-SET-BUILD-KEY.txt \
+                  --pattern port-release.json --pattern 'x810-fedora-sm-x810-*-clean-install.tar.gz' >/dev/null 2>&1 && \
+                 [ "$(cat "$fdir/KERNEL-BUILD-KEY.txt" 2>/dev/null || true)" = "$KERNEL_KEY" ] && \
+                 [ "$(cat "$fdir/ROOTFS-BUILD-KEY.txt" 2>/dev/null || true)" = "$rootfs_key" ] && \
+                 [ "$(cat "$fdir/FULL-SET-BUILD-KEY.txt" 2>/dev/null || true)" = "$full_key" ]; then
+                build_full_set=false
+              fi
+            fi
+          fi
+          {
+            echo "kernel_rpm_sha256=$kernel_rpm_sha256"
+            echo "rootfs_key=$rootfs_key"
+            echo "rootfs_tag=$rootfs_tag"
+            echo "build_rootfs=$build_rootfs"
+            echo "full_set_tag=$full_tag"
+            echo "full_set_key=$full_key"
+            echo "build_full_set=$build_full_set"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "- Kernel RPM SHA-256: `$kernel_rpm_sha256`"
+            echo "- Rootfs: **$([ "$build_rootfs" = true ] && echo build || echo reuse)** `$rootfs_tag`"
+            echo "- Combined release: **$([ "$build_full_set" = true ] && echo assemble-or-promote || echo already-current)** `$full_tag`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build_rootfs:
+    needs: [plan, build_kernel, resolve_rootfs]
+    if: >-
+      always() && needs.plan.result == 'success' && needs.resolve_rootfs.result == 'success' &&
+      (needs.build_kernel.result == 'success' || needs.build_kernel.result == 'skipped') &&
+      needs.resolve_rootfs.outputs.build_rootfs == 'true'
+    uses: ./.github/workflows/rootfs.yml
+    permissions:
+      contents: write
+    with:
+      release_tag: ${{ needs.resolve_rootfs.outputs.rootfs_tag }}
+      build_key: ${{ needs.resolve_rootfs.outputs.rootfs_key }}
+      kernel_release_tag: ${{ needs.plan.outputs.kernel_tag }}
+      kernel_rpm_sha256: ${{ needs.resolve_rootfs.outputs.kernel_rpm_sha256 }}
+      port_version: ${{ needs.plan.outputs.port_version }}
+      desktop: ${{ needs.plan.outputs.desktop }}
+      fedora_release: "44"
+      fedora_base_compose: ${{ needs.plan.outputs.fedora_base_compose }}
+      fedora_updates_compose: ${{ needs.plan.outputs.fedora_updates_compose }}
+      firmware_url: https://github.com/nacht20-de/gts9wifi-fedora/releases/download/kernel-7.2.0-rc3-gts9wifi-2/firmware-samsung-gts9wifi-v2.tar.gz
+      firmware_sha256: 30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5
+
+  publish_full_set:
+    needs: [plan, build_kernel, resolve_rootfs, build_rootfs]
+    if: >-
+      always() && needs.plan.result == 'success' && needs.resolve_rootfs.result == 'success' &&
+      (needs.build_kernel.result == 'success' || needs.build_kernel.result == 'skipped') &&
+      (needs.build_rootfs.result == 'success' || needs.build_rootfs.result == 'skipped') &&
+      needs.resolve_rootfs.outputs.build_full_set == 'true'
+    uses: ./.github/workflows/full-set.yml
+    permissions:
+      contents: write
+    with:
+      kernel_release: ${{ needs.plan.outputs.kernel_tag }}
+      kernel_build_key: ${{ needs.plan.outputs.kernel_key }}
+      rootfs_release: ${{ needs.resolve_rootfs.outputs.rootfs_tag }}
+      port_version: ${{ needs.plan.outputs.port_version }}
+      release_tag: ${{ needs.resolve_rootfs.outputs.full_set_tag }}
+      full_set_key: ${{ needs.resolve_rootfs.outputs.full_set_key }}

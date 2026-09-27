@@ -110,6 +110,17 @@ class RootfsArchiveTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "hostname must be neutral"):
                 verifier.inspect(str(archive))
 
+    def test_rejects_cached_dnf_packages_in_rootfs_archive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive = Path(temp) / "rootfs.tar.gz"
+
+            def add_cached_rpm(tar):
+                add_file(tar, "./var/cache/libdnf5/packages/example.rpm", b"cached rpm")
+
+            make_archive(archive, extra=add_cached_rpm)
+            with self.assertRaisesRegex(ValueError, "package-manager cache data"):
+                verifier.inspect(str(archive))
+
     def test_rejects_parent_traversal_and_file_beneath_symlink(self):
         cases = (
             lambda archive: add_file(archive, "./../../escape", b"bad"),

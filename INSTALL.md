@@ -129,20 +129,33 @@ need a physical validation run. Treat it as experimental, not a proven
 consumer installer. Do not use the developer-only `split --write` command as
 a substitute for the guided flow.
 
-The repo can assemble a clean-install bundle only after matching kernel and
-rootfs release assets exist. No release was built or published by this code
-change. To create a release after committing/pushing the repository, use the
-Actions workflows in this order:
+The repo assembles a clean-install bundle from matching kernel and rootfs
+releases. To build or publish, push relevant changes to `main` or manually run
+**X810 Fedora build and release** (`.github/workflows/x810-fedora.yml`) in
+GitHub Actions. The orchestrator fingerprints the kernel/boot, rootfs, and
+combined release inputs independently; it reuses a prior successful component
+only when its fingerprint and checksums match. Otherwise it builds just the
+changed component(s), then assembles and publishes the matching full set. The
+first run can reuse the validated legacy kernel release
+`kernel-7.2.0-gts9wifi-1` if its recorded source and build parameters match;
+it will build a fresh rootfs because no matching rootfs/full-set release is
+available yet.
 
-1. **Kernel build** (`.github/workflows/kernel.yml`) — choose a unique
-   `kernel_release` tag; the source tarball hash and Fedora toolchain inputs
-   are pinned.
-2. **Fedora rootfs** (`.github/workflows/rootfs.yml`) — select the kernel tag
-   just produced, provide a numeric `port_version` such as `1.0.0`, and choose
-   a unique `release_tag`.
-3. **Full set release** (`.github/workflows/full-set.yml`) — select both
-   source tags, use the same `port_version`, and provide a new combined
-   `release_tag`.
+The manual workflow offers a **Force rebuild** option, port-version override,
+desktop profile, and pinned Fedora compose inputs. Force rebuild creates new
+component release tags even when matching builds exist. The kernel and Fedora
+DNF package caches are Actions caches only: generated rootfs output stays
+fresh, and cache data is kept outside the installroot/image. Kernel source
+downloads are hash-verified before entering the cache. Cache misses affect
+build time, not release correctness.
+
+The component workflows (`kernel.yml`, `rootfs.yml`, and `full-set.yml`) are
+reusable implementation jobs and are not meant to be started individually.
+`port-updates.yml` remains a separate compatibility workflow: older Fedora
+Tab Companion clients query its successful run records and corresponding
+`x810-fedora-port-build-<runid>` releases for in-place Linux support-RPM
+updates. It does not build the install image. `boot-bundle.yml` is likewise a
+reusable kernel build helper, not the user-facing entry point.
 
 The full-set workflow publishes the updater index and a separate deterministic
 `x810-fedora-sm-x810-<tag>-clean-install.tar.gz` with a schema-1 manifest,

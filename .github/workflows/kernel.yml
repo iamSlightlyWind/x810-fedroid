@@ -1,27 +1,35 @@
 name: Kernel build
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       firmware_url:
         description: "Device firmware payload (GPU/ADSP blobs for the initramfs)"
+        required: false
         default: "https://github.com/nacht20-de/gts9wifi-fedora/releases/download/kernel-7.2.0-rc3-gts9wifi-2/firmware-samsung-gts9wifi-v2.tar.gz"
         type: string
       firmware_sha256:
         description: "sha256 of the firmware payload"
+        required: false
         default: "30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5"
         type: string
       fedora_base_compose:
         description: "Immutable Fedora Everything base compose used for the build toolchain"
+        required: false
         default: "Fedora-44-20260422.1"
         type: string
       fedora_updates_compose:
         description: "Immutable Fedora updates compose used for the build toolchain"
+        required: false
         default: "Fedora-44-updates-20260926.0"
         type: string
       release_tag:
-        description: "Release tag to (re)publish the RPM, boot bundle and TWRP zip to, e.g. kernel-7.2.0-gts9wifi-1 (required: there is no artifact upload anymore)"
-        default: ""
+        description: "Immutable release tag selected by the X810 Fedora orchestrator"
+        required: true
+        type: string
+      build_key:
+        description: "Expected kernel input fingerprint from the orchestrator"
+        required: true
         type: string
 
 env:
@@ -36,16 +44,38 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
     steps:
-      - name: Require a release tag
-        run: |
-          [ -n "${{ inputs.release_tag }}" ] || {
-            echo "release_tag is required: assets go straight to the release," >&2
-            echo "and the run no longer uploads Actions artifacts." >&2
-            exit 1
-          }
-
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify planned kernel fingerprint
+        env:
+          FIRMWARE_SHA256: ${{ inputs.firmware_sha256 }}
+          FEDORA_BASE_COMPOSE: ${{ inputs.fedora_base_compose }}
+          FEDORA_UPDATES_COMPOSE: ${{ inputs.fedora_updates_compose }}
+          EXPECTED_BUILD_KEY: ${{ inputs.build_key }}
+        run: |
+          set -euo pipefail
+          actual="$(python3 tools/x810-build-fingerprint.py kernel \
+            --firmware-sha256 "$FIRMWARE_SHA256" \
+            --fedora-base-compose "$FEDORA_BASE_COMPOSE" \
+            --fedora-updates-compose "$FEDORA_UPDATES_COMPOSE")"
+          [ "$actual" = "$EXPECTED_BUILD_KEY" ] || {
+            echo "REFUSING: kernel build inputs changed after planning." >&2; exit 1;
+          }
+
+      - name: Restore kernel source and ccache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-kernel-cache
+          key: x810-kernel-${{ runner.arch }}-linux72-${{ hashFiles('kernel/**') }}
+          restore-keys: |
+            x810-kernel-${{ runner.arch }}-linux72-
+
+      - name: Restore Fedora DNF cache for pinned kernel composes
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-dnf-kernel-cache
+          key: x810-dnf-kernel-${{ runner.arch }}-${{ inputs.fedora_base_compose }}-${{ inputs.fedora_updates_compose }}
 
       - name: Build kernel RPM, initramfs, boot bundle and TWRP zip
         env:
@@ -55,7 +85,9 @@ jobs:
           FEDORA_UPDATES_COMPOSE: ${{ inputs.fedora_updates_compose }}
           LINUX_SOURCE_SHA256: "f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
           BUILD_SOURCE_SHA: ${{ github.sha }}
+          BUILD_KEY: ${{ inputs.build_key }}
         run: |
+          mkdir -p "$RUNNER_TEMP/x810-kernel-cache/ccache" "$RUNNER_TEMP/x810-dnf-kernel-cache"
           docker run --rm \
             -e KVER \
             -e FIRMWARE_URL \
@@ -64,7 +96,13 @@ jobs:
             -e FEDORA_UPDATES_COMPOSE \
             -e LINUX_SOURCE_SHA256 \
             -e BUILD_SOURCE_SHA \
+            -e BUILD_KEY \
+            -e CCACHE_DIR=/x810-cache/ccache \
+            -e CCACHE_COMPILERCHECK=content \
+            -e CCACHE_MAXSIZE=6G \
             -v "$PWD:/work" -w /work \
+            -v "$RUNNER_TEMP/x810-kernel-cache:/x810-cache" \
+            -v "$RUNNER_TEMP/x810-dnf-kernel-cache:/var/cache/libdnf5" \
             quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a \
             bash -lc '
               set -euxo pipefail
@@ -76,6 +114,9 @@ jobs:
               repo_args=(--disablerepo="*" \
                 --repofrompath=x810-fedora-snapshot,"$base_url" \
                 --repofrompath=x810-updates-snapshot,"$updates_url" \
+                --setopt=cachedir=/var/cache/libdnf5 \
+                --setopt=system_cachedir=/var/cache/libdnf5 \
+                --setopt=keepcache=True \
                 --setopt=x810-fedora-snapshot.gpgcheck=1 \
                 --setopt=x810-updates-snapshot.gpgcheck=1 \
                 --enablerepo=x810-fedora-snapshot --enablerepo=x810-updates-snapshot)
@@ -83,15 +124,22 @@ jobs:
                   openssl openssl-devel elfutils-libelf-devel python3 tar xz \
                   zstd rpm-build ccache dtc findutils dwarves dracut \
                   cpio lz4 iproute >/dev/null
+              mkdir -p /x810-cache/ccache-bin
+              ln -sf "$(command -v ccache)" /x810-cache/ccache-bin/clang
+              export PATH="/x810-cache/ccache-bin:$PATH"
 
               # --- kernel ---
-              mkdir -p /tmp/kcache
-              if [ ! -f /tmp/kcache/linux-7.2.tar.xz ]; then
+              mkdir -p /x810-cache
+              if [ ! -s /x810-cache/linux-7.2.tar.xz ] || \
+                 [ "$(sha256sum /x810-cache/linux-7.2.tar.xz | cut -d" " -f1)" != "$LINUX_SOURCE_SHA256" ]; then
+                rm -f /x810-cache/linux-7.2.tar.xz /x810-cache/linux-7.2.tar.xz.part
                 curl -sfL https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.tar.xz \
-                  -o /tmp/kcache/linux-7.2.tar.xz
+                  -o /x810-cache/linux-7.2.tar.xz.part
+                echo "$LINUX_SOURCE_SHA256  /x810-cache/linux-7.2.tar.xz.part" | sha256sum -c -
+                mv /x810-cache/linux-7.2.tar.xz.part /x810-cache/linux-7.2.tar.xz
               fi
-              echo "$LINUX_SOURCE_SHA256  /tmp/kcache/linux-7.2.tar.xz" | sha256sum -c -
-              tar xf /tmp/kcache/linux-7.2.tar.xz
+              echo "$LINUX_SOURCE_SHA256  /x810-cache/linux-7.2.tar.xz" | sha256sum -c -
+              tar xf /x810-cache/linux-7.2.tar.xz
               cd linux-7.2
               export SOURCE_DATE_EPOCH=0
               export KBUILD_BUILD_TIMESTAMP="1970-01-01 00:00:00 UTC"
@@ -155,16 +203,40 @@ jobs:
                 printf "kernel_source_url=https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.tar.xz\\n"
                 printf "kernel_source_sha256=%s\\n" "$LINUX_SOURCE_SHA256"
                 printf "kernel_source=linux-7.2.0 plus repository kernel/prepare.sh and patches\\n"
+                printf "x810_build_key=%s\\n" "$BUILD_KEY"
               } >> out-bundle/BUILD-METADATA.txt
 
               # --- TWRP zip ---
               python3 /work/tools/make-twrp-zip.py out-bundle \
                 out-twrp/gts9wifi-fedora-"$KVER".zip --project /work
+              printf "%s\\n" "$BUILD_KEY" > out-bundle/KERNEL-BUILD-KEY.txt
+              (cd out-bundle && sha256sum KERNEL-BUILD-KEY.txt >> SHA256SUMS)
+              ccache --show-stats
 
               # The container owns this bind-mounted directory; rename here
               # before returning to the runner, which cannot write to it.
               mv out-bundle/SHA256SUMS out-bundle/BUNDLE-SHA256SUMS
             '
+
+      - name: Make cache files readable by the runner
+        if: success()
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" \
+            "$RUNNER_TEMP/x810-kernel-cache" "$RUNNER_TEMP/x810-dnf-kernel-cache" || true
+
+      - name: Save kernel source and ccache
+        if: success()
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-kernel-cache
+          key: x810-kernel-${{ runner.arch }}-linux72-${{ hashFiles('kernel/**') }}
+
+      - name: Save Fedora DNF cache
+        if: success()
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/x810-dnf-kernel-cache
+          key: x810-dnf-kernel-${{ runner.arch }}-${{ inputs.fedora_base_compose }}-${{ inputs.fedora_updates_compose }}
 
       # Same model as the rootfs workflow: publish straight from the runner to
       # the named release instead of uploading Actions artifacts, so there is
@@ -183,5 +255,5 @@ jobs:
           gh release upload "$REL" --clobber \
             out-kernel/*.rpm \
             out-kernel/RPM-SHA256SUMS \
-            out-bundle/*.img out-bundle/BUNDLE-SHA256SUMS out-bundle/BUILD-METADATA.txt \
+            out-bundle/*.img out-bundle/BUNDLE-SHA256SUMS out-bundle/BUILD-METADATA.txt out-bundle/KERNEL-BUILD-KEY.txt \
             out-twrp/*.zip

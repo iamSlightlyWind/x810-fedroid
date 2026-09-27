@@ -9,6 +9,9 @@
 #       quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a \
 #       ./rootfs/build-rootfs.sh
 #
+# Optional X810_DNF_CACHE_DIR selects an external DNF5 cache directory; it
+# defaults to /tmp/x810-dnf-cache for local builds. CI mounts its cache there.
+#
 # Everything is native arm64: no qemu, no cross toolchain.
 #
 # Default image = Fedora Workstation (GNOME + gdm), full device stack,
@@ -49,6 +52,14 @@ fedora_base_compose="${FEDORA_BASE_COMPOSE:-Fedora-44-20260422.1}"
 fedora_updates_compose="${FEDORA_UPDATES_COMPOSE:-Fedora-44-updates-20260926.0}"
 builder_image="${BUILDER_IMAGE:-unknown-local-environment}"
 repo_root="https://kojipkgs.fedoraproject.org/compose"
+# DNF5 otherwise places an installroot's system cache under its /var/cache.
+# Use an explicit host/container path instead; local builds get an ephemeral
+# cache, while CI may point this at a runner cache mounted into the builder.
+dnf_cache_dir="${X810_DNF_CACHE_DIR:-/tmp/x810-dnf-cache}"
+if [[ "$dnf_cache_dir" != /* ]]; then
+    echo "ERROR: X810_DNF_CACHE_DIR must be an absolute path outside the rootfs: $dnf_cache_dir" >&2
+    exit 2
+fi
 
 if [[ ! "$fedora_base_compose" =~ ^Fedora-${fedora_release}-[0-9]{8}\.[0-9]+$ ]]; then
     echo "ERROR: FEDORA_BASE_COMPOSE must be an immutable Fedora-${fedora_release}-YYYYMMDD.N compose" >&2
@@ -62,12 +73,29 @@ fedora_base_url="$repo_root/${fedora_release}/${fedora_base_compose}/compose/Eve
 fedora_updates_url="$repo_root/updates/${fedora_updates_compose}/compose/Everything/aarch64/os/"
 fedora_repo_id="x810-${fedora_base_compose}"
 updates_repo_id="x810-${fedora_updates_compose}"
+# The repos below are added with --repofrompath, so they do not inherit the
+# Fedora repo definitions' gpgkey setting. Keep package signature checking
+# enabled and explicitly attach Fedora's release/architecture signing key.
+# The pinned Fedora 44 aarch64 builder carries this standard path as a
+# symlink to RPM-GPG-KEY-fedora-44-primary.
+fedora_gpgkey_file="/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-${fedora_release}-aarch64"
+fedora_gpgkey_url="file://${fedora_gpgkey_file}"
+if [ ! -s "$fedora_gpgkey_file" ]; then
+    echo "ERROR: Fedora ${fedora_release} aarch64 RPM signing key is missing: $fedora_gpgkey_file" >&2
+    echo "Run this rootfs build in the pinned Fedora builder with fedora-gpg-keys installed." >&2
+    exit 2
+fi
 dnf_repo_args=(
     --disablerepo='*'
     --repofrompath="$fedora_repo_id,$fedora_base_url"
     --repofrompath="$updates_repo_id,$fedora_updates_url"
     --setopt="$fedora_repo_id.gpgcheck=1"
     --setopt="$updates_repo_id.gpgcheck=1"
+    --setopt="$fedora_repo_id.gpgkey=$fedora_gpgkey_url"
+    --setopt="$updates_repo_id.gpgkey=$fedora_gpgkey_url"
+    --setopt=cachedir="$dnf_cache_dir"
+    --setopt=system_cachedir="$dnf_cache_dir"
+    --setopt=keepcache=True
     --enablerepo="$fedora_repo_id"
     --enablerepo="$updates_repo_id"
 )
@@ -77,6 +105,13 @@ repo_dir="$(dirname "$script_dir")"
 rootfs="${ROOTFS_DIR:-$repo_dir/out/rootfs}"
 outdir="${OUT_DIR:-$repo_dir/out}"
 assets="$repo_dir/local-assets"
+rootfs_real="$(realpath -m "$rootfs")"
+dnf_cache_real="$(realpath -m "$dnf_cache_dir")"
+if [[ "$dnf_cache_real" == "$rootfs_real" || "$dnf_cache_real" == "$rootfs_real/"* ]]; then
+    echo "ERROR: X810_DNF_CACHE_DIR must be outside the rootfs ($rootfs_real): $dnf_cache_real" >&2
+    exit 2
+fi
+mkdir -p "$dnf_cache_dir"
 
 tree_sha256() {
     local tree="$1"
@@ -551,7 +586,8 @@ done
 # gts9wifi-android-parts.service + vendor.mount (super -> erofs /vendor).
 
 echo ">>> Cleaning"
-rm -rf "$rootfs/var/cache/dnf" "$rootfs/var/cache/rpm" "$rootfs/var/log/dnf*"
+rm -rf "$rootfs/var/cache/libdnf5" "$rootfs/var/cache/dnf" \
+    "$rootfs/var/cache/rpm" "$rootfs/var/log/dnf*"
 rm -f "$rootfs/etc/machine-id" "$rootfs/var/lib/systemd/random-seed"
 
 # Stamp after all overlays/assets have been installed so this is the exact
@@ -573,7 +609,8 @@ if [ "$port_version" != "unknown" ]; then
         "$rootfs" "$port_version" "$outdir")"
     dnf -y --installroot="$rootfs" --use-host-config "${dnf_repo_args[@]}" \
         --setopt=install_weak_deps=False install "$support_rpm"
-    rm -rf "$rootfs/var/cache/dnf" "$rootfs/var/cache/rpm" "$rootfs/var/log/dnf*"
+    rm -rf "$rootfs/var/cache/libdnf5" "$rootfs/var/cache/dnf" \
+        "$rootfs/var/cache/rpm" "$rootfs/var/log/dnf*"
 fi
 
 echo ">>> Packing"

@@ -1,23 +1,31 @@
 name: Full set release
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       kernel_release:
         description: "Kernel release tag to take the RPM, boot bundle and TWRP zip from"
-        default: "kernel-7.2.0-gts9wifi-1"
+        required: true
+        type: string
+      kernel_build_key:
+        description: "Kernel/boot component fingerprint to preserve for the installer and update bundle"
+        required: true
+        type: string
+      full_set_key:
+        description: "Combined publication input fingerprint calculated by the orchestrator"
+        required: true
         type: string
       rootfs_release:
         description: "Rootfs release tag to take the tarball and manifest from"
-        default: "rootfs-f44-gnome-5"
+        required: true
         type: string
       port_version:
         description: "Explicit numeric port version expected in the selected rootfs release"
-        default: "unknown"
+        required: true
         type: string
       release_tag:
-        description: "Combined release tag to publish, e.g. gts9wifi-fedora-7.2.0-1 (required: there is no artifact upload anymore)"
-        default: ""
+        description: "Content-addressed combined release tag selected by the orchestrator"
+        required: true
         type: string
 
 permissions:
@@ -35,16 +43,6 @@ jobs:
         # Pin the action implementation rather than following a mutable tag.
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Require a release tag
-        env:
-          REL: ${{ inputs.release_tag }}
-        run: |
-          [ -n "$REL" ] || {
-            echo "release_tag is required: assets go straight to the release," >&2
-            echo "and the run does not upload Actions artifacts." >&2
-            exit 1
-          }
-
       - name: Install RPM inspection tools
         run: |
           if ! command -v rpm >/dev/null 2>&1; then
@@ -59,6 +57,8 @@ jobs:
           RREL: ${{ inputs.rootfs_release }}
           REL: ${{ inputs.release_tag }}
           PORT_VERSION: ${{ inputs.port_version }}
+          KERNEL_BUILD_KEY: ${{ inputs.kernel_build_key }}
+          EXPECTED_FULL_SET_KEY: ${{ inputs.full_set_key }}
         run: |
           set -euxo pipefail
 
@@ -67,6 +67,20 @@ jobs:
           gh release -R "$GITHUB_REPOSITORY" download "$RREL" --dir r --clobber
           (cd k && sha256sum -c BUNDLE-SHA256SUMS && sha256sum -c RPM-SHA256SUMS)
           (cd r && sha256sum -c SHA256SUMS)
+          if [ -f k/KERNEL-BUILD-KEY.txt ]; then
+            [ "$(cat k/KERNEL-BUILD-KEY.txt)" = "$KERNEL_BUILD_KEY" ] || {
+              echo "REFUSING: selected kernel release has a different build key." >&2; exit 1;
+            }
+          fi
+          printf '%s\n' "$KERNEL_BUILD_KEY" > k/KERNEL-BUILD-KEY.txt
+          ROOTFS_BUILD_KEY="$(cat r/ROOTFS-BUILD-KEY.txt)"
+          FULL_SET_KEY="$(python3 tools/x810-build-fingerprint.py full-set \
+            --ref "$GITHUB_SHA" --port-version "$PORT_VERSION" \
+            --kernel-build-key "$KERNEL_BUILD_KEY" --rootfs-build-key "$ROOTFS_BUILD_KEY")"
+          [ "$FULL_SET_KEY" = "$EXPECTED_FULL_SET_KEY" ] || {
+            echo "REFUSING: full-set fingerprint changed after orchestration planning." >&2; exit 1;
+          }
+          printf '%s\n' "$FULL_SET_KEY" > FULL-SET-BUILD-KEY.txt
 
           # Release tags identify build artifacts, not updater versions.
           # Require the operator's explicit version and prove it matches both
@@ -210,7 +224,7 @@ jobs:
             gh release -R "$GITHUB_REPOSITORY" delete-asset "$REL" port-release.json --yes
           fi
           gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber k/* r/*
-          gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber port-release.json
+          gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber port-release.json FULL-SET-BUILD-KEY.txt
           gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber "$clean_install_asset"
           # Auxiliary kernel/rootfs/boot tags are not latest; reassert that
           # the combined full-set release is the single updater feed even when

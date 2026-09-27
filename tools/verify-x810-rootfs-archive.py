@@ -72,6 +72,19 @@ def inspect(archive_pathname: str, manifest_path: str | None = None) -> dict[str
             normalized = archive_path(member.name)
             if not normalized:
                 continue
+            # DNF5's downloaded package/metadata cache must be external to
+            # the installroot. Reject cache files in the published image even
+            # if a caller bypassed build-rootfs.sh's cleanup step.
+            dnf_cache_roots = (
+                "var/cache/libdnf5",
+                "var/cache/dnf",
+                "var/cache/rpm",
+            )
+            if not member.isdir() and any(
+                normalized == cache_root or normalized.startswith(cache_root + "/")
+                for cache_root in dnf_cache_roots
+            ):
+                fail(f"rootfs archive contains package-manager cache data: {normalized}")
             if normalized in members:
                 fail(f"duplicate path in rootfs archive: {normalized}")
             if not (member.isdir() or member.isfile() or member.issym() or member.islnk()):
