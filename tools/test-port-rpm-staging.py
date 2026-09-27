@@ -2,6 +2,7 @@
 """Guard against claiming Fedora-owned machine configuration in the port RPM."""
 
 from pathlib import Path
+import re
 import unittest
 
 
