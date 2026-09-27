@@ -33,8 +33,9 @@ that boundary; the inherited X710 guide is retained under
 
 For the Linux-PC install flow, read [`INSTALL.md`](INSTALL.md) and run
 `python3 tools/x810-install` for the guided wizard. It validates Android
-unlock/root status, TWRP and a schema-1 clean bundle; captures GPT metadata and
-the current four boot images; asks for account and partition sizes; and places
+unlock/root status, TWRP, and the aggregate release manifest plus install
+assets; captures GPT metadata and the current four boot images; asks for
+account and partition sizes; and places
 typed barriers before writes. For a stock GPT, it changes only userdata and
 linuxroot entries, saves a credential-free resume checkpoint, and stops so the
 owner can manually reboot into TWRP and rerun `--resume-from`. Android userdata
@@ -43,7 +44,7 @@ installed only after resume validation. An explicit TWRP-only command can
 restore the checksummed four-image backup without touching `vbmeta` or
 recovery. The flow has host/mock tests only and is **not physically validated
 on the tablet**; do not treat it as a proven end-user installer. The release
-check reports the compact release manifest and clean-install bundle separately.
+check reports the compact release manifest and direct install assets.
 The in-OS port updater uses the support-package ZIP in the same rolling
 aggregate release as the Fedora rootfs and boot files. Never use the legacy
 whole-userdata formatter for dual boot.
@@ -59,15 +60,17 @@ from the port-owned overlay. The full-set workflow requires the same version
 and verifies the image/RPM contract before publishing; unknown or mismatched
 images cannot become combined releases. The rootfs build downloads its kernel
 RPM from a named release of this X810 repository, and full-set assembly checks
-the exact RPM bytes and firmware digest against the boot bundle metadata, not
+the exact RPM bytes and firmware digest against the kernel build metadata, not
 just matching version strings. The combined `x810-fedora.yml` workflow has a
 separate support-package job that publishes the overlay RPM ZIP for Tab
 Companion's port updater. Once the aggregate is complete, exactly one GitHub
 release remains: the latest run's release, containing the updater ZIP, matched
-rootfs/kernel/boot assets, one compact release manifest, and clean-install bundle.
+rootfs/kernel assets, four individual boot images, and one compact release manifest.
 The manifest records the source commit, per-component build fingerprints, and
 payload checksums; it replaces the separate checksum/key text assets and the
 legacy `port-release.json`. Unchanged kernel and rootfs components are reused
-from the previous aggregate. The clean installer validates the self-contained
-manifest inside its clean-install bundle. See
+from the previous aggregate. The installer downloads required files
+individually from the release and validates their checksums against the
+manifest. The redundant bootset ZIP, standalone support RPM, and large
+clean-install archive are omitted. See
 [`docs/TAB-COMPANION-PORT-RELEASE.md`](docs/TAB-COMPANION-PORT-RELEASE.md).

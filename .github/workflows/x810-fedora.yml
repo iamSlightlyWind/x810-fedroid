@@ -360,8 +360,7 @@ jobs:
                 if [ "$candidate_key" = "$kernel_key" ]; then reusable="$candidate"; break; fi
               elif gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
                   --pattern KERNEL-BUILD-KEY.txt --pattern BUNDLE-SHA256SUMS \
-                  --pattern RPM-SHA256SUMS --pattern 'linux-x810-*.rpm' --pattern '*.img' \
-                  --pattern 'x810-fedora-bootset-*.zip' >/dev/null 2>&1 && \
+                  --pattern RPM-SHA256SUMS --pattern 'linux-x810-*.rpm' --pattern '*.img' >/dev/null 2>&1 && \
                  [ "$(cat "$dir/KERNEL-BUILD-KEY.txt" 2>/dev/null || true)" = "$kernel_key" ] && \
                  (cd "$dir" && sha256sum -c BUNDLE-SHA256SUMS >/dev/null && sha256sum -c RPM-SHA256SUMS >/dev/null); then
                 reusable="$candidate"
@@ -381,7 +380,7 @@ jobs:
               bootstrap_ok=false
               if gh release download "$BOOTSTRAP_KERNEL_TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
                   --pattern BUILD-METADATA.txt --pattern BUNDLE-SHA256SUMS --pattern RPM-SHA256SUMS \
-                  --pattern 'linux-x810-*.rpm' --pattern '*.img' --pattern 'x810-fedora-bootset-*.zip' >/dev/null 2>&1 && \
+                  --pattern 'linux-x810-*.rpm' --pattern '*.img' >/dev/null 2>&1 && \
                  (cd "$dir" && sha256sum -c BUNDLE-SHA256SUMS >/dev/null && sha256sum -c RPM-SHA256SUMS >/dev/null); then
                 field() {
                   python3 - "$dir/BUILD-METADATA.txt" "$1" <<'PY'
@@ -546,7 +545,7 @@ jobs:
               tar --sort=name --mtime="@0" --owner=0 --group=0 --numeric-owner \
                 --format=gnu -C . -cf - linux-prepared | gzip -n -9 > linux-prepared.tar.gz
               rm -rf linux-prepared
-              mkdir -p ~/rpmbuild/SOURCES out-kernel out-bundle out-twrp
+              mkdir -p ~/rpmbuild/SOURCES out-kernel out-bundle
               cp linux-prepared.tar.gz ~/rpmbuild/SOURCES/
               rpmbuild -bb --define "kversion 7.2.0" /work/kernel/kernel.spec
               cp ~/rpmbuild/RPMS/aarch64/*.rpm out-kernel/
@@ -586,7 +585,6 @@ jobs:
                 printf "kernel_source=linux-7.2.0 plus repository kernel/prepare.sh and patches\\n"
                 printf "x810_build_key=%s\\n" "$BUILD_KEY"
               } >> out-bundle/BUILD-METADATA.txt
-              python3 /work/tools/make-twrp-zip.py out-bundle out-twrp/x810-fedora-bootset-"$KVER".zip --project /work
               printf "%s\\n" "$BUILD_KEY" > out-bundle/KERNEL-BUILD-KEY.txt
               (cd out-bundle && sha256sum KERNEL-BUILD-KEY.txt >> SHA256SUMS)
               ccache --show-stats
@@ -624,8 +622,7 @@ jobs:
           gh release edit "$REL" --latest=false
           gh release upload "$REL" --clobber \
             out-kernel/*.rpm out-kernel/RPM-SHA256SUMS \
-            out-bundle/*.img out-bundle/BUNDLE-SHA256SUMS out-bundle/BUILD-METADATA.txt out-bundle/KERNEL-BUILD-KEY.txt \
-            out-twrp/*.zip
+            out-bundle/*.img out-bundle/BUNDLE-SHA256SUMS out-bundle/BUILD-METADATA.txt out-bundle/KERNEL-BUILD-KEY.txt
 
   resolve_rootfs:
     needs: [plan, build_kernel]
@@ -672,7 +669,6 @@ jobs:
             --pattern RPM-SHA256SUMS
             --pattern 'linux-x810-*.rpm'
             --pattern '*.img'
-            --pattern 'x810-fedora-bootset-*.zip'
           )
           # The validated one-time bootstrap kernel predates build-key assets.
           if [ "$IS_BOOTSTRAP" != true ]; then
@@ -985,14 +981,15 @@ jobs:
               "KERNEL-BUILD-KEY.txt", "ROOTFS-BUILD-KEY.txt",
               "FULL-SET-BUILD-KEY.txt", "port-release.json", "vbmeta.img",
           }
-          stale = sorted(obsolete & set(names))
+          stale = sorted(name for name in names if name in obsolete
+                         or name.startswith("x810-fedora-bootset-")
+                         or (name.startswith("x810-fedora-sm-x810-") and name.endswith("-clean-install.tar.gz"))
+                         or (name.startswith("x810-fedora-port-") and name.endswith(".noarch.rpm")))
           if stale:
               raise SystemExit("REFUSING to prune: aggregate still has obsolete standalone assets: " + ", ".join(stale))
           patterns = {
               "kernel RPM": lambda n: n.startswith("linux-x810-") and n.endswith(".rpm"),
               "rootfs archive": lambda n: n.startswith("x810-fedora-") and n.endswith("-rootfs.tar.gz"),
-              "TWRP boot-set ZIP": lambda n: n.startswith("x810-fedora-bootset-") and n.endswith(".zip"),
-              "clean-install bundle": lambda n: n.startswith("x810-fedora-sm-x810-") and n.endswith("-clean-install.tar.gz"),
           }
           missing.extend(label for label, predicate in patterns.items() if not any(predicate(n) for n in names))
           if missing:

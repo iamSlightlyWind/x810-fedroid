@@ -17,8 +17,8 @@ The workflow:
 2. reuses the current release's kernel or rootfs component when its input
    fingerprint and checksums still match, otherwise builds that component;
 3. assembles one run-keyed release containing the updater ZIP, matched
-   rootfs/kernel/boot assets, one compact release manifest, and clean-install
-   bundle; and
+   rootfs/kernel assets, the four individual boot images, and one compact
+   release manifest; and
 4. after successful assembly, deletes every older/staging release, leaving only
    the latest complete aggregate.
 
@@ -47,13 +47,13 @@ The package RPM release changes each run so DNF sees an upgrade even when
 `PORT_VERSION` is unchanged. Installed build metadata prevents offering that
 same successful build again.
 
-## Kernel and clean installation
+## Kernel and installation
 
 Kernel and boot-image changes are intentionally not installed by the in-OS
 updater. They ship in the same aggregate release for manual TWRP installation.
-The clean installer selects the clean-install bundle in that release and
-validates its embedded `x810-clean-install-manifest.json`; the bundle records
-the same source commit and component fingerprints.
+The PC installer downloads the matching rootfs, kernel RPM, and boot images
+individually from that one release, then verifies them against
+`x810-release-manifest.json` before modifying the tablet.
 
 ## What the release boot/kernel assets are for
 
@@ -61,13 +61,9 @@ the same source commit and component fingerprints.
   partition images written as one boot set. `dtbo.img` is deliberately an
   invalid/zero DTBO table so Samsung ABL falls back to the DTB appended to the
   Linux boot image / carried in `vendor_boot`. Do not omit it from the set.
-- `x810-fedora-bootset-*.zip` is **not TWRP itself**. It is the Linux boot-set
-  payload to flash *from a user-installed TWRP* for kernel/boot updates. It
-  writes only those four partitions. TWRP and its vbmeta image must come from
-  the matching TWRP port instructions.
 - `linux-x810-*.rpm` is Fedora's kernel package: it owns the kernel files and
   module tree inside Fedora and is matched byte-for-byte to the rootfs. It is
-  not a raw partition image; the boot images (or TWRP ZIP) are what update the
+  not a raw partition image; the individual boot images are what update the
   tablet's boot partitions. The package uses the human/device model `x810`;
   its internal kernel release remains `7.2.0-gts9wifi` for the upstream module
   ABI and paths.
@@ -77,10 +73,12 @@ the same source commit and component fingerprints.
   experimental Fedora-port image.
 - `rootfs-manifest.txt`, kernel build metadata, component keys, and individual
   checksum files are no longer separate release downloads. Their verification
-  data is consolidated in `x810-release-manifest.json` and the self-contained
-  clean-install bundle. The single `source_commit` identifies the repo patch
-  level; build fingerprints still distinguish output inputs such as the pinned
-  Fedora compose and firmware.
+  data is consolidated in `x810-release-manifest.json`. The large clean-install
+  archive and bootset ZIP are omitted because the installer handles the
+  individual release assets. The standalone support RPM is also omitted; it is
+  inside `x810-fedora-port.zip` for Tab Companion. The single `source_commit`
+  identifies the repo patch level; build fingerprints distinguish output
+  inputs such as the pinned Fedora compose and firmware.
 
 When building a full rootfs/full-set by hand, pass the same explicit numeric
 version as `PORT_VERSION`. A developer/debug rootfs may use `unknown`, but it

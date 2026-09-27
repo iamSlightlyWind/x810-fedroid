@@ -8,6 +8,7 @@ import importlib.util
 import shutil
 import tempfile
 import unittest
+import json
 from argparse import Namespace
 from pathlib import Path
 
@@ -125,6 +126,36 @@ class ReleaseManifestTest(unittest.TestCase):
             path.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 manifest_tool.materialize(path, "kernel", target)
+
+    def test_standalone_support_rpm_is_omitted_from_aggregate_checksums(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            kernel, rootfs = self.make_component_dirs(root)
+            old = rootfs / "port.rpm"
+            rpm = rootfs / "x810-fedora-port-1.2.3-1000000.1.fc44.noarch.rpm"
+            old.rename(rpm)
+            names = ["rootfs.tar.gz", rpm.name, "ROOTFS-BUILD-KEY.txt", "rootfs-manifest.txt"]
+            (rootfs / "SHA256SUMS").write_text(checksum(rootfs, names), encoding="ascii")
+            updater = root / "x810-fedora-port.zip"
+            updater.write_bytes(b"updater zip placeholder")
+            assets = [*kernel.glob("*.img"), kernel / "linux-x810-1.aarch64.rpm",
+                      rootfs / "rootfs.tar.gz", updater]
+            document = manifest_tool.create(Namespace(
+                source_commit="c" * 40, kernel_dir=kernel, rootfs_dir=rootfs,
+                kernel_release="kernel-tag", rootfs_release="rootfs-tag",
+                release_tag="aggregate-tag", port_version="1.2.3", full_set_build_key="full-key",
+                asset=[str(item) for item in assets],
+            ))
+            self.assertNotIn(rpm.name, {item["name"] for item in document["assets"]})
+            self.assertEqual([item["name"] for item in document["components"]["rootfs"]["asset_files"]],
+                             ["rootfs.tar.gz"])
+            target = root / "materialized-rootfs"
+            target.mkdir()
+            shutil.copy2(rootfs / "rootfs.tar.gz", target)
+            release_manifest = root / "manifest.json"
+            release_manifest.write_text(json.dumps(document), encoding="utf-8")
+            manifest_tool.materialize(release_manifest, "rootfs", target)
+            self.assertNotIn(rpm.name, (target / "SHA256SUMS").read_text())
 
 
 if __name__ == "__main__":

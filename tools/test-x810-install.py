@@ -50,6 +50,9 @@ class InstallerTests(unittest.TestCase):
             "etc/passwd": "root:x:0:0:root:/root:/bin/bash\n",
         }
         with tarfile.open(rootfs_tar, "w:gz") as archive:
+            root_entry = tarfile.TarInfo("./")
+            root_entry.type = tarfile.DIRTYPE
+            archive.addfile(root_entry)
             for name, content in files.items():
                 encoded = content.encode()
                 info = tarfile.TarInfo(name)
@@ -137,17 +140,63 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("source commit", update.detail)
         self.assertIn("Tab Companion updates", update.detail)
         self.assertEqual(install.state, "BLOCKED")
-        self.assertIn("install Fedora from stock Android", install.detail)
+        self.assertIn("required rootfs/kernel/boot image assets", install.detail)
 
-    def test_install_manifest_presence_is_not_claimed_as_live_validated(self):
+    def test_direct_release_assets_enable_installer_status(self):
         release = {"tag_name": "test", "assets": [{"name": name} for name in (
             "x810-release-manifest.json",
-            "x810-fedora-sm-x810-1.0.0-clean-install.tar.gz",
+            "x810-fedora-port.zip",
+            "x810-fedora-44-rootfs.tar.gz", "linux-x810-7.2.0.aarch64.rpm",
+            "boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img",
         )]}
         update, install = installer.release_checks(release)
         self.assertEqual(update.state, "INFO")
         self.assertEqual(install.state, "CHECK")
-        self.assertIn("manifest", install.detail)
+        self.assertIn("downloads and verifies", install.detail)
+
+    def test_installer_downloads_individual_verified_assets_from_one_release(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
+                                                              {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
+            source = Path(temp)
+            local = self.make_valid_bundle(source / "source")
+            archive = local / "rootfs/rootfs.tar.gz"
+            rpm = local / "kernel/linux-x810.rpm"
+            images = {name: local / f"boot/{name}.img" for name in ("boot", "init_boot", "vendor_boot", "dtbo")}
+            payloads = {"x810-fedora-44-rootfs.tar.gz": archive.read_bytes(),
+                        "linux-x810-7.2.0.aarch64.rpm": rpm.read_bytes()}
+            payloads.update({f"{name}.img": path.read_bytes() for name, path in images.items()})
+            def record(name, data):
+                return {"name": name, "sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+            release_assets = []
+            records = []
+            for name, data in payloads.items():
+                records.append(record(name, data))
+                release_assets.append({"name": name, "size": len(data), "browser_download_url": f"https://example.test/{name}"})
+            release_manifest = {
+                "schema_version": 1, "type": "x810-fedora-release",
+                "device": {"model": "SM-X810", "codename": "gts9pwifi"},
+                "source_commit": "a" * 40, "release_tag": "test-release",
+                "assets": records,
+                "components": {
+                    "rootfs": {"text_files": {"rootfs-manifest.txt": (local / "rootfs/rootfs-manifest.txt").read_text()}},
+                    "kernel": {"text_files": {"BUILD-METADATA.txt": (local / "kernel/BUILD-METADATA.txt").read_text()}},
+                },
+            }
+            manifest_bytes = json.dumps(release_manifest).encode()
+            release_assets.append({"name": "x810-release-manifest.json", "size": len(manifest_bytes),
+                                   "browser_download_url": "https://example.test/x810-release-manifest.json"})
+            payload_map = {f"https://example.test/{name}": data for name, data in payloads.items()}
+            payload_map["https://example.test/x810-release-manifest.json"] = manifest_bytes
+            class Response(io.BytesIO):
+                pass
+            def opener(request, timeout=60):
+                return Response(payload_map[request.full_url])
+            release = {"tag_name": "test-release", "assets": release_assets}
+            root = installer.download_release_install_set(release, source / "downloaded", opener)
+            bundle = installer.validate_install_bundle(root)
+            self.assertEqual(bundle.manifest["source_commit"], "a" * 40)
+            self.assertEqual(set(bundle.boot_images), {"boot", "init_boot", "vendor_boot", "dtbo"})
+            self.assertEqual(bundle.kernel_rpm.read_bytes(), rpm.read_bytes())
 
     def test_release_status_tolerates_malformed_asset_metadata(self):
         checks = installer.release_checks({"assets": [None, {"name": []}], "tag_name": "odd"})

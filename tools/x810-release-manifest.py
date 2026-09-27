@@ -118,19 +118,37 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
         assets.append(record)
         assets_by_name[path.name] = record
 
+    # The noarch support RPM is already inside the Tab Companion updater ZIP.
+    # Drop its redundant standalone checksum entry from the aggregate metadata;
+    # the rootfs archive and manifest remain checksummed and reusable.
+    root_checksums = components["rootfs"]["checksums"]
+    root_sha_text = root_checksums.get("SHA256SUMS")
+    if not isinstance(root_sha_text, str):
+        raise ValueError("rootfs component has no SHA256SUMS")
+    root_lines = []
+    for line in root_sha_text.splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
+        if not match:
+            raise ValueError("invalid rootfs SHA256SUMS line while filtering standalone support RPM")
+        name = match.group(2)
+        if name.startswith("x810-fedora-port-") and name.endswith(".noarch.rpm") and name not in assets_by_name:
+            continue
+        root_lines.append(line)
+    root_checksums["SHA256SUMS"] = "\n".join(root_lines) + "\n"
+
     kernel_names = {
         filename
         for checksum_text in components["kernel"]["checksums"].values()
         for filename in parse_checksums(checksum_text, "kernel checksums")
         if filename.endswith((".img", ".rpm"))
     }
-    kernel_names.update(name for name in assets_by_name if name.startswith("x810-fedora-bootset-") and name.endswith(".zip"))
     rootfs_names = {
         filename
         for checksum_text in components["rootfs"]["checksums"].values()
         for filename in parse_checksums(checksum_text, "rootfs checksums")
-        if filename.endswith((".tar.gz", ".rpm"))
+        if filename.endswith(".tar.gz") or (filename.endswith(".rpm") and filename in assets_by_name)
     }
+
     for component_name, filenames in (("kernel", kernel_names), ("rootfs", rootfs_names)):
         absent = sorted(filenames - assets_by_name.keys())
         if absent:

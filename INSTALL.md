@@ -8,10 +8,13 @@ Clone this repository, connect the tablet by USB, then run:
 python3 tools/x810-install
 ```
 
-In a terminal, that starts the guided installer and downloads the latest
-published X810 clean-install bundle. To launch the optional text menu instead,
-run `python3 tools/x810-install menu`. For an offline bundle, use
-`python3 tools/x810-install install --bundle /path/to/x810-clean-install.tar.gz`.
+In a terminal, that starts the guided installer. It downloads the rootfs,
+matching kernel RPM, and four boot images individually from the latest
+aggregate release, then verifies them using `x810-release-manifest.json`.
+There is no separate multi-gigabyte clean-install archive. To launch the
+optional text menu instead, run `python3 tools/x810-install menu`. The
+`--bundle` option remains for older self-contained bundles or extracted bundle
+directories.
 
 The host needs Python 3, `adb`, `openssl`, and `sha256sum`. Install the tools
 with your distribution's package manager, for example:
@@ -38,7 +41,7 @@ fails.
 The wizard asks for full name, Linux username, hostname, and a hidden password.
 It asks independently for the Android `userdata` and Fedora `linuxroot` sizes
 in GiB or percent. Any unused portion stays unpartitioned. Fedora size must be
-at least the minimum recorded by the verified clean-install bundle.
+at least the minimum calculated from the verified rootfs archive.
 
 The process is staged so a successful GPT write does not leave the script
 assuming TWRP has refreshed its partition map:
@@ -54,13 +57,16 @@ assuming TWRP has refreshed its partition map:
    changing only GPT entries 34 and 35. It reads back and verifies the new
    extents, saves a credential-free checkpoint, and **stops without rebooting**.
 4. Manually reboot into TWRP so recovery rereads GPT. Resume with the same
-   bundle and the backup path printed by the script:
+   release and the backup path printed by the script:
 
    ```sh
    python3 tools/x810-install install \
-     --bundle ./x810-fedora-sm-x810-VERSION-clean-install.tar.gz \
      --resume-from ./x810-install-backup-TIMESTAMP
    ```
+
+   The installer downloads the latest release again and compares it with the
+   saved checkpoint. If a newer release appeared in between, it stops rather
+   than mixing files; restart with a fresh install run if that happens.
 
 5. On a fresh stock split, manually use TWRP **Wipe → Format Data** and type
    `yes` when the resumed wizard asks. This erases Android apps, settings, and
@@ -78,9 +84,10 @@ assuming TWRP has refreshed its partition map:
 
 ### Install Tab Companion after the first Fedora boot
 
-The clean-install bundle currently installs Fedora and its X810 support RPM;
-it does **not** include the separate Tab Companion application package. After
-the first Fedora boot, install the current Fedora RPM from the Tab Companion
+The Fedora rootfs includes X810 support; the release's
+`x810-fedora-port.zip` is for Tab Companion's later support updates. The
+installer does **not** include the separate Tab Companion application package.
+After the first Fedora boot, install the current Fedora RPM from the Tab Companion
 repository. With GitHub CLI installed:
 
 ```sh
@@ -97,9 +104,9 @@ app itself and the Fedora port. Update the app first if needed, then check and
 install the **Linux port** update. This first application install is not yet
 automated by `x810-install`.
 
-The checkpoint binds the model/codename, ADB serial, TWRP version, bundle
-manifest hash, exact partition extents, and local backup checksums. It contains
-no password or password hash. A changed layout, bundle, TWRP version, boot set,
+The checkpoint binds the model/codename, ADB serial, TWRP version, generated
+install-manifest hash, exact partition extents, and local backup checksums. It
+contains no password or password hash. A changed layout, release assets, TWRP version, boot set,
 or backup causes resume to stop.
 
 ### Recovery
@@ -120,7 +127,7 @@ backup; do not reboot into a partially written boot set.
 
 ## Validation status and limitations
 
-The guided flow, clean-bundle verifier, split arithmetic, mocked GPT path,
+The guided flow, release-asset verifier, split arithmetic, mocked GPT path,
 account provisioning, and boot-image write/restore paths have host-side tests.
 The installer has **not** been validated end-to-end on a physical SM-X810 from
 stock Android. In particular, the exact TWRP GPT refresh, Android data
@@ -129,17 +136,18 @@ need a physical validation run. Treat it as experimental, not a proven
 consumer installer. Do not use the developer-only `split --write` command as
 a substitute for the guided flow.
 
-The repo assembles a clean-install bundle from matching kernel and rootfs
-releases. To build or publish, push relevant changes to `main` or manually run
-**X810 Fedora build and release** (`.github/workflows/x810-fedora.yml`) in
-GitHub Actions. The orchestrator fingerprints the kernel/boot, rootfs, and
+The installer downloads and verifies individual files from the single
+aggregate release. To build or publish, push relevant changes to `main` or
+manually run **X810 Fedora build and release** (`.github/workflows/x810-fedora.yml`)
+in GitHub Actions. The orchestrator fingerprints the kernel/boot, rootfs, and
 combined release inputs independently; it reuses a prior successful component
 only when its fingerprint and checksums match. Otherwise it builds just the
 changed component(s), then assembles and publishes a new aggregate. On a normal
 push, the aggregate is tagged with that push's run identity and contains the
-updater ZIP, matched kernel, boot and rootfs assets, release metadata, and
-clean-install bundle. Once that release is complete, older GitHub releases are
-deleted so only one remains.
+updater ZIP, matched kernel RPM, four individual boot images, Fedora rootfs,
+and compact release manifest. It omits the redundant bootset ZIP, standalone
+copy of the support RPM, and large clean-install archive. Once that release is
+complete, older GitHub releases are deleted so only one remains.
 
 The manual workflow offers a **Force rebuild** option, port-version override,
 desktop profile, and pinned Fedora compose inputs. Force rebuild creates new
@@ -163,12 +171,11 @@ The manual reset workflow forces source rebuilds and prunes old published
 releases/artifacts, but preserves Actions dependency caches (kernel ccache and
 Fedora package caches) to keep the rebuild efficient.
 
-The full-set job publishes the updater index and a separate deterministic
-`x810-fedora-sm-x810-<tag>-clean-install.tar.gz` with a schema-1 manifest,
-SHA-256/size inventory, matched rootfs and kernel module release, and exactly
-four boot images. The bundle excludes `vbmeta` and recovery images. Integrity
-hashes detect accidental or mismatched assets; they are not a cryptographic
-signature. Rootfs builds pin Fedora compose repositories and source commits,
+The compact `x810-release-manifest.json` records payload SHA-256/size, component
+fingerprints, and build metadata. The support RPM is carried inside
+`x810-fedora-port.zip`; the release does not duplicate it as a standalone RPM.
+Integrity hashes detect accidental or mismatched assets; they are not a
+cryptographic signature. Rootfs builds pin Fedora compose repositories and source commits,
 record package/source provenance, and normalize archive metadata; this does
 not claim bit-for-bit reproducibility across all compiler/toolchain behavior.
 
@@ -196,7 +203,7 @@ legacy X710-derived path and is not the supported X810 install route.
 
 For a clean CI sanity check, open **Actions → Reset X810 Fedora builds**, run it
 on `main`, and type `RESET X810 FEDORA BUILDS`. It force-builds the kernel and
-rootfs, rebuilds the matching installer and support RPM, then keeps only the
+rootfs, rebuilds the matching support RPM and updater ZIP, then keeps only the
 latest complete aggregate release. To preserve the Tab Companion run-ID feed,
 the reset requires release-affecting sources and settings to match the last
 successful main push, and republishes under that push's identity. Actions

@@ -68,9 +68,8 @@ port_package_asset="$(manifest_value port_package_asset)" || {
 }
 if [ "$port_package_name" != x810-fedora-port ] || [ "$port_package_arch" != noarch ] || \
    [[ "$port_package_version" != "$PORT_VERSION"-* ]] || \
-   [[ ! "$port_package_asset" =~ ^x810-fedora-port-[A-Za-z0-9._+-]+\.noarch\.rpm$ ]] || \
-   [ ! -f "r/$port_package_asset" ]; then
-  echo "REFUSING: rootfs release lacks a matching noarch x810-fedora-port RPM." >&2
+   [[ ! "$port_package_asset" =~ ^x810-fedora-port-[A-Za-z0-9._+-]+\.noarch\.rpm$ ]]; then
+  echo "REFUSING: rootfs manifest has invalid noarch x810-fedora-port metadata." >&2
   exit 1
 fi
 shopt -s nullglob
@@ -125,32 +124,46 @@ python3 tools/verify-x810-build-match.py \
   --kernel-metadata k/BUILD-METADATA.txt \
   --kernel-rpm "${kernel_rpms[0]}"
 
-# This is a separate from-stock installer payload, not the Tab
-# Companion updater index.  The assembler verifies source release
-# checksums again and embeds a deterministic archive-root manifest.
-clean_install_asset="x810-fedora-sm-x810-${REL}-clean-install.tar.gz"
-python3 tools/build-x810-clean-install-bundle.py \
-  --kernel-dir k \
-  --rootfs-dir r \
-  --output "$clean_install_asset" \
-  --bundle-version "$REL" \
-  --kernel-release "$KREL" \
-  --rootfs-release "$RREL" \
-  --source-commit "$GITHUB_SHA" \
-  --full-set-build-key "$FULL_SET_KEY"
-
 # The support updater ZIP is published by the independent port-update job.
 mkdir -p update
 gh release -R "$GITHUB_REPOSITORY" download "$REL" --dir update \
   --pattern x810-fedora-port.zip --clobber
 
+python3 - "$PORT_VERSION" update/x810-fedora-port.zip <<'PY'
+import hashlib
+import json
+import sys
+import zipfile
+
+version, path = sys.argv[1:]
+try:
+    with zipfile.ZipFile(path) as archive:
+        doc = json.loads(archive.read("tab-companion-update.json"))
+        if not isinstance(doc, dict):
+            raise ValueError("updater metadata is not a JSON object")
+        entries = doc.get("assets", [])
+        if (doc.get("schema_version") != 1 or doc.get("project") != "x810-fedora"
+                or not str(doc.get("version", "")).startswith(version + "+")
+                or len(entries) != 1):
+            raise ValueError("updater metadata does not match this X810 Fedora release")
+        record = entries[0]
+        if not isinstance(record, dict):
+            raise ValueError("updater package metadata is malformed")
+        if (record.get("package_name") != "x810-fedora-port"
+                or not str(record.get("package_version", "")).startswith(version + "-")
+                or not str(record.get("name", "")).endswith(".noarch.rpm")
+                or record.get("target") != {"os_id": "fedora", "os_version": "44", "arch": "aarch64", "device": "SM-X810"}):
+            raise ValueError("updater package target/version is not the expected Fedora 44 X810 noarch RPM")
+        payload = archive.read(record["name"])
+        if len(payload) != record.get("size") or hashlib.sha256(payload).hexdigest() != record.get("sha256"):
+            raise ValueError("support RPM inside updater ZIP failed its size/SHA-256 check")
+except (OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as error:
+    raise SystemExit(f"REFUSING: invalid x810-fedora-port.zip: {error}")
+PY
+
 gh release -R "$GITHUB_REPOSITORY" view "$REL" >/dev/null 2>&1 || \
   gh release -R "$GITHUB_REPOSITORY" create "$REL" --title "$REL" --latest=false \
-    --notes "Matched Fedora SM-X810 update set: kernel RPM, Android boot bundle, X810-only TWRP boot-set ZIP, and rootfs tarball from \`$KREL\` and \`$RREL\`.
-
-The \`x810-fedora-sm-x810-${REL}-clean-install.tar.gz\` asset is the separate clean-install bundle; inspect its \`x810-clean-install-manifest.json\` and follow INSTALL.md. It contains no vbmeta or recovery image. Use the vbmeta from the matching TWRP port instructions. The TWRP boot-set ZIP rewrites only boot, init_boot, vendor_boot, and dtbo; it preserves vbmeta, recovery, userdata, GPT, and firmware.
-
-The compact \`x810-release-manifest.json\` records the source commit, component build fingerprints, and SHA-256/size of each release payload."
+    --notes "Matched Fedora SM-X810 install/update set: rootfs archive, kernel RPM, four boot images, Tab Companion port updater, and compact release manifest from \`$KREL\` and \`$RREL\`. The installer downloads required assets directly from this release and verifies their checksums. No TWRP, vbmeta, recovery, or Android firmware is included; use the matching TWRP port instructions."
 gh release -R "$GITHUB_REPOSITORY" view "$REL" --json isDraft,isPrerelease > release-flags.json
 python3 - release-flags.json <<'PY'
 import json
@@ -171,9 +184,7 @@ full_assets=(
   k/vendor_boot.img
   k/dtbo.img
   k/linux-x810-*.rpm
-  k/x810-fedora-bootset-*.zip
   r/x810-fedora-*-rootfs.tar.gz
-  r/x810-fedora-port-*.rpm
 )
 declare -A seen_assets=()
 for asset in "${full_assets[@]}"; do
@@ -184,7 +195,7 @@ for asset in "${full_assets[@]}"; do
   }
   seen_assets[$name]=1
 done
-all_payloads=("${full_assets[@]}" "$clean_install_asset" update/x810-fedora-port.zip)
+all_payloads=("${full_assets[@]}" update/x810-fedora-port.zip)
 manifest_asset_args=()
 for asset in "${all_payloads[@]}"; do manifest_asset_args+=(--asset "$asset"); done
 python3 tools/x810-release-manifest.py create \
@@ -194,9 +205,9 @@ python3 tools/x810-release-manifest.py create \
   --port-version "$PORT_VERSION" --full-set-build-key "$FULL_SET_KEY" \
   --output x810-release-manifest.json "${manifest_asset_args[@]}"
 
-# A rerun of the same publication identity must not leave obsolete metadata,
-# vbmeta, or older asset variants attached beside the new clean asset set.
-expected_names="$(printf '%s\n' "${full_assets[@]}" "$clean_install_asset" \
+# A rerun must not leave obsolete metadata, vbmeta, duplicate RPMs,
+# bootset ZIPs, or other superseded assets attached to the aggregate.
+expected_names="$(printf '%s\n' "${full_assets[@]}" \
   update/x810-fedora-port.zip x810-release-manifest.json | sed 's#^.*/##' | sort -u)"
 while IFS= read -r old_name; do
   [ -n "$old_name" ] || continue
@@ -206,7 +217,7 @@ while IFS= read -r old_name; do
 done < <(gh release -R "$GITHUB_REPOSITORY" view "$REL" --json assets --jq '.assets[].name')
 
 gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber \
-  "${full_assets[@]}" "$clean_install_asset" update/x810-fedora-port.zip x810-release-manifest.json
+  "${full_assets[@]}" update/x810-fedora-port.zip x810-release-manifest.json
 # Auxiliary kernel/rootfs/boot tags are not latest; reassert that
 # the combined full-set release is the single updater feed even when
 # rerunning an existing release.
