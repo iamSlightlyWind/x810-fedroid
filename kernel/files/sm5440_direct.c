@@ -267,7 +267,7 @@ static int sm5440_pps_target_mv(int ma, int vbat_uv)
 	int mv = DIV_ROUND_UP((vbat_uv / 1000) * 2 + headroom,
 			      SM5440_PPS_V_STEP_MV) * SM5440_PPS_V_STEP_MV;
 
-	return clamp(mv, 8200, SM5440_MAX_PPS_MV);
+	return clamp_val(mv, 8200, SM5440_MAX_PPS_MV);
 }
 
 /*
