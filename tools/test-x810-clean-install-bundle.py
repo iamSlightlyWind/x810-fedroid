@@ -49,11 +49,11 @@ class CleanInstallBundleTest(unittest.TestCase):
         rootfs_dir.mkdir()
 
         rpm_data = b"test kernel rpm payload\n"
-        rpm_name = "linux-gts9wifi-7.2.0-1.aarch64.rpm"
+        rpm_name = "linux-x810-7.2.0-1.aarch64.rpm"
         (kernel_dir / rpm_name).write_bytes(rpm_data)
         rpm_sha = digest(rpm_data)
         firmware_sha = "a" * 64
-        nevra = "linux-gts9wifi-7.2.0-1.aarch64"
+        nevra = "linux-x810-7.2.0-1.aarch64"
         metadata = (
             f"kernel_rpm_nevra={nevra}\n"
             f"kernel_rpm_sha256={rpm_sha}\n"
@@ -61,11 +61,11 @@ class CleanInstallBundleTest(unittest.TestCase):
             "kernel_source=fixture\n"
         )
         (kernel_dir / "BUILD-METADATA.txt").write_text(metadata, encoding="utf-8")
+        (kernel_dir / "KERNEL-BUILD-KEY.txt").write_text("kernel-test-key\n", encoding="ascii")
         image_sizes = {"boot": 1, "init_boot": 2, "vendor_boot": 3, "dtbo": 4}
         for name, size in image_sizes.items():
             (kernel_dir / f"{name}.img").write_bytes(bytes([size]) * size)
-        (kernel_dir / "vbmeta.img").write_bytes(b"v" * builder.VBMETA_SIZE)
-        checksum_file(kernel_dir, ["boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img", "vbmeta.img"], "BUNDLE-SHA256SUMS")
+        checksum_file(kernel_dir, ["boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img"], "BUNDLE-SHA256SUMS")
         checksum_file(kernel_dir, [rpm_name], "RPM-SHA256SUMS")
 
         port = {
@@ -87,7 +87,7 @@ class CleanInstallBundleTest(unittest.TestCase):
             "usr/lib/modules/7.2.0-gts9wifi/kernel/test.ko": b"module fixture",
             "usr/share/test-root-file": b"x" * 177,
         }
-        archive_path = rootfs_dir / "gts9wifi-fedora-44-rootfs.tar.gz"
+        archive_path = rootfs_dir / "x810-fedora-44-rootfs.tar.gz"
         make_tar(archive_path, payloads)
         expanded_bytes = sum(map(len, payloads.values()))
         root_manifest = (
@@ -102,6 +102,7 @@ class CleanInstallBundleTest(unittest.TestCase):
             f"firmware_sha256={firmware_sha}\n"
         )
         (rootfs_dir / "rootfs-manifest.txt").write_text(root_manifest, encoding="utf-8")
+        (rootfs_dir / "ROOTFS-BUILD-KEY.txt").write_text("rootfs-test-key\n", encoding="ascii")
         checksum_file(
             rootfs_dir,
             [archive_path.name, "rootfs-manifest.txt"],
@@ -118,6 +119,8 @@ class CleanInstallBundleTest(unittest.TestCase):
                 bundle_version="x810-fedora-7.2.0-1",
                 kernel_release="kernel-7.2.0-gts9wifi-1",
                 rootfs_release="rootfs-f44-gnome-5",
+                source_commit="a" * 40,
+                full_set_build_key="full-set-test-key",
                 image_sizes=image_sizes,
                 minimum_rootfs_floor=1,
                 rootfs_headroom_floor=0,
@@ -131,6 +134,10 @@ class CleanInstallBundleTest(unittest.TestCase):
             self.assertEqual(manifest["type"], "x810-clean-install")
             self.assertEqual(manifest["device"], {"model": "SM-X810", "codename": "gts9pwifi"})
             self.assertEqual(manifest["os"], {"id": "fedora", "version": "44", "arch": "aarch64"})
+            self.assertEqual(manifest["source_commit"], "a" * 40)
+            self.assertEqual(manifest["build_keys"], {
+                "kernel": "kernel-test-key", "rootfs": "rootfs-test-key", "full_set": "full-set-test-key"
+            })
             self.assertEqual(manifest["kernel"]["release"], "7.2.0-gts9wifi")
             self.assertEqual(manifest["rootfs"]["minimum_size_bytes"], content_bytes + (content_bytes * 20 + 99) // 100)
             self.assertEqual(set(manifest["boot_set"]["images"]), set(image_sizes))

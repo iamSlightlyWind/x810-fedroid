@@ -193,16 +193,10 @@ def latest_release(opener=urllib.request.urlopen) -> dict[str, Any] | None:
 
 
 def release_checks(release: dict[str, Any] | None) -> list[Check]:
-    """Distinguish legacy full-set metadata from the clean-install bundle.
-
-    ``port-release.json`` is retained for compatibility. The current
-    Tab Companion Fedora updater reads ``x810-fedora-port.zip`` from the same
-    rolling aggregate release published by ``x810-fedora.yml``.
-    A clean-install bundle is validated independently before install.
-    """
+    """Check the compact release provenance file and clean-install bundle."""
     if release is None:
         return [
-            Check("Legacy release index", "INFO", "no combined release is available to inspect; in-OS support updates use the aggregate release from x810-fedora.yml"),
+            Check("Release manifest", "INFO", "no combined release is available to inspect; in-OS support updates use the aggregate release from x810-fedora.yml"),
             Check("From-stock install", "BLOCKED", "no validated X810 dual-boot installer package is available"),
         ]
     assets = release.get("assets", [])
@@ -213,16 +207,14 @@ def release_checks(release: dict[str, Any] | None) -> list[Check]:
         if isinstance(item, dict) and isinstance(item.get("name"), str)
     }
     tag = release.get("tag_name", "latest")
-    feed_required = {"port-release.json", "SHA256SUMS", "BUNDLE-SHA256SUMS"}
-    if feed_required <= names:
+    if "x810-release-manifest.json" in names:
         update = Check(
-            "Legacy release index",
+            "Release manifest",
             "INFO",
-            f"{tag} contains legacy port-release metadata; Tab Companion Fedora updates use the run-keyed support release from x810-fedora.yml, not this index",
+            f"{tag} records its source commit, component fingerprints, and payload checksums; Tab Companion updates use x810-fedora-port.zip",
         )
     else:
-        missing = ", ".join(sorted(feed_required - names))
-        update = Check("Legacy release index", "INFO", f"{tag} is missing legacy metadata {missing}; the Fedora support update is published separately by x810-fedora.yml")
+        update = Check("Release manifest", "INFO", f"{tag} has no compact release manifest; Fedora support updates are published by x810-fedora.yml")
 
     clean_bundles = sorted(name for name in names
                            if name.startswith("x810-fedora-sm-x810-")

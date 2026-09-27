@@ -22,11 +22,11 @@ class BuildMatchTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.rpm = self.root / "linux-gts9wifi-test.rpm"
+        self.rpm = self.root / "linux-x810-test.rpm"
         self.rpm.write_bytes(b"matched kernel RPM bytes")
         self.rpm_sha = hashlib.sha256(self.rpm.read_bytes()).hexdigest()
         self.firmware_sha = hashlib.sha256(b"matched firmware payload").hexdigest()
-        self.nevra = "linux-gts9wifi-7.2.0-0.1.fc44.aarch64"
+        self.nevra = "linux-x810-7.2.0-0.1.fc44.aarch64"
         self.root_manifest = self.root / "rootfs-manifest.txt"
         self.kernel_metadata = self.root / "BUILD-METADATA.txt"
         self._write()

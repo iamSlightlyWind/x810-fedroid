@@ -57,18 +57,18 @@ class InstallerTests(unittest.TestCase):
                 info.mode = 0o644
                 import io
                 archive.addfile(info, io.BytesIO(encoded))
-        rpm = root / "kernel/linux-gts9wifi.rpm"
+        rpm = root / "kernel/linux-x810.rpm"
         rpm.write_bytes(b"test-kernel-rpm")
         rpm_sha = hashlib.sha256(rpm.read_bytes()).hexdigest()
         firmware_sha = "a" * 64
         root_manifest = root / "rootfs/rootfs-manifest.txt"
         root_manifest.write_text(
             "device_id=SM-X810\nos_id=fedora\narch=aarch64\nport_version=1.2.3\n"
-            f"kernel_rpm_sha256={rpm_sha}\nkernel_rpm_nevra=linux-gts9wifi-7.2.0-1.aarch64\n"
+            f"kernel_rpm_sha256={rpm_sha}\nkernel_rpm_nevra=linux-x810-7.2.0-1.aarch64\n"
             f"firmware_sha256={firmware_sha}\n", encoding="utf-8")
         kernel_metadata = root / "kernel/BUILD-METADATA.txt"
         kernel_metadata.write_text(
-            f"kernel_rpm_sha256={rpm_sha}\nkernel_rpm_nevra=linux-gts9wifi-7.2.0-1.aarch64\n"
+            f"kernel_rpm_sha256={rpm_sha}\nkernel_rpm_nevra=linux-x810-7.2.0-1.aarch64\n"
             f"firmware_sha256={firmware_sha}\n", encoding="utf-8")
         (root / "metadata/SOURCE-RELEASES.txt").write_text("test source refs\n")
         def record(path):
@@ -121,27 +121,27 @@ class InstallerTests(unittest.TestCase):
             release.write_text('ID="fedora"\nID_LIKE="rhel centos"\nEVIL=$(touch /tmp/nope)\n')
             self.assertEqual(installer.linux_ids(release), {"fedora", "rhel", "centos"})
 
-    def test_release_check_distinguishes_legacy_index_from_clean_installer(self):
+    def test_release_check_distinguishes_compact_manifest_from_clean_installer(self):
         checks = installer.release_checks(None)
         self.assertEqual([check.state for check in checks], ["INFO", "BLOCKED"])
         self.assertIn("aggregate release from x810-fedora.yml", checks[0].detail)
 
-        # The full-set index is compatibility metadata, not the current
+        # The release manifest is provenance/checksum metadata, not the
         # Tab Companion port-update feed or a package that installs Fedora.
         release = {"tag_name": "test", "assets": [{"name": name} for name in (
-            "port-release.json", "SHA256SUMS", "BUNDLE-SHA256SUMS",
+            "x810-release-manifest.json",
             "x810-fedora-port-1.2.3-1.noarch.rpm", "rootfs.tar.gz",
         )]}
         update, install = installer.release_checks(release)
         self.assertEqual(update.state, "INFO")
-        self.assertIn("legacy port-release metadata", update.detail)
-        self.assertIn("x810-fedora.yml", update.detail)
+        self.assertIn("source commit", update.detail)
+        self.assertIn("Tab Companion updates", update.detail)
         self.assertEqual(install.state, "BLOCKED")
         self.assertIn("install Fedora from stock Android", install.detail)
 
     def test_install_manifest_presence_is_not_claimed_as_live_validated(self):
         release = {"tag_name": "test", "assets": [{"name": name} for name in (
-            "port-release.json", "SHA256SUMS", "BUNDLE-SHA256SUMS",
+            "x810-release-manifest.json",
             "x810-fedora-sm-x810-1.0.0-clean-install.tar.gz",
         )]}
         update, install = installer.release_checks(release)
@@ -537,7 +537,7 @@ class InstallerTests(unittest.TestCase):
                 root=root, manifest={"bundle_version": "test", "rootfs": {"minimum_size_bytes": 32 * 1024**3},
                                      "kernel": {"release": "7.2.0-gts9wifi"}},
                 rootfs_archive=root / "rootfs/rootfs.tar.gz", rootfs_manifest=root / "rootfs/rootfs-manifest.txt",
-                boot_images={}, kernel_rpm=root / "kernel/linux-gts9wifi.rpm",
+                boot_images={}, kernel_rpm=root / "kernel/linux-x810.rpm",
                 kernel_metadata=root / "kernel/BUILD-METADATA.txt")
             @contextmanager
             def opened(_): yield bundle

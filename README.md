@@ -43,7 +43,7 @@ installed only after resume validation. An explicit TWRP-only command can
 restore the checksummed four-image backup without touching `vbmeta` or
 recovery. The flow has host/mock tests only and is **not physically validated
 on the tablet**; do not treat it as a proven end-user installer. The release
-check labels the clean-install bundle separately from legacy full-set metadata.
+check reports the compact release manifest and clean-install bundle separately.
 The in-OS port updater uses the support-package ZIP in the same rolling
 aggregate release as the Fedora rootfs and boot files. Never use the legacy
 whole-userdata formatter for dual boot.
@@ -64,8 +64,10 @@ just matching version strings. The combined `x810-fedora.yml` workflow has a
 separate support-package job that publishes the overlay RPM ZIP for Tab
 Companion's port updater. Once the aggregate is complete, exactly one GitHub
 release remains: the latest run's release, containing the updater ZIP, matched
-rootfs/kernel/boot assets, checksums, release index, and clean-install bundle.
-Unchanged kernel and rootfs components are reused from the previous aggregate.
-`port-release.json` remains compatibility metadata. The clean installer
-validates the self-contained manifest inside its clean-install bundle. See
+rootfs/kernel/boot assets, one compact release manifest, and clean-install bundle.
+The manifest records the source commit, per-component build fingerprints, and
+payload checksums; it replaces the separate checksum/key text assets and the
+legacy `port-release.json`. Unchanged kernel and rootfs components are reused
+from the previous aggregate. The clean installer validates the self-contained
+manifest inside its clean-install bundle. See
 [`docs/TAB-COMPANION-PORT-RELEASE.md`](docs/TAB-COMPANION-PORT-RELEASE.md).

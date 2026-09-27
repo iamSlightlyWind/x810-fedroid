@@ -36,7 +36,7 @@ class FingerprintTests(unittest.TestCase):
             ("tools/stamp-port-metadata.py", "stamp one\n"),
             ("tools/test-port-build-contract.py", "contract one\n"),
             ("tools/verify-x810-rootfs-archive.py", "archive one\n"),
-            ("tools/make-port-release-index.py", "index one\n"),
+            ("tools/x810-release-manifest.py", "release manifest one\n"),
             ("tools/build-x810-clean-install-bundle.py", "bundle one\n"),
             ("tools/verify-x810-build-match.py", "match one\n"),
             ("tools/x810-build-fingerprint.py", "fingerprint one\n"),
@@ -129,12 +129,13 @@ class FingerprintTests(unittest.TestCase):
         self.assertNotEqual(base, self.key("full-set", **{**common, "kernel_build_key": "x" * 64}))
         self.assertNotEqual(base, self.key("full-set", **{**common, "rootfs_build_key": "x" * 64}))
         self.assertNotEqual(base, self.key("full-set", **{**common, "full_set_recipe_revision": "2"}))
-        (self.root / "tools/make-port-release-index.py").write_text("index two\n", encoding="utf-8")
-        self.commit_change("tools/make-port-release-index.py")
-        after_index_change = self.key("full-set", **common)
+        (self.root / "tools/x810-release-manifest.py").write_text("release manifest two\n", encoding="utf-8")
+        self.commit_change("tools/x810-release-manifest.py")
+        after_manifest_change = self.key("full-set", **common)
+        self.assertNotEqual(base, after_manifest_change)
         (self.root / "tools/publish-x810-full-set.sh").write_text("full set two\n", encoding="utf-8")
         self.commit_change("tools/publish-x810-full-set.sh")
-        self.assertNotEqual(after_index_change, self.key("full-set", **common))
+        self.assertNotEqual(after_manifest_change, self.key("full-set", **common))
         self.assertNotEqual(base, self.key("full-set", **common))
         self.assertEqual(kernel_before, self.key("kernel"))
         self.assertEqual(rootfs_before, self.key("rootfs"))

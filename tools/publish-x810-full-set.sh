@@ -5,6 +5,14 @@ set -euxo pipefail
 mkdir -p k r
 gh release -R "$GITHUB_REPOSITORY" download "$KREL" --dir k --clobber
 gh release -R "$GITHUB_REPOSITORY" download "$RREL" --dir r --clobber
+if [ ! -f k/BUILD-METADATA.txt ] || [ ! -f k/BUNDLE-SHA256SUMS ]; then
+  python3 tools/x810-release-manifest.py materialize \
+    k/x810-release-manifest.json kernel k
+fi
+if [ ! -f r/rootfs-manifest.txt ] || [ ! -f r/SHA256SUMS ]; then
+  python3 tools/x810-release-manifest.py materialize \
+    r/x810-release-manifest.json rootfs r
+fi
 (cd k && sha256sum -c BUNDLE-SHA256SUMS && sha256sum -c RPM-SHA256SUMS)
 (cd r && sha256sum -c SHA256SUMS)
 if [ -f k/KERNEL-BUILD-KEY.txt ]; then
@@ -66,7 +74,7 @@ if [ "$port_package_name" != x810-fedora-port ] || [ "$port_package_arch" != noa
   exit 1
 fi
 shopt -s nullglob
-rootfs_archives=(r/gts9wifi-fedora-*-rootfs.tar.gz)
+rootfs_archives=(r/x810-fedora-*-rootfs.tar.gz)
 [ "${#rootfs_archives[@]}" -eq 1 ] || {
   echo "REFUSING: expected exactly one rootfs tarball in $RREL." >&2
   exit 1
@@ -97,24 +105,14 @@ if not re.fullmatch(r"(?:0|[1-9][0-9]{0,19})\.(?:0|[1-9][0-9]{0,19})\.(?:0|[1-9]
     raise SystemExit("REFUSING: unknown or malformed port versions cannot be published.")
 PY
 
-# The updater consumes one schema-1 index from the combined release.
-# This local generator mirrors Tab Companion's index writer and also
-# checks the RPM's actual NEVRA before hashing it.
-python3 tools/make-port-release-index.py \
-  --manifest r/rootfs-manifest.txt \
-  --rpm "r/$port_package_asset" \
-  --port-json r/port.json \
-  --repository "$GITHUB_REPOSITORY" \
-  --tag "$REL" \
-  --output port-release.json
 rm r/port.json
 
 # A combined release must be a matched pair: the RPM shipped next to
 # the tarball has to be the one the rootfs image was built with.
 # build-rootfs.sh records the installed kernel RPM in the manifest.
-kernel_rpms=(k/linux-gts9wifi-*.rpm)
+kernel_rpms=(k/linux-x810-*.rpm)
 [ "${#kernel_rpms[@]}" -eq 1 ] || {
-  echo "REFUSING: expected exactly one linux-gts9wifi RPM in $KREL." >&2
+  echo "REFUSING: expected exactly one linux-x810 RPM in $KREL." >&2
   exit 1
 }
 kernel_nevra=$(rpm -qp --qf '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}' "${kernel_rpms[0]}")
@@ -137,15 +135,22 @@ python3 tools/build-x810-clean-install-bundle.py \
   --output "$clean_install_asset" \
   --bundle-version "$REL" \
   --kernel-release "$KREL" \
-  --rootfs-release "$RREL"
+  --rootfs-release "$RREL" \
+  --source-commit "$GITHUB_SHA" \
+  --full-set-build-key "$FULL_SET_KEY"
+
+# The support updater ZIP is published by the independent port-update job.
+mkdir -p update
+gh release -R "$GITHUB_REPOSITORY" download "$REL" --dir update \
+  --pattern x810-fedora-port.zip --clobber
 
 gh release -R "$GITHUB_REPOSITORY" view "$REL" >/dev/null 2>&1 || \
   gh release -R "$GITHUB_REPOSITORY" create "$REL" --title "$REL" --latest=false \
     --notes "Matched Fedora SM-X810 update set: kernel RPM, Android boot bundle, X810-only TWRP boot-set ZIP, and rootfs tarball from \`$KREL\` and \`$RREL\`.
 
-The \`x810-fedora-sm-x810-${REL}-clean-install.tar.gz\` asset is the separate clean-install bundle; inspect its \`x810-clean-install-manifest.json\` and follow INSTALL.md. It contains no vbmeta or recovery image. The legacy TWRP ZIP rewrites only boot, init_boot, vendor_boot, and dtbo; it preserves vbmeta, recovery, userdata, GPT, and firmware.
+The \`x810-fedora-sm-x810-${REL}-clean-install.tar.gz\` asset is the separate clean-install bundle; inspect its \`x810-clean-install-manifest.json\` and follow INSTALL.md. It contains no vbmeta or recovery image. Use the vbmeta from the matching TWRP port instructions. The TWRP boot-set ZIP rewrites only boot, init_boot, vendor_boot, and dtbo; it preserves vbmeta, recovery, userdata, GPT, and firmware.
 
-Checksums: SHA256SUMS covers the rootfs tarball, BUNDLE-SHA256SUMS covers the boot images."
+The compact \`x810-release-manifest.json\` records the source commit, component build fingerprints, and SHA-256/size of each release payload."
 gh release -R "$GITHUB_REPOSITORY" view "$REL" --json isDraft,isPrerelease > release-flags.json
 python3 - release-flags.json <<'PY'
 import json
@@ -156,29 +161,18 @@ flags = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 if flags.get("isDraft") is not False or flags.get("isPrerelease") is not False:
     raise SystemExit("REFUSING: combined latest-feed release must be published and non-prerelease.")
 PY
-# If this tag already had a feed index, remove it before replacing
-# its referenced RPM. On a failed rerun, clients see no update rather
-# than a stale index whose checksum no longer matches the asset.
-if [ "$(gh release -R "$GITHUB_REPOSITORY" view "$REL" --json assets \
-    --jq '[.assets[].name] | index("port-release.json") != null')" = true ]; then
-  gh release -R "$GITHUB_REPOSITORY" delete-asset "$REL" port-release.json --yes
-fi
 # KREL/RREL may both resolve to the last aggregate release. In that case both
 # download directories contain the same flattened asset names, so uploading
 # both `*` globs causes GitHub's 422 duplicate-asset error even with --clobber.
 # Publish only each component's owned files; regenerate full-set metadata below.
 full_assets=(
-  k/BUILD-METADATA.txt
-  k/BUNDLE-SHA256SUMS
-  k/KERNEL-BUILD-KEY.txt
-  k/RPM-SHA256SUMS
-  k/*.img
-  k/linux-gts9wifi-*.rpm
-  k/gts9wifi-fedora-*.zip
-  r/ROOTFS-BUILD-KEY.txt
-  r/SHA256SUMS
-  r/rootfs-manifest.txt
-  r/gts9wifi-fedora-*-rootfs.tar.gz
+  k/boot.img
+  k/init_boot.img
+  k/vendor_boot.img
+  k/dtbo.img
+  k/linux-x810-*.rpm
+  k/x810-fedora-bootset-*.zip
+  r/x810-fedora-*-rootfs.tar.gz
   r/x810-fedora-port-*.rpm
 )
 declare -A seen_assets=()
@@ -190,9 +184,29 @@ for asset in "${full_assets[@]}"; do
   }
   seen_assets[$name]=1
 done
-gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber "${full_assets[@]}"
-gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber port-release.json FULL-SET-BUILD-KEY.txt
-gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber "$clean_install_asset"
+all_payloads=("${full_assets[@]}" "$clean_install_asset" update/x810-fedora-port.zip)
+manifest_asset_args=()
+for asset in "${all_payloads[@]}"; do manifest_asset_args+=(--asset "$asset"); done
+python3 tools/x810-release-manifest.py create \
+  --kernel-dir k --rootfs-dir r \
+  --source-commit "$GITHUB_SHA" --release-tag "$REL" \
+  --kernel-release "$KREL" --rootfs-release "$RREL" \
+  --port-version "$PORT_VERSION" --full-set-build-key "$FULL_SET_KEY" \
+  --output x810-release-manifest.json "${manifest_asset_args[@]}"
+
+# A rerun of the same publication identity must not leave obsolete metadata,
+# vbmeta, or older asset variants attached beside the new clean asset set.
+expected_names="$(printf '%s\n' "${full_assets[@]}" "$clean_install_asset" \
+  update/x810-fedora-port.zip x810-release-manifest.json | sed 's#^.*/##' | sort -u)"
+while IFS= read -r old_name; do
+  [ -n "$old_name" ] || continue
+  if ! grep -Fxq "$old_name" <<< "$expected_names"; then
+    gh release -R "$GITHUB_REPOSITORY" delete-asset "$REL" "$old_name" --yes
+  fi
+done < <(gh release -R "$GITHUB_REPOSITORY" view "$REL" --json assets --jq '.assets[].name')
+
+gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber \
+  "${full_assets[@]}" "$clean_install_asset" update/x810-fedora-port.zip x810-release-manifest.json
 # Auxiliary kernel/rootfs/boot tags are not latest; reassert that
 # the combined full-set release is the single updater feed even when
 # rerunning an existing release.

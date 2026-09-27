@@ -175,7 +175,6 @@ jobs:
           bash -n tools/build-port-support-rpm.sh
           python3 tools/test-port-metadata.py
           python3 tools/test-port-update-bundle.py
-          python3 tools/test-port-release-index.py
 
       - name: Restore Fedora 44 DNF tool cache
         id: restore_port_dnf
@@ -302,6 +301,7 @@ jobs:
       - name: Run lightweight planner and rootfs integrity contract tests
         run: |
           python3 tools/test-x810-build-fingerprint.py
+          python3 tools/test-x810-release-manifest.py
           python3 tools/test-rootfs-repo-gpg.py
           python3 tools/test-rootfs-zram-config.py
           python3 tools/test-port-rpm-staging.py
@@ -354,9 +354,14 @@ jobs:
               dir="$RUNNER_TEMP/kernel-check-${GITHUB_RUN_ID}-${RANDOM}"
               mkdir -p "$dir"
               if gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
+                  --pattern x810-release-manifest.json >/dev/null 2>&1; then
+                candidate_key="$(python3 tools/x810-release-manifest.py key \
+                  "$dir/x810-release-manifest.json" kernel 2>/dev/null || true)"
+                if [ "$candidate_key" = "$kernel_key" ]; then reusable="$candidate"; break; fi
+              elif gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
                   --pattern KERNEL-BUILD-KEY.txt --pattern BUNDLE-SHA256SUMS \
-                  --pattern RPM-SHA256SUMS --pattern 'linux-gts9wifi-*.rpm' --pattern '*.img' \
-                  --pattern 'gts9wifi-fedora-*.zip' >/dev/null 2>&1 && \
+                  --pattern RPM-SHA256SUMS --pattern 'linux-x810-*.rpm' --pattern '*.img' \
+                  --pattern 'x810-fedora-bootset-*.zip' >/dev/null 2>&1 && \
                  [ "$(cat "$dir/KERNEL-BUILD-KEY.txt" 2>/dev/null || true)" = "$kernel_key" ] && \
                  (cd "$dir" && sha256sum -c BUNDLE-SHA256SUMS >/dev/null && sha256sum -c RPM-SHA256SUMS >/dev/null); then
                 reusable="$candidate"
@@ -376,7 +381,7 @@ jobs:
               bootstrap_ok=false
               if gh release download "$BOOTSTRAP_KERNEL_TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
                   --pattern BUILD-METADATA.txt --pattern BUNDLE-SHA256SUMS --pattern RPM-SHA256SUMS \
-                  --pattern 'linux-gts9wifi-*.rpm' --pattern '*.img' --pattern 'gts9wifi-fedora-*.zip' >/dev/null 2>&1 && \
+                  --pattern 'linux-x810-*.rpm' --pattern '*.img' --pattern 'x810-fedora-bootset-*.zip' >/dev/null 2>&1 && \
                  (cd "$dir" && sha256sum -c BUNDLE-SHA256SUMS >/dev/null && sha256sum -c RPM-SHA256SUMS >/dev/null); then
                 field() {
                   python3 - "$dir/BUILD-METADATA.txt" "$1" <<'PY'
@@ -559,8 +564,8 @@ jobs:
                 --cmdline /work/boot/cmdline.txt \
                 --bootconfig /work/boot/bootconfig.txt --out out-bundle
               shopt -s nullglob
-              kernel_rpms=(out-kernel/linux-gts9wifi-*.rpm)
-              [ "${#kernel_rpms[@]}" -eq 1 ] || { echo "expected exactly one linux-gts9wifi RPM" >&2; exit 1; }
+              kernel_rpms=(out-kernel/linux-x810-*.rpm)
+              [ "${#kernel_rpms[@]}" -eq 1 ] || { echo "expected exactly one linux-x810 RPM" >&2; exit 1; }
               (cd out-kernel && sha256sum "$(basename "${kernel_rpms[0]}")" > RPM-SHA256SUMS)
               kernel_rpm_nevra=$(rpm -qp --qf "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}" "${kernel_rpms[0]}")
               kernel_rpm_sha256=$(sha256sum "${kernel_rpms[0]}" | cut -d" " -f1)
@@ -581,7 +586,7 @@ jobs:
                 printf "kernel_source=linux-7.2.0 plus repository kernel/prepare.sh and patches\\n"
                 printf "x810_build_key=%s\\n" "$BUILD_KEY"
               } >> out-bundle/BUILD-METADATA.txt
-              python3 /work/tools/make-twrp-zip.py out-bundle out-twrp/gts9wifi-fedora-"$KVER".zip --project /work
+              python3 /work/tools/make-twrp-zip.py out-bundle out-twrp/x810-fedora-bootset-"$KVER".zip --project /work
               printf "%s\\n" "$BUILD_KEY" > out-bundle/KERNEL-BUILD-KEY.txt
               (cd out-bundle && sha256sum KERNEL-BUILD-KEY.txt >> SHA256SUMS)
               ccache --show-stats
@@ -661,18 +666,23 @@ jobs:
           kdir="$RUNNER_TEMP/selected-kernel-${GITHUB_RUN_ID}"
           mkdir -p "$kdir"
           download_patterns=(
+            --pattern x810-release-manifest.json
             --pattern BUILD-METADATA.txt
             --pattern BUNDLE-SHA256SUMS
             --pattern RPM-SHA256SUMS
-            --pattern 'linux-gts9wifi-*.rpm'
+            --pattern 'linux-x810-*.rpm'
             --pattern '*.img'
-            --pattern 'gts9wifi-fedora-*.zip'
+            --pattern 'x810-fedora-bootset-*.zip'
           )
           # The validated one-time bootstrap kernel predates build-key assets.
           if [ "$IS_BOOTSTRAP" != true ]; then
             download_patterns+=(--pattern KERNEL-BUILD-KEY.txt)
           fi
           gh release download "$KERNEL_TAG" --repo "$GITHUB_REPOSITORY" --dir "$kdir" "${download_patterns[@]}"
+          if [ ! -f "$kdir/BUILD-METADATA.txt" ]; then
+            python3 tools/x810-release-manifest.py materialize \
+              "$kdir/x810-release-manifest.json" kernel "$kdir"
+          fi
           (cd "$kdir" && sha256sum -c BUNDLE-SHA256SUMS && sha256sum -c RPM-SHA256SUMS)
           if [ -f "$kdir/KERNEL-BUILD-KEY.txt" ]; then
             [ "$(cat "$kdir/KERNEL-BUILD-KEY.txt")" = "$KERNEL_KEY" ] || {
@@ -682,7 +692,7 @@ jobs:
             echo "REFUSING: a non-bootstrap kernel release lacks its build-key asset." >&2; exit 1
           fi
           shopt -s nullglob
-          rpms=("$kdir"/linux-gts9wifi-*.rpm)
+          rpms=("$kdir"/linux-x810-*.rpm)
           [ "${#rpms[@]}" -eq 1 ] || { echo "REFUSING: expected exactly one kernel RPM." >&2; exit 1; }
           kernel_rpm_sha256="$(sha256sum "${rpms[0]}" | cut -d' ' -f1)"
 
@@ -710,6 +720,11 @@ jobs:
               rdir="$RUNNER_TEMP/rootfs-check-${GITHUB_RUN_ID}-${RANDOM}"
               mkdir -p "$rdir"
               if gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$rdir" \
+                  --pattern x810-release-manifest.json >/dev/null 2>&1; then
+                candidate_key="$(python3 tools/x810-release-manifest.py key \
+                  "$rdir/x810-release-manifest.json" rootfs 2>/dev/null || true)"
+                if [ "$candidate_key" = "$rootfs_key" ]; then reusable="$candidate"; break; fi
+              elif gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$rdir" \
                   --pattern ROOTFS-BUILD-KEY.txt --pattern SHA256SUMS \
                   --pattern '*.tar.gz' --pattern '*.rpm' --pattern rootfs-manifest.txt >/dev/null 2>&1 && \
                  [ "$(cat "$rdir/ROOTFS-BUILD-KEY.txt" 2>/dev/null || true)" = "$rootfs_key" ] && \
@@ -810,12 +825,17 @@ jobs:
           set -euo pipefail
           mkdir -p _ci/kernel
           gh release download "$KERNEL_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'linux-gts9wifi-*.rpm' --pattern RPM-SHA256SUMS --dir _ci/kernel
+            --pattern 'linux-x810-*.rpm' --pattern RPM-SHA256SUMS \
+            --pattern x810-release-manifest.json --dir _ci/kernel
+          if [ ! -f _ci/kernel/RPM-SHA256SUMS ]; then
+            python3 tools/x810-release-manifest.py materialize \
+              _ci/kernel/x810-release-manifest.json kernel _ci/kernel --rpm-only
+          fi
           (cd _ci/kernel && sha256sum -c RPM-SHA256SUMS)
           shopt -s nullglob
-          rpms=(_ci/kernel/linux-gts9wifi-*.rpm)
+          rpms=(_ci/kernel/linux-x810-*.rpm)
           [ "${#rpms[@]}" -eq 1 ] || {
-            echo "REFUSING: kernel release must contain exactly one X810 linux-gts9wifi RPM." >&2
+            echo "REFUSING: kernel release must contain exactly one X810 linux-x810 RPM." >&2
             exit 1
           }
           cp "${rpms[0]}" _ci/kernel.rpm
@@ -955,16 +975,23 @@ jobs:
 
           names = json.loads(sys.argv[1])
           required = {
-              "x810-fedora-port.zip", "port-release.json", "FULL-SET-BUILD-KEY.txt",
-              "KERNEL-BUILD-KEY.txt", "ROOTFS-BUILD-KEY.txt", "BUNDLE-SHA256SUMS",
-              "RPM-SHA256SUMS", "SHA256SUMS", "rootfs-manifest.txt",
+              "x810-fedora-port.zip", "x810-release-manifest.json",
               "boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img",
           }
           missing = sorted(required - set(names))
+          obsolete = {
+              "BUNDLE-SHA256SUMS", "RPM-SHA256SUMS", "SHA256SUMS",
+              "rootfs-manifest.txt", "BUILD-METADATA.txt",
+              "KERNEL-BUILD-KEY.txt", "ROOTFS-BUILD-KEY.txt",
+              "FULL-SET-BUILD-KEY.txt", "port-release.json", "vbmeta.img",
+          }
+          stale = sorted(obsolete & set(names))
+          if stale:
+              raise SystemExit("REFUSING to prune: aggregate still has obsolete standalone assets: " + ", ".join(stale))
           patterns = {
-              "kernel RPM": lambda n: n.startswith("linux-gts9wifi-") and n.endswith(".rpm"),
-              "rootfs archive": lambda n: n.startswith("gts9wifi-fedora-") and n.endswith("-rootfs.tar.gz"),
-              "TWRP boot-set ZIP": lambda n: n.startswith("gts9wifi-fedora-") and n.endswith(".zip"),
+              "kernel RPM": lambda n: n.startswith("linux-x810-") and n.endswith(".rpm"),
+              "rootfs archive": lambda n: n.startswith("x810-fedora-") and n.endswith("-rootfs.tar.gz"),
+              "TWRP boot-set ZIP": lambda n: n.startswith("x810-fedora-bootset-") and n.endswith(".zip"),
               "clean-install bundle": lambda n: n.startswith("x810-fedora-sm-x810-") and n.endswith("-clean-install.tar.gz"),
           }
           missing.extend(label for label, predicate in patterns.items() if not any(predicate(n) for n in names))

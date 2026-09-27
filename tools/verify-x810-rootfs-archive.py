@@ -224,7 +224,7 @@ def inspect(archive_pathname: str, manifest_path: str | None = None) -> dict[str
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("archive", help="gts9wifi-fedora-*-rootfs.tar.gz")
+    parser.add_argument("archive", help="x810-fedora-*-rootfs.tar.gz")
     parser.add_argument("--manifest", help="matching rootfs-manifest.txt")
     args = parser.parse_args(argv)
     try:

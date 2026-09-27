@@ -684,7 +684,7 @@ else
         --rootfs "$rootfs" --manifest "$outdir/rootfs-manifest.txt" \
         --version "$port_version"
 fi
-archive="$outdir/gts9wifi-fedora-$fedora_release-rootfs.tar.gz"
+archive="$outdir/x810-fedora-$fedora_release-rootfs.tar.gz"
 # Normalize traversal order, ownership, mtimes and gzip header metadata so
 # packaging itself is reproducible.  RPM database install times and compiler
 # toolchain behavior are still captured by the manifest rather than claimed

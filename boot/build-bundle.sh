@@ -8,7 +8,7 @@
 #   - vendor_boot: cmdline + bootconfig + platform ramdisk fragment
 #   - dtbo: deliberately NOT an Android DT table, so ABL falls back to the
 #     appended DTB
-#   - vbmeta: verification disabled (flags 2); hash footers on everything
+#   - no vbmeta: use the vbmeta image supplied by the matching TWRP port
 #
 # Usage: build-bundle.sh --vmlinuz F --dtb F --initramfs F --cmdline F \
 #                        --bootconfig F --out DIR
@@ -21,7 +21,6 @@ boot_size=100663296
 init_boot_size=8388608
 vendor_boot_size=100663296
 dtbo_size=16777216
-vbmeta_size=131072
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -124,15 +123,8 @@ rm -f "$out/dtbo.img"
 truncate -s 4096 "$out/dtbo.img"
 add_hash_footer "$out/dtbo.img" dtbo "$dtbo_size"
 
-# vbmeta: disable verified boot.
-python3 "$repo/tools/avbtool" make_vbmeta_image \
-    --output "$out/vbmeta.img" \
-    --flags 2 \
-    --padding_size "$vbmeta_size"
-
 for spec in "boot.img:$boot_size" "init_boot.img:$init_boot_size" \
-            "vendor_boot.img:$vendor_boot_size" "dtbo.img:$dtbo_size" \
-            "vbmeta.img:$vbmeta_size"; do
+            "vendor_boot.img:$vendor_boot_size" "dtbo.img:$dtbo_size"; do
     name=${spec%%:*}; expected=${spec##*:}
     actual=$(stat -c %s "$out/$name")
     [ "$actual" -eq "$expected" ] || { echo "$name: expected $expected, got $actual" >&2; exit 1; }

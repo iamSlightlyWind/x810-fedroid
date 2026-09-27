@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Package the four X810 OS boot images as a manual TWRP ZIP.
 
-The generated ZIP deliberately excludes vbmeta: live X810 research found its
-containing UFS device read-only and the working device already has AVB flags 2.
+The generated ZIP deliberately excludes vbmeta: users are expected to use the
+vbmeta supplied with their matching TWRP port, not an experimental boot bundle.
 """
 
 from __future__ import annotations

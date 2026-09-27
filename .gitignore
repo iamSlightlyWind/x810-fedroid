@@ -31,6 +31,10 @@ ubuntu-galaxy-tab-s9-ultra/
 SHA256SUMS
 gts9wifi-fedora-*.tar.gz
 gts9wifi-fedora-*.zip
+x810-fedora-*-rootfs.tar.gz
+x810-fedora-bootset-*.zip
+x810-release-manifest.json
+FULL-SET-BUILD-KEY.txt
 
 # X810 live-device evidence and generated artifacts
 work/

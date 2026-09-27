@@ -1,4 +1,4 @@
-# linux-gts9wifi: mainline kernel for the Samsung Galaxy Tab S9 Wi-Fi.
+# linux-x810: mainline kernel package for the Samsung Galaxy Tab S9+ Wi-Fi.
 # Built from an already-prepared tree (kernel/prepare.sh runs in the workflow
 # and the result is fed in as Source0).  Translation of the postmarketOS
 # APKBUILD package() to RPM.
@@ -6,21 +6,23 @@
 %define debug_package %{nil}
 %define kversion 7.2.0
 
-Name:           linux-%{flavor}
+Name:           linux-x810
 Version:        7.2.0
 Release:        0.1%{?dist}
-Summary:        Mainline Linux kernel for Samsung Galaxy Tab S9 Wi-Fi (gts9wifi)
+Summary:        Mainline Linux kernel for Samsung Galaxy Tab S9+ Wi-Fi (SM-X810)
 License:        GPL-2.0-only
 URL:            https://www.kernel.org
 BuildArch:      aarch64
 ExclusiveArch:  aarch64
 Provides:       kernel-uname-r
+Provides:       linux-gts9wifi = %{version}-%{release}
+Obsoletes:      linux-gts9wifi <= %{version}-%{release}
 AutoReqProv:    no
 
 Source0:        linux-prepared.tar.gz
 
 %description
-Mainline %{kversion} plus the gts9wifi port patch set: FTS1BA90A touch,
+Mainline %{kversion} plus the gts9pwifi/SM-X810 port patch set: FTS1BA90A touch,
 ANA38407 panel, SM5714/SM5440/PS5169 power & Type-C, Wacom WEZ01 pen,
 Samsung-specific display/PCIe/WCN fixes.  Identical sources to the running
 postmarketOS build, repackaged so Fedora can own the kernel.  The uname is

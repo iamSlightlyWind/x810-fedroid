@@ -38,7 +38,6 @@ IMAGE_SIZES = {
     "vendor_boot": 100_663_296,
     "dtbo": 16_777_216,
 }
-VBMETA_SIZE = 131_072
 MIN_ROOTFS_BYTES = 32 * 1024**3
 ROOTFS_HEADROOM_FLOOR = 4 * 1024**3
 SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
@@ -158,6 +157,8 @@ def build_bundle(
     bundle_version: str,
     kernel_release: str,
     rootfs_release: str,
+    source_commit: str = "",
+    full_set_build_key: str = "",
     image_sizes: dict[str, int] | None = None,
     minimum_rootfs_floor: int = MIN_ROOTFS_BYTES,
     rootfs_headroom_floor: int = ROOTFS_HEADROOM_FLOOR,
@@ -167,6 +168,8 @@ def build_bundle(
     for label, value in (("kernel_release", kernel_release), ("rootfs_release", rootfs_release)):
         if not SAFE_VERSION_RE.fullmatch(value):
             raise ValueError(f"{label} must be a safe, non-empty release tag")
+    if source_commit and not re.fullmatch(r"[0-9a-f]{40,64}", source_commit):
+        raise ValueError("source_commit must be a full lowercase Git commit hash")
 
     expected_sizes = IMAGE_SIZES if image_sizes is None else image_sizes
     root_checksums = verify_checksum_file(rootfs_dir, "SHA256SUMS")
@@ -174,13 +177,13 @@ def build_bundle(
     kernel_rpm_checksums = verify_checksum_file(kernel_dir, "RPM-SHA256SUMS")
 
     root_manifests = list(rootfs_dir.glob("rootfs-manifest.txt"))
-    root_archives = sorted(rootfs_dir.glob("gts9wifi-fedora-*-rootfs.tar.gz"))
-    kernel_rpms = sorted(kernel_dir.glob("linux-gts9wifi-*.rpm"))
+    root_archives = sorted(rootfs_dir.glob("x810-fedora-*-rootfs.tar.gz"))
+    kernel_rpms = sorted(kernel_dir.glob("linux-x810-*.rpm"))
     metadata_path = kernel_dir / "BUILD-METADATA.txt"
     if len(root_manifests) != 1 or len(root_archives) != 1:
         raise ValueError("rootfs release must contain exactly one rootfs-manifest.txt and rootfs tarball")
     if len(kernel_rpms) != 1 or not metadata_path.is_file():
-        raise ValueError("kernel release must contain exactly one linux-gts9wifi RPM and BUILD-METADATA.txt")
+        raise ValueError("kernel release must contain exactly one linux-x810 RPM and BUILD-METADATA.txt")
 
     root_manifest_path = root_manifests[0]
     root_archive = root_archives[0]
@@ -214,13 +217,9 @@ def build_bundle(
         if source.name not in kernel_image_checksums:
             raise ValueError(f"BUNDLE-SHA256SUMS does not cover {source.name}")
         images[partition] = source
-    vbmeta = kernel_dir / "vbmeta.img"
-    if vbmeta.exists():
-        if vbmeta.stat().st_size != VBMETA_SIZE or "vbmeta.img" not in kernel_image_checksums:
-            raise ValueError("source vbmeta image is not the known-sized, checksummed build output")
     # Refuse unrecognized image inputs instead of silently producing a partial set.
     listed_images = {name for name in kernel_image_checksums if name.endswith(".img")}
-    if listed_images != {f"{name}.img" for name in expected_sizes} | ({"vbmeta.img"} if vbmeta.exists() else set()):
+    if listed_images != {f"{name}.img" for name in expected_sizes}:
         raise ValueError("kernel checksum manifest has an unexpected or missing partition image")
 
     inventory_sources: dict[str, Path] = {
@@ -258,6 +257,12 @@ def build_bundle(
             "device": {"model": "SM-X810", "codename": "gts9pwifi"},
             "os": {"id": "fedora", "version": fedora_version, "arch": "aarch64"},
             "bundle_version": bundle_version,
+            "source_commit": source_commit or None,
+            "build_keys": {
+                "kernel": (kernel_dir / "KERNEL-BUILD-KEY.txt").read_text(encoding="ascii").strip(),
+                "rootfs": (rootfs_dir / "ROOTFS-BUILD-KEY.txt").read_text(encoding="ascii").strip(),
+                "full_set": full_set_build_key or None,
+            },
             "kernel": {"release": rootfs_kernel_release(root_archive), "rpm": kernel_rpm_record},
             "rootfs": {
                 "archive": rootfs_archive_record,
@@ -304,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bundle-version", required=True, help="combined release tag/version")
     parser.add_argument("--kernel-release", required=True, help="exact kernel source release tag")
     parser.add_argument("--rootfs-release", required=True, help="exact rootfs source release tag")
+    parser.add_argument("--source-commit", default="", help="full Git commit that produced this aggregate")
+    parser.add_argument("--full-set-build-key", default="", help="aggregate component fingerprint")
     args = parser.parse_args(argv)
     try:
         manifest = build_bundle(
@@ -313,6 +320,8 @@ def main(argv: list[str] | None = None) -> int:
             bundle_version=args.bundle_version,
             kernel_release=args.kernel_release,
             rootfs_release=args.rootfs_release,
+            source_commit=args.source_commit,
+            full_set_build_key=args.full_set_build_key,
         )
     except (OSError, EOFError, tarfile.TarError, UnicodeError, ValueError) as error:
         parser.exit(1, f"build-x810-clean-install-bundle: REFUSING: {error}\n")

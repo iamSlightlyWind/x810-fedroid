@@ -39,8 +39,8 @@ ROOTFS_PATHS = (
     "tools/verify-x810-rootfs-archive.py",
 )
 FULL_SET_PATHS = (
-    "tools/make-port-release-index.py",
     "tools/build-x810-clean-install-bundle.py",
+    "tools/x810-release-manifest.py",
     "tools/verify-x810-build-match.py",
     "tools/verify-x810-rootfs-archive.py",
     "tools/x810-build-fingerprint.py",
