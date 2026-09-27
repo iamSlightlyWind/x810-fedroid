@@ -728,6 +728,9 @@ jobs:
       - name: Run rootfs Fedora signing-key contract test
         run: python3 tools/test-rootfs-repo-gpg.py
 
+      - name: Check X810 ADSP startup ordering
+        run: python3 tools/test-x810-adsp-panel-order.py
+
       - name: Verify planned rootfs fingerprint
         env:
           FEDORA_RELEASE: "44"
