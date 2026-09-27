@@ -31,7 +31,7 @@ validation step · ❌ unavailable · ❓ not tested
 | Built-in speakers | 🟡 | Stereo playback works on the current setup. A system-wide PipeWire/WirePlumber routing fix is in the port and its updater package; clean-install validation is pending. GNOME Settings' left/right output-test buttons have also been reported to freeze, so avoid those tests for now. |
 | Microphones | ❓ | The ALSA/PipeWire capture source is present, but microphone recording has not been qualified. |
 | Front and rear cameras | 🟡 | Sensor and libcamera support are integrated. Account permissions are fixed in the installer and port update; a fresh-login camera capture check is still pending. Rear focus is fixed/manual, not autofocus. |
-| Hardware video decode | 🟡 | The VPU works through compatible stateful V4L2 M2M clients. Firefox and VLC do not currently use this path; the VPU encoder is untested. |
+| Hardware video decode | 🟡 | Verified with the owner-supplied X810 CYG1 PAS firmware and stateful V4L2 M2M. Public builds omit this proprietary blob; Firefox and VLC do not use this path, and the encoder is untested. |
 | Motion sensors / auto-rotation | ❌ | Sensor support is in progress, but the current system does not receive the required SSC QMI service, so tablet rotation is unavailable. |
 | Battery and charging | 🟡 | Battery/charging support is present and the previous 96% charge cap is fixed. Samsung-equivalent battery aging behavior is not implemented. |
 | USB-C, USB host, docks | 🟡 | USB host, charging/PD and dock support are present; not every accessory/display combination has been validated. |

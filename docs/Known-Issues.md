@@ -21,7 +21,7 @@ reused, and a retired number is simply absent rather than reassigned
 | 13 | Charging bypass on 25 W+ chargers | planned — needs a `gnome-control-center` patch |
 | 14 | Double tap to turn on the screen | fixed — with a GNOME extension UI |
 | 15 | Under-display fingerprint sensor (EgisTec EL721) | in progress — blocked at the TEE's `KEYMASTER_NOT_CONFIGURED` |
-| 16 | Hardware video decode (iris / VPU 3.0) | fixed — the VPU decodes; application support is partial |
+| 16 | Hardware video decode (iris / VPU 3.0) | works with owner-supplied X810 CYG1 firmware; GitHub builds omit the proprietary PAS image; application support is partial |
 | 17 | Speaker volume capped (~−19 dB) | fixed — Cirrus speaker-protection DSP firmware now loads |
 | 18 | `/`, `/etc`, `/usr` owned by the image build user | fixed — this had silently disabled *every* `tmpfiles.d` entry |
 | 19 | Kernel log flooded by ADSP handover messages | fixed — the repeat is logged at debug level now |
@@ -222,24 +222,28 @@ double-tap defect — it was a broken resume path that restarted nothing.
 
 ### 16 — Hardware video decode (iris / VPU 3.0)
 
-The driver and device tree were already in place and `/dev/video17` registered,
-but the firmware load failed with `ENOENT` for `qcom/vpu/vpu30_4v.mbn`.
-`linux-firmware` ships a whole `vpu30_*_s*` family but **not this one**, and the
-CI firmware payload does not carry it either.
+The `/dev/video17` node and mainline driver were present, but the image had the
+wrong Samsung-signed `vpu30_4v.mbn`: the Azkali X710/X910-family blob has the
+same Xtensa loadable segments as X810 CYG1 but a different PAS authentication
+tail. On the live SM-X810, the wrong file failed during TrustZone PAS
+initialization with `-EINVAL`.
 
-The Samsung-signed blob is staged at build time with a pinned SHA-256 (fatal
-on mismatch) — `rootfs/stage-public-firmware.sh` in CI,
-`fetch-local-assets.sh` locally — so the decoder boots. **No kernel rebuild
-and no reboot are needed** — the firmware loads on the first `open()` of
-`/dev/video17`.
+I extracted the exact file from the owner-provided SM-X810 CYG1 stock vendor
+image (SHA-256
+`c02a4f1cb253f4b817994c00145dc9abbd59a10bfcd9fd5d0c2f223c0dc543ba`), installed
+it on the running Fedora system, and verified a 90-frame H.264 decode through
+FFmpeg's `h264_v4l2m2m` wrapper. FFmpeg reported `iris_driver` on `/dev/video17`
+in mplane mode. No kernel rebuild or reboot was needed.
 
-Verified: 90 frames of VP9, 150 of H.264 and 150 of HEVC all decoded through
-`iris_driver` in mplane mode with zero errors; the video clock went from
-disabled to 1.014 GHz; the same 1080p VP9 file costs 0.15 s of user CPU in
-hardware against 3.20 s in software.
-
-The remaining limitation is application support, not the decoder — see
-[Home](Hardware-Notes.md#hardware-video-decode).
+Samsung's firmware is proprietary, so the repo and public releases do not
+redistribute it. GitHub-built root filesystems therefore omit the VPU firmware
+unless the image builder is given the owner's extracted CYG1 file via
+`GTS9_VPU_MBN=/path/to/vpu30_4v.mbn`; the staging script hash-checks it and
+rejects sibling-model blobs. `rootfs/fetch-local-assets.sh` stages the same
+verified file for a local build. Without it, the device boots normally but
+video decoding falls back to software. The remaining limitation is application
+support — browsers still do not use this stateful V4L2 node — see
+[Hardware video decode](Hardware-Notes.md#hardware-video-decode).
 
 ### 17 — Speaker volume capped
 

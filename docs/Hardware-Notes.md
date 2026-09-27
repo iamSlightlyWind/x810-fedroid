@@ -375,23 +375,26 @@ their presence is not evidence of support.
 | Kernel driver | mainline `qcom-iris` (GPL-2.0-only), bound at `aa00000.video-codec` |
 | Decoder | `/dev/video17` — stateful V4L2 M2M MPLANE, no stateless capability |
 | Encoder | `/dev/video18` — untested |
-| Firmware | `qcom/vpu/vpu30_4v.mbn`, Samsung-signed |
+| Firmware | `qcom/vpu/vpu30_4v.mbn`, X810 CYG1 Samsung-signed image |
 
-The driver was already in mainline and already correct: the DTS and driver
-worked and `/dev/video17` registered, but the firmware load failed with
-`ENOENT` and the driver logs nothing at probe. `linux-firmware` ships a
-`vpu30_*_s*` family but not this one, and the CI firmware payload did not
-carry it either. Verify the exact blob name the device requests.
+The driver is in mainline and `/dev/video17` registers even when its firmware
+cannot initialize. The first attempted image used a similarly named
+X710/X910-family blob whose loadable Xtensa segments match the X810 image, but
+whose PAS authentication tail is different. On this X810 it failed during
+TrustZone initialization with `-EINVAL`. The exact owner-supplied X810 CYG1
+blob (SHA-256
+`c02a4f1cb253f4b817994c00145dc9abbd59a10bfcd9fd5d0c2f223c0dc543ba`) was
+installed without rebooting; `v4l2-ctl --all` then succeeded and FFmpeg decoded
+90 synthetic H.264 frames through `h264_v4l2m2m`, explicitly reporting
+`iris_driver` on `/dev/video17` in MPLANE mode.
 
-The firmware loads on the first `open()` of `/dev/video17`, not at probe — so
-the fix needed no kernel rebuild and no reboot, and "the driver loaded and
-logged nothing" is not evidence the firmware is present. The driver only logs
-on error.
-
-Firmware is placed in reserved memory and authenticated with PAS, so a generic
-blob is useless: it has to be the vendor-signed one, staged with a pinned
-checksum that fails the build. A silent fallback means a device that boots and
-quietly decodes in software.
+The firmware is PAS-authenticated and proprietary. It is not committed or
+included in the public release. A local image builder may stage its own
+extracted X810 CYG1 file with
+`GTS9_VPU_MBN=/path/to/vpu30_4v.mbn`; exact SHA-256 is required. GitHub-built
+images omit the VPU blob when the user-owned input is unavailable, rather than
+shipping a sibling-model firmware that boots the tablet but fails decoder
+initialization.
 
 ### Which applications can use it
 

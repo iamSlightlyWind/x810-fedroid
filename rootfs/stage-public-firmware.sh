@@ -19,7 +19,7 @@
 # Env:
 #   GTS9_SKIP_PUBLIC_FIRMWARE=1  report what is missing instead of downloading
 #   GTS9_CIRRUS_BASE             cirrus/ source (default: the Azkali firmware repo)
-#   GTS9_VPU_BASE                qcom/vpu/ source (default: the Azkali firmware repo)
+#   GTS9_VPU_MBN                 owner-extracted SM-X810 CYG1 vpu30_4v.mbn
 #   GTS9_IOE_BASE                WCN6855 IOE source (default: CodeLinaro ath11k-firmware)
 #   GTS9_BDF_REF_URL             board-2.bin reference container (default: CodeLinaro)
 
@@ -91,18 +91,40 @@ fetch "$cirrus_base/cs35l45-dsp1-spk-prot.bin" "$fw/cirrus/cs35l45-dsp1-spk-prot
     "CS35L45 speaker protection (cs35l45-dsp1-spk-prot.bin)" || true
 
 echo ">>> iris VPU / video-decoder firmware (issue 16)"
-# The driver asks for exactly the name in the DTS (&iris firmware-name) and
-# fails with ENOENT without it: /dev/video17 registers but every decode logs
-# "Direct firmware load for qcom/vpu/vpu30_4v.mbn failed with error -2" and the
-# VPU never boots.  linux-firmware ships a family of vpu30_*_s* blobs but not
-# this one, and the CI payload does not carry it either.  It is Samsung's
-# signed image, which is what this device's TrustZone accepts -- the blob is
-# PAS-authenticated, so a generic one is no use -- and being proprietary it
-# cannot be committed to the repo.
-vpu_base="${GTS9_VPU_BASE:-https://raw.githubusercontent.com/Azkali/gts9wifi-firmware/main/qcom/sm8550/gts9wifi}"
-fetch "$vpu_base/vpu30_4v.mbn" "$fw/qcom/vpu/vpu30_4v.mbn" \
-    431e976f95e3306ad9473e88c1c83795fce8de5811a4c7203c27e498f8aa3787 \
-    "iris VPU firmware (qcom/vpu/vpu30_4v.mbn)" || true
+# Do not download the similarly named public X710/X910 image here. Its loadable
+# Xtensa segments match the SM-X810 CYG1 firmware, but its PAS certificate tail
+# differs (public Azkali blob SHA-256
+# 431e976f95e3306ad9473e88c1c83795fce8de5811a4c7203c27e498f8aa3787): X810's
+# TrustZone rejects it with -EINVAL during PAS initialization.
+# The exact owner-supplied SM-X810 CYG1 file has SHA-256
+# c02a4f1c...dc543ba and was verified by hardware H.264 decode on this port.
+# It is proprietary and must neither be committed nor published in an RPM.
+vpu="$fw/qcom/vpu/vpu30_4v.mbn"
+x810_vpu_sha="c02a4f1cb253f4b817994c00145dc9abbd59a10bfcd9fd5d0c2f223c0dc543ba"
+vpu_src="${GTS9_VPU_MBN:-}"
+if [ -n "$vpu_src" ]; then
+    got="$(sha256sum "$vpu_src" 2>/dev/null | cut -d' ' -f1)"
+    if [ "$got" != "$x810_vpu_sha" ]; then
+        echo "    FAILED: GTS9_VPU_MBN is not the verified SM-X810 CYG1 firmware" >&2
+        echo "      got:  ${got:-missing}  expected: $x810_vpu_sha" >&2
+        exit 1
+    fi
+    mkdir -p "$(dirname "$vpu")"
+    install -m0644 "$vpu_src" "$vpu"
+    echo "    staged verified owner-supplied SM-X810 CYG1 VPU firmware"
+elif [ -f "$vpu" ]; then
+    got="$(sha256sum "$vpu" | cut -d' ' -f1)"
+    if [ "$got" = "$x810_vpu_sha" ]; then
+        echo "    exact SM-X810 CYG1 firmware already staged"
+    else
+        echo "    removing non-X810 VPU firmware (hash $got; X810 PAS rejects it)" >&2
+        rm -f "$vpu"
+        echo "    hardware decode will require owner-supplied CYG1 firmware" >&2
+    fi
+else
+    echo "    not included: owner-supplied SM-X810 CYG1 firmware is required" >&2
+    echo "    set GTS9_VPU_MBN=/path/to/vpu30_4v.mbn to enable hardware decode" >&2
+fi
 
 echo ">>> WCN6855 Wi-Fi firmware: the IOE 04866.5 mainline set (issue 7)"
 # The linux-firmware WCN6855 amss boots but the *IOE* build
