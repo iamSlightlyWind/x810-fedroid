@@ -96,7 +96,7 @@
  */
 #define SM5440_MAX_PPS_MA		X810_PPS_DEFAULT_MA
 #define SM5440_PPS_CAP_MA		X810_PPS_MAX_MA
-#define SM5440_MIN_PPS_MA		1800
+#define SM5440_MIN_PPS_MA		X810_PPS_MIN_MA
 #define SM5440_PPS_STEP_MA		250
 #define SM5440_IBUS_MARGIN_MA		300
 #define SM5440_PPS_V_STEP_MV		20
@@ -162,6 +162,7 @@ struct sm5440_direct {
 	unsigned int pps_ticks;
 	unsigned int fails;
 	bool active;
+	bool restore_pending;
 	bool suspending;
 	struct notifier_block pm_nb;
 };
@@ -298,7 +299,7 @@ static int sm5440_set_ibus_limit(struct sm5440_direct *sm, int ma)
 static int sm5440_negotiate_pps(struct sm5440_direct *sm, int vbat_uv,
 				int *target_ma, int *target_mv)
 {
-	int ma = clamp_val(max_pps_ma, SM5440_MIN_PPS_MA, SM5440_PPS_CAP_MA);
+	int ma = x810_pd_pps_current_limit(max_pps_ma);
 	int ret;
 
 	ret = sm5440_psy_retry(sm, POWER_SUPPLY_PROP_ONLINE, 2);
@@ -379,8 +380,22 @@ static int sm5440_select_freq(struct sm5440_direct *sm, int ma)
 
 static int sm5440_pump_off(struct sm5440_direct *sm)
 {
-	return sm5440_update_bits(sm, SM5440_REG_CNTL5,
-				  SM5440_CNTL5_OP_MODE_MASK, 0);
+	int mode;
+	int ret;
+
+	ret = sm5440_update_bits(sm, SM5440_REG_CNTL5,
+				 SM5440_CNTL5_OP_MODE_MASK, 0);
+	if (ret)
+		return ret;
+
+	/* Do not release battery ownership unless the pump reports itself parked. */
+	mode = i2c_smbus_read_byte_data(sm->client, SM5440_REG_CNTL5);
+	if (mode < 0)
+		return mode;
+	if (mode & SM5440_CNTL5_OP_MODE_MASK)
+		return -EIO;
+
+	return 0;
 }
 
 static int sm5440_pump_on(struct sm5440_direct *sm)
@@ -509,23 +524,44 @@ static void sm5440_log_faults(struct sm5440_direct *sm)
 	}
 }
 
-static void sm5440_restore_switching(struct sm5440_direct *sm)
+static int sm5440_restore_switching(struct sm5440_direct *sm)
 {
-	sm5440_update_bits(sm, SM5440_REG_CNTL5,
-			   SM5440_CNTL5_OP_MODE_MASK, 0);
-	sm5440_update_bits(sm, SM5440_REG_ADCCNTL1,
-			   SM5440_ADCCNTL1_ENABLE, 0);
-	sm5440_update_bits(sm, SM5440_REG_CNTL1,
-			   SM5440_CNTL1_WDT_EN, 0);
+	int ret;
+
+	/* Keep SM5714 ownership until all steps needed for a safe handoff pass. */
+	sm->restore_pending = true;
+	ret = sm5440_pump_off(sm);
+	if (ret)
+		goto failed;
+	ret = sm5440_update_bits(sm, SM5440_REG_ADCCNTL1,
+				 SM5440_ADCCNTL1_ENABLE, 0);
+	if (ret)
+		goto failed;
+	ret = sm5440_update_bits(sm, SM5440_REG_CNTL1,
+				 SM5440_CNTL1_WDT_EN, 0);
+	if (ret)
+		goto failed;
 	/*
-	 * Back to the fixed contract.  If this is the call that keeps failing, the
-	 * port is wedged inside TCPM and only a re-plug or reboot clears it -- but
-	 * retrying costs nothing and it is the only way out from here.
+	 * ONLINE=1 blocks until TCPM completes its fixed-contract request. Do not
+	 * release the battery path if it fails: the SM5714 must not see the PPS
+	 * voltage while the pump is parked or its state is unknown.
 	 */
-	sm5440_psy_retry(sm, POWER_SUPPLY_PROP_ONLINE, 1);
-	sm5714_battery_set_direct_charge(false);
+	ret = sm5440_psy_retry(sm, POWER_SUPPLY_PROP_ONLINE, 1);
+	if (ret)
+		goto failed;
+	ret = sm5714_battery_set_direct_charge(false);
+	if (ret)
+		goto failed;
+	sm->restore_pending = false;
 	sm->pps_ticks = 0;
 	sm->active = false;
+	return 0;
+
+failed:
+	dev_err(sm->dev,
+		"safe switching-charger handoff failed (%d); retaining direct-charge ownership for retry\n",
+		ret);
+	return ret;
 }
 
 static void sm5440_put_power_supply(void *data)
@@ -699,6 +735,12 @@ static void sm5440_work(struct work_struct *work)
 	int vbat, vbus;
 	int ret;
 
+	if (sm->restore_pending) {
+		sm5440_restore_switching(sm);
+		delay = msecs_to_jiffies(SM5440_RETRY_MS);
+		goto out;
+	}
+
 	if (!sm->active) {
 		/*
 		 * Opt-in: the SM5714 switching charger owns the pack on the fixed
@@ -715,7 +757,9 @@ static void sm5440_work(struct work_struct *work)
 		ret = sm5440_start(sm);
 		if (ret) {
 			dev_warn(sm->dev, "direct-charge start failed: %d\n", ret);
-			delay = sm5440_backoff(sm);
+			delay = sm->restore_pending ?
+				msecs_to_jiffies(SM5440_RETRY_MS) :
+				sm5440_backoff(sm);
 			goto out;
 		}
 		sm->fails = 0;
@@ -725,10 +769,14 @@ static void sm5440_work(struct work_struct *work)
 	/* The switch can go off while the pump runs: hand the pack back. */
 	if (!sm5714_battery_fast_charge_enabled()) {
 		sm5440_log_faults(sm);
-		sm5440_restore_switching(sm);
-		dev_info(sm->dev,
-			 "fast charging off: back to the fixed contract\n");
-		delay = msecs_to_jiffies(SM5440_RETRY_MS);
+		ret = sm5440_restore_switching(sm);
+		if (ret)
+			delay = msecs_to_jiffies(SM5440_RETRY_MS);
+		else {
+			dev_info(sm->dev,
+				 "fast charging off: back to the fixed contract\n");
+			delay = msecs_to_jiffies(SM5440_RETRY_MS);
+		}
 		goto out;
 	}
 
@@ -749,7 +797,9 @@ static void sm5440_work(struct work_struct *work)
 			sm5440_log_faults(sm);
 			dev_warn(sm->dev, "failed to refresh PPS: %d\n", ret);
 			sm5440_restore_switching(sm);
-			delay = sm5440_backoff(sm);
+			delay = sm->restore_pending ?
+				msecs_to_jiffies(SM5440_RETRY_MS) :
+				sm5440_backoff(sm);
 			goto out;
 		}
 	}
@@ -776,7 +826,9 @@ static void sm5440_work(struct work_struct *work)
 			 vbus, ibus, vbat, die_temp);
 		sm5440_log_faults(sm);
 		sm5440_restore_switching(sm);
-		delay = sm5440_backoff(sm);
+		delay = sm->restore_pending ?
+			msecs_to_jiffies(SM5440_RETRY_MS) :
+			sm5440_backoff(sm);
 		goto out;
 	}
 
@@ -786,7 +838,9 @@ static void sm5440_work(struct work_struct *work)
 				 SM5440_CNTL1_WDT_EN);
 	if (ret) {
 		sm5440_restore_switching(sm);
-		delay = sm5440_backoff(sm);
+		delay = sm->restore_pending ?
+			msecs_to_jiffies(SM5440_RETRY_MS) :
+			sm5440_backoff(sm);
 		goto out;
 	}
 
@@ -808,10 +862,16 @@ out:
 static void sm5440_cancel_work(void *data)
 {
 	struct sm5440_direct *sm = data;
+	int ret;
 
 	cancel_delayed_work_sync(&sm->work);
-	if (sm->active)
-		sm5440_restore_switching(sm);
+	if (sm->active || sm->restore_pending) {
+		ret = sm5440_restore_switching(sm);
+		if (ret)
+			dev_crit(sm->dev,
+				 "driver cleanup could not verify safe charger handoff (%d); switching charger remains locked out\n",
+				 ret);
+	}
 }
 
 static void sm5440_unregister_pm(void *data)
@@ -826,26 +886,37 @@ static void sm5440_unregister_pm(void *data)
  * must neither run nor be scheduled once the tablet is going down: a poll during
  * suspend trips the i2c core's "Transfer while suspended" warning, and a pump
  * left running would lose its PPS contract anyway because nothing refreshes it
- * while the bus is gone.  Park the pump, hand the pack back to the switching
- * charger, and start polling again after resume.
+ * while the bus is gone. Park the pump, hand the pack back to the switching
+ * charger, and start polling again after suspend, hibernation or image restore.
  */
 static int sm5440_pm_notify(struct notifier_block *nb, unsigned long action,
 			    void *data)
 {
 	struct sm5440_direct *sm = container_of(nb, struct sm5440_direct, pm_nb);
+	int ret;
 
 	switch (action) {
 	case PM_SUSPEND_PREPARE:
+	case PM_HIBERNATION_PREPARE:
+	case PM_RESTORE_PREPARE:
 		sm->suspending = true;
 		cancel_delayed_work_sync(&sm->work);
-		if (sm->active) {
-			sm5440_pump_off(sm);
-			sm5440_restore_switching(sm);
+		if (sm->active || sm->restore_pending) {
+			ret = sm5440_restore_switching(sm);
+			if (ret) {
+				/* Never suspend with a charger owner left unresolved. */
+				sm->suspending = false;
+				schedule_delayed_work(&sm->work,
+						      msecs_to_jiffies(SM5440_POLL_MS));
+				return NOTIFY_BAD;
+			}
 			dev_info(sm->dev,
 				 "system suspending: back to the fixed contract\n");
 		}
 		break;
 	case PM_POST_SUSPEND:
+	case PM_POST_HIBERNATION:
+	case PM_POST_RESTORE:
 		sm->suspending = false;
 		schedule_delayed_work(&sm->work,
 				      msecs_to_jiffies(SM5440_POLL_MS));
@@ -930,6 +1001,8 @@ static struct i2c_driver sm5440_driver = {
 	.driver = {
 		.name = "sm5440-direct",
 		.of_match_table = sm5440_of_match,
+		/* Avoid an unsafe manual unbind while direct charge owns the pack. */
+		.suppress_bind_attrs = true,
 	},
 	.probe = sm5440_probe,
 };

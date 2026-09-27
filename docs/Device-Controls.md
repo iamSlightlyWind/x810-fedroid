@@ -67,12 +67,23 @@ These are lost at the next boot unless the value is also saved under
   state of charge.
 - It needs a charger that supports **PPS** (Samsung's own fast chargers do), and a **5 A
   USB-C cable** for anything above 3 A. The tablet cannot read a cable's rating, so it stays
-  at the spec-safe 3 A limit.
+  at the spec-safe 3 A default limit. A root-only kernel parameter can set a lower or higher
+  cap up to 5 A; requests are rounded down to the USB-PD PPS 50 mA current increment, and
+  the driver probes the source in compatible 250 mA steps. Do not raise the cap without a
+  PPS-capable adapter and a known 5 A e-marked cable.
 - Fast charging only applies at lower charge. The pump will not start above roughly 80 %
   (4.35 V) and stops at 90 %, so near full you may see the switch on while the tablet charges
   at the ordinary rate — the pump's own limits, not a fault.
-- The switch is safe to leave on: turning it off at any moment parks the pump and hands the
-  pack straight back to the switching charger.
+- Turning it off while the pump is active sets the request immediately; the SM5440 worker
+  notices on its one-second poll, reads back the SM5440 operating mode to verify pump shutdown,
+  requests the fixed-PD contract,
+  then releases ownership so the SM5714 re-applies the latest switching/thermal policy. If
+  shutdown or contract negotiation fails, it leaves Q4 open and retries rather than exposing
+  the SM5714 to the PPS path; suspend, hibernation, and image restore are vetoed until the
+  handoff succeeds. A thermal-policy update during direct charging is deferred through this
+  same handoff rather than writing SM5714 registers behind the active pump. The production
+  kernel builds this driver in and suppresses its sysfs bind/unbind controls because it
+  cannot safely be detached while it owns the battery path.
 
 ## If a control is missing
 

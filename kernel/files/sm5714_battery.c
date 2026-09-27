@@ -361,6 +361,19 @@ static int sm5714_configure_charging(struct sm5714_battery *sm)
 		ret = -EBUSY;
 		goto out_unlock;
 	}
+	/*
+	 * The SM5440 owns the battery path while direct_charging is set.  Thermal
+	 * and sysfs updates may arrive during that interval, but must not rewrite
+	 * the SM5714 or close Q4 behind the pump.  The owner parks the pump, returns
+	 * TCPM to fixed PD, then clears this flag; its release path calls us again
+	 * to apply the latest fast-charge and thermal policy.
+	 */
+	if (READ_ONCE(sm->direct_charging)) {
+		dev_dbg(sm->dev,
+			"deferring switching-charger configuration to direct-charge owner\n");
+		ret = 0;
+		goto out_unlock;
+	}
 
 	typec_mv = sm->typec_mv;
 	typec_ma = sm->typec_ma;
@@ -399,7 +412,7 @@ static int sm5714_configure_charging(struct sm5714_battery *sm)
 		 * fast_ma below, so the extra headroom can only ever feed the
 		 * system.  A Type-C Rp=3 A fallback may still use 5 V / 3 A.
 		 */
-		if (sm->fast_charge) {
+		if (READ_ONCE(sm->fast_charge)) {
 			input_ma = min(typec_ma, 3000U);
 			fast_ma = 3150;
 		} else {
@@ -534,6 +547,7 @@ int sm5714_battery_set_direct_charge(bool active)
 {
 	struct sm5714_battery *sm;
 	int temp;
+	int online;
 	int ret = 0;
 
 	mutex_lock(&sm5714_global_lock);
@@ -561,8 +575,14 @@ int sm5714_battery_set_direct_charge(bool active)
 			WRITE_ONCE(sm->direct_charging, false);
 	} else {
 		WRITE_ONCE(sm->direct_charging, false);
-		if (sm5714_get_online(sm) > 0)
+		online = sm5714_get_online(sm);
+		if (online < 0)
+			ret = online;
+		else if (online > 0)
 			ret = sm5714_configure_charging(sm);
+		/* Keep ownership if the switching path could not be restored. */
+		if (ret)
+			WRITE_ONCE(sm->direct_charging, true);
 	}
 
 	power_supply_changed(sm->psy_usb);
@@ -1146,7 +1166,7 @@ static ssize_t fast_charge_show(struct device *dev,
 {
 	struct sm5714_battery *sm = dev_get_drvdata(dev);
 
-	return sysfs_emit(buf, "%d\n", sm->fast_charge);
+	return sysfs_emit(buf, "%d\n", READ_ONCE(sm->fast_charge));
 }
 
 static ssize_t fast_charge_store(struct device *dev,
@@ -1154,21 +1174,47 @@ static ssize_t fast_charge_store(struct device *dev,
 				 const char *buf, size_t count)
 {
 	struct sm5714_battery *sm = dev_get_drvdata(dev);
-	bool enabled;
+	bool enabled, old_enabled;
 	int ret;
 
 	ret = kstrtobool(buf, &enabled);
 	if (ret)
 		return ret;
-	if (sm->fast_charge == enabled)
-		return count;
 
-	sm->fast_charge = enabled;
+	/* Serialize policy transitions with direct-charge ownership handoffs. */
+	mutex_lock(&sm5714_global_lock);
+	old_enabled = READ_ONCE(sm->fast_charge);
+	if (old_enabled == enabled) {
+		ret = count;
+		goto out_unlock;
+	}
+
+	WRITE_ONCE(sm->fast_charge, enabled);
+	ret = sm5714_configure_charging(sm);
+	if (ret) {
+		int restore_ret;
+
+		WRITE_ONCE(sm->fast_charge, old_enabled);
+		restore_ret = sm5714_configure_charging(sm);
+		if (restore_ret)
+			dev_err(dev,
+				"fast-charge update failed (%d); restoring previous policy also failed (%d)\n",
+				ret, restore_ret);
+		else
+			dev_err(dev,
+				"fast-charge update failed (%d); previous policy restored\n",
+				ret);
+		goto out_unlock;
+	}
+
 	dev_info(dev, "fast charging %s\n",
 		 enabled ? "enabled" : "disabled");
-	sm5714_configure_charging(sm);
 
-	return count;
+	ret = count;
+
+out_unlock:
+	mutex_unlock(&sm5714_global_lock);
+	return ret;
 }
 static DEVICE_ATTR_RW(fast_charge);
 
@@ -1193,7 +1239,7 @@ bool sm5714_battery_fast_charge_enabled(void)
 	sm = sm5714_primary;
 	mutex_unlock(&sm5714_global_lock);
 
-	return sm && sm->fast_charge;
+	return sm && READ_ONCE(sm->fast_charge);
 }
 EXPORT_SYMBOL_GPL(sm5714_battery_fast_charge_enabled);
 

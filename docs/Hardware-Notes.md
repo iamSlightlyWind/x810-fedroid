@@ -270,12 +270,16 @@ own SOC directly and programs a flat 4440 mV, and it exposes no `cycle_count`,
 so the aging profile cannot be matched. That is the gap to stock-equivalent
 behaviour.
 
-### Charging bypass is a userspace gap
+### Charging bypass is not established
 
-The hardware and stock support exist (`battery,ovp_bypass_mode` plus two
-register writes) and the kernel already has a `Bypass` charge type, but neither
-UPower 1.91.4 nor GNOME 50.4 exposes a bypass control — it needs a desktop
-patch, on the standard `charge_types` API rather than a device-private knob.
+The current X810 SM5714/SM5440 source exposes no `charge_type`/`charge_types`
+ABI or bypass register-control path. The cited `battery,ovp_bypass_mode` DT
+property has not been shown to be a usable Linux control on this board, and a
+generic power-supply `Bypass` enum does not prove that the charger supports a
+safe bypass mode. This is therefore not a GNOME-only gap. Do not add speculative
+register writes or advertise bypass until the electrical/thermal behavior and a
+driver-level control have been verified on X810 hardware; only then assess the
+UPower/GNOME API.
 
 ---
 
