@@ -135,11 +135,11 @@ releases. To build or publish, push relevant changes to `main` or manually run
 GitHub Actions. The orchestrator fingerprints the kernel/boot, rootfs, and
 combined release inputs independently; it reuses a prior successful component
 only when its fingerprint and checksums match. Otherwise it builds just the
-changed component(s), then assembles and publishes the matching full set. The
-first run can reuse the validated legacy kernel release
-`kernel-7.2.0-gts9wifi-1` if its recorded source and build parameters match;
-it will build a fresh rootfs because no matching rootfs/full-set release is
-available yet.
+changed component(s), then assembles and publishes a new aggregate. On a normal
+push, the aggregate is tagged with that push's run identity and contains the
+updater ZIP, matched kernel, boot and rootfs assets, release metadata, and
+clean-install bundle. Once that release is complete, older GitHub releases are
+deleted so only one remains.
 
 The manual workflow offers a **Force rebuild** option, port-version override,
 desktop profile, and pinned Fedora compose inputs. Force rebuild creates new
@@ -151,13 +151,13 @@ build time, not release correctness.
 
 The user-facing `x810-fedora.yml` workflow is the single image and port-update
 pipeline: it plans content fingerprints, builds only changed kernel/rootfs
-components, assembles the matched full-set release, and independently builds
-the updater-installable support RPM in a separate job. Both the image and
-support-package releases are published from this workflow. Existing installed
-Tab Companion versions that still name the retired `port-updates.yml` are
-mapped to `x810-fedora.yml` by the app updater compatibility path. The
-deterministic full-set publisher remains a checked-in shell script for
-readability and local testing.
+components, assembles the matched aggregate, and independently builds the
+updater-installable support RPM in a separate job. Both the support updater ZIP
+and full-image assets are uploaded to the same release. Existing installed Tab
+Companion versions that still name the retired `port-updates.yml` are mapped to
+`x810-fedora.yml` by the app updater compatibility path. The deterministic
+full-set publisher remains a checked-in shell script for readability and local
+testing.
 
 The manual reset workflow forces source rebuilds and prunes old published
 releases/artifacts, but preserves Actions dependency caches (kernel ccache and
@@ -195,10 +195,12 @@ legacy X710-derived path and is not the supported X810 install route.
 ## Maintainer reset build
 
 For a clean CI sanity check, open **Actions → Reset X810 Fedora builds**, run it
-on `main`, and type `RESET X810 FEDORA BUILDS`. It clears the repository's
-Actions caches, force-builds the kernel and rootfs, rebuilds the matching
-installer and support RPM, then prunes superseded X810 build releases only after
-both builds succeed. It preserves the latest push-keyed support update so
-existing Tab Companion clients can still resolve their exact build identity. If
-the build fails, the previously published release set is retained. This is a
-PC/GitHub build operation; it does not contact or modify a tablet.
+on `main`, and type `RESET X810 FEDORA BUILDS`. It force-builds the kernel and
+rootfs, rebuilds the matching installer and support RPM, then keeps only the
+latest complete aggregate release. To preserve the Tab Companion run-ID feed,
+the reset requires release-affecting sources and settings to match the last
+successful main push, and republishes under that push's identity. Actions
+dependency caches are preserved; the reset deletes superseded GitHub releases,
+not build caches. If the build fails, the previous complete release is retained
+and temporary releases are pruned. This is a PC/GitHub build operation; it does
+not contact or modify a tablet.

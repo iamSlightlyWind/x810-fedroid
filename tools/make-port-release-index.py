@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Create the legacy/full-set schema-1 port-release.json for one support RPM.
 
-The combined full-set release continues to carry this index for installer
-validation and compatibility. The in-OS Tab Companion updater consumes the
-run-keyed public support-package release produced by the support job in
-x810-fedora.yml.
+The combined aggregate release carries this index for installer validation
+and compatibility. The in-OS Tab Companion updater consumes the
+run-keyed support-package ZIP in that same release, produced by the support
+job in x810-fedora.yml.
 """
 import argparse
 import hashlib

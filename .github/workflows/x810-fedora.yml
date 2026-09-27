@@ -66,6 +66,7 @@ on:
         default: "Fedora-44-updates-20260926.0"
 
 permissions:
+  actions: read
   contents: write
 
 env:
@@ -78,21 +79,89 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Tab Companion resolves the updater bundle through the successful push run
+  # ID. A manual force-rebuild reuses the matching successful push identity;
+  # it must not publish an updater tag that the client cannot resolve.
+  publication_identity:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      run_id: ${{ steps.identity.outputs.run_id }}
+      run_number: ${{ steps.identity.outputs.run_number }}
+      commit: ${{ steps.identity.outputs.commit }}
+      branch: ${{ steps.identity.outputs.branch }}
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve a compatible publication identity
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PORT_VERSION_INPUT: ${{ inputs.port_version || '' }}
+          DESKTOP_INPUT: ${{ inputs.desktop || 'gnome' }}
+          FEDORA_BASE_COMPOSE_INPUT: ${{ inputs.fedora_base_compose || 'Fedora-44-20260422.1' }}
+          FEDORA_UPDATES_COMPOSE_INPUT: ${{ inputs.fedora_updates_compose || 'Fedora-44-updates-20260926.0' }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            run_id="$GITHUB_RUN_ID"
+            run_number="$GITHUB_RUN_NUMBER"
+            commit="$GITHUB_SHA"
+            branch="$GITHUB_REF_NAME"
+          else
+            run_data="$(gh api \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/x810-fedora.yml/runs?branch=main&event=push&status=completed&per_page=100" \
+              --jq '[.workflow_runs[] | select(.conclusion == "success" and .head_branch == "main")] | max_by(.run_number) | [.id, .run_number, .head_sha, .head_branch] | @tsv')"
+            IFS=$'\t' read -r run_id run_number commit branch <<< "$run_data"
+            [[ "$run_id" =~ ^[0-9]+$ && "$run_number" =~ ^[0-9]+$ && \
+               "$commit" =~ ^[0-9a-f]{40,64}$ && "$branch" == main ]] || {
+              echo "No successful main-branch push build is available for this manual run." >&2
+              exit 1
+            }
+            # A manual/reset build may refresh an aggregate only if all
+            # release-affecting source is identical to its push identity.
+            git diff --quiet "$commit" "$GITHUB_SHA" -- \
+              PORT_VERSION kernel boot rootfs specs tools .github/workflows/x810-fedora.yml || {
+              echo "Release inputs changed since the last successful push. Push and complete the normal build before running a reset/manual build." >&2
+              exit 1
+            }
+            port_version="$(tr -d '\r\n ' < PORT_VERSION)"
+            [[ -z "$PORT_VERSION_INPUT" || "$PORT_VERSION_INPUT" == "$port_version" ]] || {
+              echo "A manual release cannot override PORT_VERSION under an existing push identity." >&2
+              exit 1
+            }
+            [[ "$DESKTOP_INPUT" == gnome && \
+               "$FEDORA_BASE_COMPOSE_INPUT" == Fedora-44-20260422.1 && \
+               "$FEDORA_UPDATES_COMPOSE_INPUT" == Fedora-44-updates-20260926.0 ]] || {
+              echo "Manual release publication must use the standard GNOME profile and pinned Fedora composes." >&2
+              exit 1
+            }
+          fi
+          {
+            echo "run_id=$run_id"
+            echo "run_number=$run_number"
+            echo "commit=$commit"
+            echo "branch=$branch"
+          } >> "$GITHUB_OUTPUT"
+
   # The in-OS support package and the full bootable image are separate jobs in
   # this one release workflow. They run independently, so a userspace fix does
-  # not wait for the kernel/rootfs build; publication pruning is deferred until
-  # the complete push workflow succeeds so a failed image build cannot remove
-  # the last update visible to installed tablets.
+  # not wait for the kernel/rootfs build. The final cleanup retains only the
+  # latest complete aggregate release and removes component staging releases.
   build_port_update:
+    needs: publication_identity
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       FEDORA_VERSION: "44"
-      BUILD_RUN_ID: ${{ github.run_id }}
-      BUILD_RUN_NUMBER: ${{ github.run_number }}
-      BUILD_COMMIT: ${{ github.sha }}
-      BUILD_BRANCH: ${{ github.ref_name }}
+      BUILD_RUN_ID: ${{ needs.publication_identity.outputs.run_id }}
+      BUILD_RUN_NUMBER: ${{ needs.publication_identity.outputs.run_number }}
+      BUILD_COMMIT: ${{ needs.publication_identity.outputs.commit }}
+      BUILD_BRANCH: ${{ needs.publication_identity.outputs.branch }}
       PORT_VERSION_INPUT: ${{ inputs.port_version || '' }}
     steps:
       - name: Check out the workflow commit
@@ -195,22 +264,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="x810-fedora-port-build-${GITHUB_RUN_ID}"
+          tag="x810-fedora-port-build-${BUILD_RUN_ID}"
           asset=_ci/release/x810-fedora-port.zip
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$tag" "$asset" --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" --title "X810 Fedora port update #${GITHUB_RUN_NUMBER}" \
-              --notes "Tab Companion updater package for Fedora 44 on SM-X810. Kernel and boot images are not included." \
+              --target "$BUILD_COMMIT" --title "X810 Fedora build #${BUILD_RUN_NUMBER}" \
+              --notes "X810 Fedora release in progress; the completed release includes the port updater, Fedora rootfs, kernel/boot files, and clean-install bundle." \
               --latest=false
           fi
-          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --latest=false
+          latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          if [[ "$latest_tag" != "$tag" ]]; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --latest=false
+          fi
 
   plan:
+    needs: publication_identity
     runs-on: ubuntu-24.04
     outputs:
       kernel_key: ${{ steps.plan.outputs.kernel_key }}
+      publication_run_id: ${{ steps.plan.outputs.publication_run_id }}
       kernel_tag: ${{ steps.plan.outputs.kernel_tag }}
       build_kernel: ${{ steps.plan.outputs.build_kernel }}
       bootstrap_kernel: ${{ steps.plan.outputs.bootstrap_kernel }}
@@ -238,6 +312,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BOOTSTRAP_KERNEL_TAG: ${{ inputs.bootstrap_kernel_tag || 'kernel-7.2.0-gts9wifi-1' }}
+          PUBLICATION_RUN_ID: ${{ needs.publication_identity.outputs.run_id }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
           PORT_VERSION_INPUT: ${{ inputs.port_version || '' }}
           DESKTOP: ${{ inputs.desktop || 'gnome' }}
@@ -269,6 +344,11 @@ jobs:
             release_list="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
               --json tagName,publishedAt --jq \
               "sort_by(.publishedAt) | reverse | map(select(.tagName | startswith(\"${kernel_base}\"))) | .[].tagName" 2>/dev/null || true)"
+            current_latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            # Successful builds retain only one aggregate release; check its
+            # kernel component before falling back to historical component tags.
+            candidates="$current_latest"
+            if [ -n "$release_list" ]; then candidates="${candidates}${candidates:+$'\n'}${release_list}"; fi
             while IFS= read -r candidate; do
               [ -n "$candidate" ] || continue
               dir="$RUNNER_TEMP/kernel-check-${GITHUB_RUN_ID}-${RANDOM}"
@@ -282,7 +362,7 @@ jobs:
                 reusable="$candidate"
                 break
               fi
-            done <<< "$release_list"
+            done <<< "$candidates"
             if [ -n "$reusable" ]; then
               kernel_tag="$reusable"
               build_kernel=false
@@ -337,6 +417,7 @@ jobs:
           {
             echo "kernel_key=$kernel_key"
             echo "kernel_tag=$kernel_tag"
+            echo "publication_run_id=$PUBLICATION_RUN_ID"
             echo "build_kernel=$build_kernel"
             echo "bootstrap_kernel=$bootstrap_kernel"
             echo "force_rebuild=$force"
@@ -567,6 +648,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KERNEL_TAG: ${{ needs.plan.outputs.kernel_tag }}
           KERNEL_KEY: ${{ needs.plan.outputs.kernel_key }}
+          PUBLICATION_RUN_ID: ${{ needs.plan.outputs.publication_run_id }}
           IS_BOOTSTRAP: ${{ needs.plan.outputs.bootstrap_kernel }}
           FORCE_REBUILD: ${{ needs.plan.outputs.force_rebuild }}
           PORT_VERSION: ${{ needs.plan.outputs.port_version }}
@@ -620,6 +702,9 @@ jobs:
             release_list="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
               --json tagName,publishedAt --jq \
               "sort_by(.publishedAt) | reverse | map(select(.tagName | startswith(\"${rootfs_base}\"))) | .[].tagName" 2>/dev/null || true)"
+            current_latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            candidates="$current_latest"
+            if [ -n "$release_list" ]; then candidates="${candidates}${candidates:+$'\n'}${release_list}"; fi
             while IFS= read -r candidate; do
               [ -n "$candidate" ] || continue
               rdir="$RUNNER_TEMP/rootfs-check-${GITHUB_RUN_ID}-${RANDOM}"
@@ -631,7 +716,7 @@ jobs:
                  (cd "$rdir" && sha256sum -c SHA256SUMS >/dev/null); then
                 reusable="$candidate"; break
               fi
-            done <<< "$release_list"
+            done <<< "$candidates"
             if [ -n "$reusable" ]; then
               rootfs_tag="$reusable"
               build_rootfs=false
@@ -643,25 +728,10 @@ jobs:
           full_key="$(python3 tools/x810-build-fingerprint.py full-set \
             --ref "$GITHUB_SHA" --port-version "$PORT_VERSION" \
             --kernel-build-key "$KERNEL_KEY" --rootfs-build-key "$rootfs_key")"
-          full_tag="x810-fedora-${PORT_VERSION}-${full_key:0:20}"
-          if [ "$FORCE_REBUILD" = true ]; then full_tag="${full_tag}-r${GITHUB_RUN_ID}"; fi
+          # The aggregate release is refreshed every run. Matching kernel and
+          # rootfs components are reused from the previous complete release.
+          full_tag="x810-fedora-port-build-${PUBLICATION_RUN_ID}"
           build_full_set=true
-          if [ "$FORCE_REBUILD" != true ]; then
-            current_latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
-            if [ "$current_latest" = "$full_tag" ]; then
-              fdir="$RUNNER_TEMP/fullset-check-${GITHUB_RUN_ID}"
-              mkdir -p "$fdir"
-              if gh release download "$full_tag" --repo "$GITHUB_REPOSITORY" --dir "$fdir" \
-                  --pattern KERNEL-BUILD-KEY.txt --pattern ROOTFS-BUILD-KEY.txt \
-                  --pattern FULL-SET-BUILD-KEY.txt \
-                  --pattern port-release.json --pattern 'x810-fedora-sm-x810-*-clean-install.tar.gz' >/dev/null 2>&1 && \
-                 [ "$(cat "$fdir/KERNEL-BUILD-KEY.txt" 2>/dev/null || true)" = "$KERNEL_KEY" ] && \
-                 [ "$(cat "$fdir/ROOTFS-BUILD-KEY.txt" 2>/dev/null || true)" = "$rootfs_key" ] && \
-                 [ "$(cat "$fdir/FULL-SET-BUILD-KEY.txt" 2>/dev/null || true)" = "$full_key" ]; then
-                build_full_set=false
-              fi
-            fi
-          fi
           {
             echo "kernel_rpm_sha256=$kernel_rpm_sha256"
             echo "rootfs_key=$rootfs_key"
@@ -674,7 +744,7 @@ jobs:
           {
             echo "- Kernel RPM SHA-256: `$kernel_rpm_sha256`"
             echo "- Rootfs: **$([ "$build_rootfs" = true ] && echo build || echo reuse)** `$rootfs_tag`"
-            echo "- Combined release: **$([ "$build_full_set" = true ] && echo assemble-or-promote || echo already-current)** `$full_tag`"
+            echo "- Combined release: **publish refreshed aggregate** `$full_tag`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   build_rootfs:
@@ -822,9 +892,10 @@ jobs:
           gh release upload "$REL" --clobber "${assets[@]}"
 
   publish_full_set:
-    needs: [plan, build_kernel, resolve_rootfs, build_rootfs]
+    needs: [plan, build_port_update, build_kernel, resolve_rootfs, build_rootfs]
     if: >-
       always() && needs.plan.result == 'success' && needs.resolve_rootfs.result == 'success' &&
+      needs.build_port_update.result == 'success' &&
       (needs.build_kernel.result == 'success' || needs.build_kernel.result == 'skipped') &&
       (needs.build_rootfs.result == 'success' || needs.build_rootfs.result == 'skipped') &&
       needs.resolve_rootfs.outputs.build_full_set == 'true'
@@ -852,29 +923,78 @@ jobs:
           EXPECTED_FULL_SET_KEY: ${{ needs.resolve_rootfs.outputs.full_set_key }}
         run: bash tools/publish-x810-full-set.sh
 
-  prune_port_update_releases:
-    needs: [plan, build_port_update, build_kernel, resolve_rootfs, build_rootfs, publish_full_set]
+  prune_old_releases:
+    needs: [publication_identity, plan, build_port_update, build_kernel, resolve_rootfs, build_rootfs, publish_full_set]
     if: >-
-      always() && github.event_name == 'push' &&
-      needs.plan.result == 'success' && needs.build_port_update.result == 'success' &&
-      (needs.build_kernel.result == 'success' || needs.build_kernel.result == 'skipped') &&
-      needs.resolve_rootfs.result == 'success' &&
-      (needs.build_rootfs.result == 'success' || needs.build_rootfs.result == 'skipped') &&
-      (needs.publish_full_set.result == 'success' || needs.publish_full_set.result == 'skipped')
-    continue-on-error: true
+      always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
-      - name: Remove superseded updater releases after the complete build succeeds
+      - name: Keep only the newest complete aggregate release
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUBLISH_RESULT: ${{ needs.publish_full_set.result }}
+          EXPECTED_LATEST_TAG: ${{ needs.resolve_rootfs.outputs.full_set_tag }}
+          PORT_RELEASE_TAG: x810-fedora-port-build-${{ needs.publication_identity.outputs.run_id }}
+          KERNEL_BUILD: ${{ needs.plan.outputs.build_kernel }}
+          KERNEL_TAG: ${{ needs.plan.outputs.kernel_tag }}
+          ROOTFS_BUILD: ${{ needs.resolve_rootfs.outputs.build_rootfs }}
+          ROOTFS_TAG: ${{ needs.resolve_rootfs.outputs.rootfs_tag }}
         run: |
           set -euo pipefail
-          tags=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
-            --json tagName --jq '.[].tagName | select(startswith("x810-fedora-port-build-"))')
-          while IFS= read -r tag; do
-            [[ "$tag" =~ ^x810-fedora-port-build-([0-9]+)$ ]] || continue
-            old_run_id="${BASH_REMATCH[1]}"
-            if (( old_run_id < GITHUB_RUN_ID )); then
+          latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          if [[ "$PUBLISH_RESULT" == success ]]; then
+            [[ -n "$latest_tag" && "$latest_tag" == "$EXPECTED_LATEST_TAG" ]] || {
+              echo "REFUSING to prune: latest is '$latest_tag', expected complete aggregate '$EXPECTED_LATEST_TAG'." >&2
+              exit 1
+            }
+            asset_names="$(gh release view "$latest_tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name]')"
+            python3 - "$asset_names" <<'PY'
+          import json
+          import sys
+
+          names = json.loads(sys.argv[1])
+          required = {
+              "x810-fedora-port.zip", "port-release.json", "FULL-SET-BUILD-KEY.txt",
+              "KERNEL-BUILD-KEY.txt", "ROOTFS-BUILD-KEY.txt", "BUNDLE-SHA256SUMS",
+              "RPM-SHA256SUMS", "SHA256SUMS", "rootfs-manifest.txt",
+              "boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img",
+          }
+          missing = sorted(required - set(names))
+          patterns = {
+              "kernel RPM": lambda n: n.startswith("linux-gts9wifi-") and n.endswith(".rpm"),
+              "rootfs archive": lambda n: n.startswith("gts9wifi-fedora-") and n.endswith("-rootfs.tar.gz"),
+              "TWRP boot-set ZIP": lambda n: n.startswith("gts9wifi-fedora-") and n.endswith(".zip"),
+              "clean-install bundle": lambda n: n.startswith("x810-fedora-sm-x810-") and n.endswith("-clean-install.tar.gz"),
+          }
+          missing.extend(label for label, predicate in patterns.items() if not any(predicate(n) for n in names))
+          if missing:
+              raise SystemExit("REFUSING to prune: latest aggregate is incomplete: " + ", ".join(missing))
+          PY
+            echo "Validated complete aggregate $latest_tag; removing every other release."
+            tags=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName --jq '.[].tagName')
+            while IFS= read -r tag; do
+              [[ -n "$tag" && "$tag" != "$latest_tag" ]] || continue
               gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            done <<< "$tags"
+          else
+            echo "Aggregate publication did not succeed; preserving the previous complete release set."
+            # On ordinary pushes, remove this run's support-only staging tag so
+            # a failed image publication cannot leave a misleading update.
+            # Manual/reset runs reuse the existing push tag and must not delete it.
+            if [[ "$EVENT_NAME" == push && -n "$latest_tag" && \
+                  "$PORT_RELEASE_TAG" != "$latest_tag" ]] && \
+               gh release view "$PORT_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release delete "$PORT_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
             fi
-          done <<< "$tags"
+            # Force-build components are staging releases. Delete them only if
+            # they are not the currently published latest release.
+            for pair in "${KERNEL_BUILD}:${KERNEL_TAG}" "${ROOTFS_BUILD}:${ROOTFS_TAG}"; do
+              built="${pair%%:*}"
+              tag="${pair#*:}"
+              [[ "$built" == true && -n "$tag" && "$tag" != "$latest_tag" ]] || continue
+              if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+                gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+              fi
+            done
+          fi

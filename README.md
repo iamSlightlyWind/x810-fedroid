@@ -43,9 +43,10 @@ installed only after resume validation. An explicit TWRP-only command can
 restore the checksummed four-image backup without touching `vbmeta` or
 recovery. The flow has host/mock tests only and is **not physically validated
 on the tablet**; do not treat it as a proven end-user installer. The release
-check labels the clean-install bundle separately from legacy full-set metadata;
-the current in-OS port updater uses its own per-build release channel. Never
-use the legacy whole-userdata formatter for dual boot.
+check labels the clean-install bundle separately from legacy full-set metadata.
+The in-OS port updater uses the support-package ZIP in the same rolling
+aggregate release as the Fedora rootfs and boot files. Never use the legacy
+whole-userdata formatter for dual boot.
 
 ## Port update identity
 
@@ -60,11 +61,11 @@ images cannot become combined releases. The rootfs build downloads its kernel
 RPM from a named release of this X810 repository, and full-set assembly checks
 the exact RPM bytes and firmware digest against the boot bundle metadata, not
 just matching version strings. The combined `x810-fedora.yml` workflow has a
-separate support-package job that publishes only the overlay RPM for Tab
-Companion's port updater; it prunes older updater releases only after the
-complete workflow succeeds. The full-set release still carries
-`port-release.json` as legacy compatibility metadata and remains the GitHub
-`latest` release. The clean installer validates the self-contained manifest
-inside its clean-install bundle; the current in-OS Fedora updater uses the
-separate per-build release channel from the support-package job. See
+separate support-package job that publishes the overlay RPM ZIP for Tab
+Companion's port updater. Once the aggregate is complete, exactly one GitHub
+release remains: the latest run's release, containing the updater ZIP, matched
+rootfs/kernel/boot assets, checksums, release index, and clean-install bundle.
+Unchanged kernel and rootfs components are reused from the previous aggregate.
+`port-release.json` remains compatibility metadata. The clean installer
+validates the self-contained manifest inside its clean-install bundle. See
 [`docs/TAB-COMPANION-PORT-RELEASE.md`](docs/TAB-COMPANION-PORT-RELEASE.md).

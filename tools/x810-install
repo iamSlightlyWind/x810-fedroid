@@ -195,14 +195,14 @@ def latest_release(opener=urllib.request.urlopen) -> dict[str, Any] | None:
 def release_checks(release: dict[str, Any] | None) -> list[Check]:
     """Distinguish legacy full-set metadata from the clean-install bundle.
 
-    ``port-release.json`` is retained for compatibility, but the current
-    Tab Companion Fedora updater reads per-build releases produced by the
-    support-package job in ``x810-fedora.yml``.
+    ``port-release.json`` is retained for compatibility. The current
+    Tab Companion Fedora updater reads ``x810-fedora-port.zip`` from the same
+    rolling aggregate release published by ``x810-fedora.yml``.
     A clean-install bundle is validated independently before install.
     """
     if release is None:
         return [
-            Check("Legacy release index", "INFO", "no combined release is available to inspect; in-OS support updates are a separate release channel from x810-fedora.yml"),
+            Check("Legacy release index", "INFO", "no combined release is available to inspect; in-OS support updates use the aggregate release from x810-fedora.yml"),
             Check("From-stock install", "BLOCKED", "no validated X810 dual-boot installer package is available"),
         ]
     assets = release.get("assets", [])
