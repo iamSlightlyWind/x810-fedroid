@@ -34,7 +34,7 @@ class PortMetadataTests(unittest.TestCase):
         self.assertEqual(result["port_id"], "x810-fedora")
         self.assertEqual(result["workflow_file"], "x810-fedora.yml")
         self.assertEqual(result["branch"], "main")
-        self.assertEqual(result["artifact_name"], "x810-fedora-port")
+        self.assertEqual(result["artifact_name"], "update")
         self.assertIs(result["public_release"], True)
         self.assertEqual(result["release_tag_prefix"], "x810-fedora-port-build")
         self.assertEqual(result["build_info_path"], "/usr/share/tab-companion/port-build.json")

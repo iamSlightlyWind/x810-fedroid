@@ -132,7 +132,7 @@ class InstallerTests(unittest.TestCase):
         # The release manifest is provenance/checksum metadata, not the
         # Tab Companion port-update feed or a package that installs Fedora.
         release = {"tag_name": "test", "assets": [{"name": name} for name in (
-            "x810-release-manifest.json",
+            "manifest.json",
             "x810-fedora-port-1.2.3-1.noarch.rpm", "rootfs.tar.gz",
         )]}
         update, install = installer.release_checks(release)
@@ -144,9 +144,9 @@ class InstallerTests(unittest.TestCase):
 
     def test_direct_release_assets_enable_installer_status(self):
         release = {"tag_name": "test", "assets": [{"name": name} for name in (
-            "x810-release-manifest.json",
-            "x810-fedora-port.zip",
-            "x810-fedora-44-rootfs.tar.gz", "linux-x810-7.2.0.aarch64.rpm",
+            "manifest.json",
+            "update.zip",
+            "rootfs.tar.gz", "kernel.rpm",
             "boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img",
         )]}
         update, install = installer.release_checks(release)
@@ -162,8 +162,8 @@ class InstallerTests(unittest.TestCase):
             archive = local / "rootfs/rootfs.tar.gz"
             rpm = local / "kernel/linux-x810.rpm"
             images = {name: local / f"boot/{name}.img" for name in ("boot", "init_boot", "vendor_boot", "dtbo")}
-            payloads = {"x810-fedora-44-rootfs.tar.gz": archive.read_bytes(),
-                        "linux-x810-7.2.0.aarch64.rpm": rpm.read_bytes()}
+            payloads = {"rootfs.tar.gz": archive.read_bytes(),
+                        "kernel.rpm": rpm.read_bytes()}
             payloads.update({f"{name}.img": path.read_bytes() for name, path in images.items()})
             def record(name, data):
                 return {"name": name, "sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
@@ -183,10 +183,10 @@ class InstallerTests(unittest.TestCase):
                 },
             }
             manifest_bytes = json.dumps(release_manifest).encode()
-            release_assets.append({"name": "x810-release-manifest.json", "size": len(manifest_bytes),
-                                   "browser_download_url": "https://example.test/x810-release-manifest.json"})
+            release_assets.append({"name": "manifest.json", "size": len(manifest_bytes),
+                                   "browser_download_url": "https://example.test/manifest.json"})
             payload_map = {f"https://example.test/{name}": data for name, data in payloads.items()}
-            payload_map["https://example.test/x810-release-manifest.json"] = manifest_bytes
+            payload_map["https://example.test/manifest.json"] = manifest_bytes
             class Response(io.BytesIO):
                 pass
             def opener(request, timeout=60):

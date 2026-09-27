@@ -44,8 +44,8 @@ installed only after resume validation. An explicit TWRP-only command can
 restore the checksummed four-image backup without touching `vbmeta` or
 recovery. The flow has host/mock tests only and is **not physically validated
 on the tablet**; do not treat it as a proven end-user installer. The release
-check reports the compact release manifest and direct install assets.
-The in-OS port updater uses the support-package ZIP in the same rolling
+check reports the compact `manifest.json` and direct install assets.
+The in-OS port updater uses `update.zip` in the same rolling
 aggregate release as the Fedora rootfs and boot files. Never use the legacy
 whole-userdata formatter for dual boot.
 

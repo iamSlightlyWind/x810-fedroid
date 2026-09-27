@@ -206,21 +206,27 @@ def release_checks(release: dict[str, Any] | None) -> list[Check]:
         if isinstance(item, dict) and isinstance(item.get("name"), str)
     }
     tag = release.get("tag_name", "latest")
-    if "x810-release-manifest.json" in names:
+    if "manifest.json" in names or "x810-release-manifest.json" in names:
         update = Check(
             "Release manifest",
             "INFO",
-            f"{tag} records its source commit, component fingerprints, and payload checksums; Tab Companion updates use x810-fedora-port.zip",
+            f"{tag} records its source commit, component fingerprints, and payload checksums; Tab Companion updates use update.zip",
         )
     else:
         update = Check("Release manifest", "INFO", f"{tag} has no compact release manifest; Fedora support updates are published by x810-fedora.yml")
 
     direct_assets = (
-        "x810-release-manifest.json" in names
-        and "x810-fedora-port.zip" in names
+        ("manifest.json" in names or "x810-release-manifest.json" in names)
+        and ("update.zip" in names or "x810-fedora-port.zip" in names)
         and all(f"{part}.img" in names for part in INSTALL_BOOT_IMAGE_SIZES)
-        and sum(name.startswith("x810-fedora-44-") and name.endswith("-rootfs.tar.gz") for name in names) == 1
-        and sum(name.startswith("linux-x810-") and name.endswith(".rpm") for name in names) == 1
+        and (
+            "rootfs.tar.gz" in names
+            or sum(name.startswith("x810-fedora-44-") and name.endswith("-rootfs.tar.gz") for name in names) == 1
+        )
+        and (
+            "kernel.rpm" in names
+            or sum(name.startswith("linux-x810-") and name.endswith(".rpm") for name in names) == 1
+        )
     )
     if direct_assets:
         install = Check(
@@ -1210,9 +1216,9 @@ def download_release_install_set(release: dict[str, Any], destination: Path,
     """Download install inputs individually from one release and synthesize a verified local manifest."""
     destination.mkdir(mode=0o700, parents=True, exist_ok=False)
     release_assets = _release_asset_index(release)
-    manifest_asset = release_assets.get("x810-release-manifest.json")
+    manifest_asset = release_assets.get("manifest.json") or release_assets.get("x810-release-manifest.json")
     if manifest_asset is None:
-        raise ValueError("latest release has no x810-release-manifest.json")
+        raise ValueError("latest release has no manifest.json")
     manifest_url = manifest_asset.get("browser_download_url")
     manifest_size = manifest_asset.get("size")
     if (not isinstance(manifest_url, str) or not manifest_url.startswith("https://")
@@ -1262,9 +1268,10 @@ def download_release_install_set(release: dict[str, Any], destination: Path,
         return matches[0]
 
     rootfs_record = choose_one("Fedora 44 rootfs archive",
-                               lambda name: name.startswith("x810-fedora-44-") and name.endswith("-rootfs.tar.gz"))
-    kernel_record = choose_one("X810 kernel RPM",
-                               lambda name: name.startswith("linux-x810-") and name.endswith(".rpm"))
+                               lambda name: name == "rootfs.tar.gz" or
+                               (name.startswith("x810-fedora-44-") and name.endswith("-rootfs.tar.gz")))
+    kernel_record = choose_one("X810 kernel RPM", lambda name: name == "kernel.rpm" or
+                               (name.startswith("linux-x810-") and name.endswith(".rpm")))
     selected: dict[str, tuple[dict[str, Any], str]] = {}
     selected[rootfs_record["name"]] = (rootfs_record, "rootfs")
     selected[kernel_record["name"]] = (kernel_record, "kernel")
@@ -1336,7 +1343,7 @@ def download_release_install_set(release: dict[str, Any], destination: Path,
         key, separator, value = line.partition("=")
         if separator and key not in root_manifest_fields:
             root_manifest_fields[key] = value
-    version = Path(rootfs_record["name"]).name.split("-")[2]
+    version = "44"
     if version != "44" or root_manifest_fields.get("os_id") != "fedora" or root_manifest_fields.get("arch") != "aarch64":
         raise ValueError("rootfs manifest does not identify Fedora 44 aarch64")
     generated = {

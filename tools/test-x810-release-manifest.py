@@ -157,6 +157,46 @@ class ReleaseManifestTest(unittest.TestCase):
             manifest_tool.materialize(release_manifest, "rootfs", target)
             self.assertNotIn(rpm.name, (target / "SHA256SUMS").read_text())
 
+    def test_public_asset_names_are_short_and_materializable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            kernel, rootfs = self.make_component_dirs(root)
+            support_rpm = rootfs / "x810-fedora-port-1.2.3-1000000.5.fc44.noarch.rpm"
+            (rootfs / "port.rpm").rename(support_rpm)
+            rootfs_names = ["rootfs.tar.gz", support_rpm.name, "ROOTFS-BUILD-KEY.txt", "rootfs-manifest.txt"]
+            (rootfs / "SHA256SUMS").write_text(checksum(rootfs, rootfs_names), encoding="ascii")
+            kernel_rpm = root / "kernel.rpm"
+            rootfs_tar = root / "rootfs.tar.gz"
+            shutil.copy2(kernel / "linux-x810-1.aarch64.rpm", kernel_rpm)
+            shutil.copy2(rootfs / "rootfs.tar.gz", rootfs_tar)
+            update = root / "update.zip"
+            update.write_bytes(b"updater zip placeholder")
+            assets = [*kernel.glob("*.img"), kernel_rpm, rootfs_tar, update]
+            document = manifest_tool.create(Namespace(
+                source_commit="e" * 40, kernel_dir=kernel, rootfs_dir=rootfs,
+                kernel_release="kernel-tag", rootfs_release="rootfs-tag",
+                release_tag="aggregate-tag", port_version="1.2.3", full_set_build_key="full-key",
+                asset=[str(item) for item in assets],
+            ))
+            self.assertEqual({item["name"] for item in document["assets"]},
+                             {"boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img",
+                              "kernel.rpm", "rootfs.tar.gz", "update.zip"})
+            self.assertIn("kernel.rpm", document["components"]["kernel"]["checksums"]["RPM-SHA256SUMS"])
+            self.assertIn("rootfs.tar.gz", document["components"]["rootfs"]["checksums"]["SHA256SUMS"])
+            kernel_target, rootfs_target = root / "materialized-kernel", root / "materialized-rootfs"
+            kernel_target.mkdir()
+            rootfs_target.mkdir()
+            for image in kernel.glob("*.img"):
+                shutil.copy2(image, kernel_target / image.name)
+            shutil.copy2(kernel_rpm, kernel_target / "kernel.rpm")
+            shutil.copy2(rootfs_tar, rootfs_target / "rootfs.tar.gz")
+            release_manifest = root / "manifest.json"
+            release_manifest.write_text(json.dumps(document), encoding="utf-8")
+            manifest_tool.materialize(release_manifest, "kernel", kernel_target)
+            manifest_tool.materialize(release_manifest, "rootfs", rootfs_target)
+            manifest_tool.verify_component(kernel_target, document["components"]["kernel"], "kernel")
+            manifest_tool.verify_component(rootfs_target, document["components"]["rootfs"], "rootfs")
+
     def test_old_manifest_can_be_materialized_without_retired_bootset_zip(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

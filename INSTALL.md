@@ -10,7 +10,7 @@ python3 tools/x810-install
 
 In a terminal, that starts the guided installer. It downloads the rootfs,
 matching kernel RPM, and four boot images individually from the latest
-aggregate release, then verifies them using `x810-release-manifest.json`.
+aggregate release, then verifies them using `manifest.json`.
 There is no separate multi-gigabyte clean-install archive. To launch the
 optional text menu instead, run `python3 tools/x810-install menu`. The
 `--bundle` option remains for older self-contained bundles or extracted bundle
@@ -85,7 +85,7 @@ assuming TWRP has refreshed its partition map:
 ### Install Tab Companion after the first Fedora boot
 
 The Fedora rootfs includes X810 support; the release's
-`x810-fedora-port.zip` is for Tab Companion's later support updates. The
+`update.zip` is for Tab Companion's later support updates. The
 installer does **not** include the separate Tab Companion application package.
 After the first Fedora boot, install the current Fedora RPM from the Tab Companion
 repository. With GitHub CLI installed:
@@ -171,9 +171,9 @@ The manual reset workflow forces source rebuilds and prunes old published
 releases/artifacts, but preserves Actions dependency caches (kernel ccache and
 Fedora package caches) to keep the rebuild efficient.
 
-The compact `x810-release-manifest.json` records payload SHA-256/size, component
+The compact `manifest.json` records payload SHA-256/size, component
 fingerprints, and build metadata. The support RPM is carried inside
-`x810-fedora-port.zip`; the release does not duplicate it as a standalone RPM.
+`update.zip`; the release does not duplicate it as a standalone RPM.
 Integrity hashes detect accidental or mismatched assets; they are not a
 cryptographic signature. Rootfs builds pin Fedora compose repositories and source commits,
 record package/source provenance, and normalize archive metadata; this does

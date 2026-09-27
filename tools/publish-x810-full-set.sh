@@ -6,12 +6,16 @@ mkdir -p k r
 gh release -R "$GITHUB_REPOSITORY" download "$KREL" --dir k --clobber
 gh release -R "$GITHUB_REPOSITORY" download "$RREL" --dir r --clobber
 if [ ! -f k/BUILD-METADATA.txt ] || [ ! -f k/BUNDLE-SHA256SUMS ]; then
+  kernel_manifest=k/manifest.json
+  [ -f "$kernel_manifest" ] || kernel_manifest=k/x810-release-manifest.json
   python3 tools/x810-release-manifest.py materialize \
-    k/x810-release-manifest.json kernel k
+    "$kernel_manifest" kernel k
 fi
 if [ ! -f r/rootfs-manifest.txt ] || [ ! -f r/SHA256SUMS ]; then
+  rootfs_manifest=r/manifest.json
+  [ -f "$rootfs_manifest" ] || rootfs_manifest=r/x810-release-manifest.json
   python3 tools/x810-release-manifest.py materialize \
-    r/x810-release-manifest.json rootfs r
+    "$rootfs_manifest" rootfs r
 fi
 (cd k && sha256sum -c BUNDLE-SHA256SUMS && sha256sum -c RPM-SHA256SUMS)
 (cd r && sha256sum -c SHA256SUMS)
@@ -74,6 +78,9 @@ if [ "$port_package_name" != x810-fedora-port ] || [ "$port_package_arch" != noa
 fi
 shopt -s nullglob
 rootfs_archives=(r/x810-fedora-*-rootfs.tar.gz)
+if [ "${#rootfs_archives[@]}" -eq 0 ] && [ -f r/rootfs.tar.gz ]; then
+  rootfs_archives=(r/rootfs.tar.gz)
+fi
 [ "${#rootfs_archives[@]}" -eq 1 ] || {
   echo "REFUSING: expected exactly one rootfs tarball in $RREL." >&2
   exit 1
@@ -110,6 +117,9 @@ rm r/port.json
 # the tarball has to be the one the rootfs image was built with.
 # build-rootfs.sh records the installed kernel RPM in the manifest.
 kernel_rpms=(k/linux-x810-*.rpm)
+if [ "${#kernel_rpms[@]}" -eq 0 ] && [ -f k/kernel.rpm ]; then
+  kernel_rpms=(k/kernel.rpm)
+fi
 [ "${#kernel_rpms[@]}" -eq 1 ] || {
   echo "REFUSING: expected exactly one linux-x810 RPM in $KREL." >&2
   exit 1
@@ -127,9 +137,9 @@ python3 tools/verify-x810-build-match.py \
 # The support updater ZIP is published by the independent port-update job.
 mkdir -p update
 gh release -R "$GITHUB_REPOSITORY" download "$REL" --dir update \
-  --pattern x810-fedora-port.zip --clobber
+  --pattern update.zip --clobber
 
-python3 - "$PORT_VERSION" update/x810-fedora-port.zip <<'PY'
+python3 - "$PORT_VERSION" update/update.zip <<'PY'
 import hashlib
 import json
 import sys
@@ -158,7 +168,7 @@ try:
         if len(payload) != record.get("size") or hashlib.sha256(payload).hexdigest() != record.get("sha256"):
             raise ValueError("support RPM inside updater ZIP failed its size/SHA-256 check")
 except (OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as error:
-    raise SystemExit(f"REFUSING: invalid x810-fedora-port.zip: {error}")
+    raise SystemExit(f"REFUSING: invalid update.zip: {error}")
 PY
 
 gh release -R "$GITHUB_REPOSITORY" view "$REL" >/dev/null 2>&1 || \
@@ -178,13 +188,20 @@ PY
 # download directories contain the same flattened asset names, so uploading
 # both `*` globs causes GitHub's 422 duplicate-asset error even with --clobber.
 # Publish only each component's owned files; regenerate full-set metadata below.
+if [ "${kernel_rpms[0]}" != k/kernel.rpm ]; then
+  cp -L "${kernel_rpms[0]}" k/kernel.rpm
+fi
+if [ "${rootfs_archives[0]}" != r/rootfs.tar.gz ]; then
+  cp -L "${rootfs_archives[0]}" r/rootfs.tar.gz
+fi
+
 full_assets=(
   k/boot.img
   k/init_boot.img
   k/vendor_boot.img
   k/dtbo.img
-  k/linux-x810-*.rpm
-  r/x810-fedora-*-rootfs.tar.gz
+  k/kernel.rpm
+  r/rootfs.tar.gz
 )
 declare -A seen_assets=()
 for asset in "${full_assets[@]}"; do
@@ -195,7 +212,7 @@ for asset in "${full_assets[@]}"; do
   }
   seen_assets[$name]=1
 done
-all_payloads=("${full_assets[@]}" update/x810-fedora-port.zip)
+all_payloads=("${full_assets[@]}" update/update.zip)
 manifest_asset_args=()
 for asset in "${all_payloads[@]}"; do manifest_asset_args+=(--asset "$asset"); done
 python3 tools/x810-release-manifest.py create \
@@ -203,12 +220,12 @@ python3 tools/x810-release-manifest.py create \
   --source-commit "$GITHUB_SHA" --release-tag "$REL" \
   --kernel-release "$KREL" --rootfs-release "$RREL" \
   --port-version "$PORT_VERSION" --full-set-build-key "$FULL_SET_KEY" \
-  --output x810-release-manifest.json "${manifest_asset_args[@]}"
+  --output manifest.json "${manifest_asset_args[@]}"
 
 # A rerun must not leave obsolete metadata, vbmeta, duplicate RPMs,
 # bootset ZIPs, or other superseded assets attached to the aggregate.
 expected_names="$(printf '%s\n' "${full_assets[@]}" \
-  update/x810-fedora-port.zip x810-release-manifest.json | sed 's#^.*/##' | sort -u)"
+  update/update.zip manifest.json | sed 's#^.*/##' | sort -u)"
 while IFS= read -r old_name; do
   [ -n "$old_name" ] || continue
   if ! grep -Fxq "$old_name" <<< "$expected_names"; then
@@ -217,7 +234,7 @@ while IFS= read -r old_name; do
 done < <(gh release -R "$GITHUB_REPOSITORY" view "$REL" --json assets --jq '.assets[].name')
 
 gh release -R "$GITHUB_REPOSITORY" upload "$REL" --clobber \
-  "${full_assets[@]}" update/x810-fedora-port.zip x810-release-manifest.json
+  "${full_assets[@]}" update/update.zip manifest.json
 # Auxiliary kernel/rootfs/boot tags are not latest; reassert that
 # the combined full-set release is the single updater feed even when
 # rerunning an existing release.

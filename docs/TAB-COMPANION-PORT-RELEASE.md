@@ -23,14 +23,21 @@ The workflow:
    the latest complete aggregate.
 
 The release tag begins `x810-fedora-port-build-` because Tab Companion resolves
-that asset using the successful push's Actions run ID. Its `x810-fedora-port.zip`
+that asset using the successful push's Actions run ID. Its `update.zip`
 contains the `tab-companion-update.json` manifest with Fedora 44/aarch64/
 SM-X810 target, package NEVRA, size, and SHA-256. The aggregate's
-`x810-release-manifest.json` records the source Git commit, kernel/rootfs/full
+`manifest.json` records the source Git commit, kernel/rootfs/full
 build fingerprints, component metadata, and SHA-256/size for every public
 payload. CI also uses its embedded component checksums/keys to reuse unchanged
 kernel and rootfs builds. It replaces the former separate checksum/key text
 assets and `port-release.json`.
+
+The stable public payload names are `kernel.rpm`, `rootfs.tar.gz`, `update.zip`,
+and `manifest.json`, alongside the four partition images. `kernel.rpm` still
+contains the Fedora package whose internal RPM identity is `linux-x810`; only
+the GitHub release filename is simplified. Tab Companion accepts `update.zip`
+for existing X810 installs that still have the prior `artifact_name` value, so
+they can install the new support RPM and receive the updated port record.
 
 If a build fails before the new aggregate is complete, cleanup removes the
 incomplete/staging releases and retains the previous GitHub `latest` release.
@@ -53,7 +60,7 @@ Kernel and boot-image changes are intentionally not installed by the in-OS
 updater. They ship in the same aggregate release for manual TWRP installation.
 The PC installer downloads the matching rootfs, kernel RPM, and boot images
 individually from that one release, then verifies them against
-`x810-release-manifest.json` before modifying the tablet.
+`manifest.json` before modifying the tablet.
 
 ## What the release boot/kernel assets are for
 
@@ -61,7 +68,7 @@ individually from that one release, then verifies them against
   partition images written as one boot set. `dtbo.img` is deliberately an
   invalid/zero DTBO table so Samsung ABL falls back to the DTB appended to the
   Linux boot image / carried in `vendor_boot`. Do not omit it from the set.
-- `linux-x810-*.rpm` is Fedora's kernel package: it owns the kernel files and
+- `kernel.rpm` is Fedora's kernel package: it owns the kernel files and
   module tree inside Fedora and is matched byte-for-byte to the rootfs. It is
   not a raw partition image; the individual boot images are what update the
   tablet's boot partitions. The package uses the human/device model `x810`;
@@ -73,10 +80,10 @@ individually from that one release, then verifies them against
   experimental Fedora-port image.
 - `rootfs-manifest.txt`, kernel build metadata, component keys, and individual
   checksum files are no longer separate release downloads. Their verification
-  data is consolidated in `x810-release-manifest.json`. The large clean-install
+  data is consolidated in `manifest.json`. The large clean-install
   archive and bootset ZIP are omitted because the installer handles the
   individual release assets. The standalone support RPM is also omitted; it is
-  inside `x810-fedora-port.zip` for Tab Companion. The single `source_commit`
+  inside `update.zip` for Tab Companion. The single `source_commit`
   identifies the repo patch level; build fingerprints distinguish output
   inputs such as the pinned Fedora compose and firmware.
 

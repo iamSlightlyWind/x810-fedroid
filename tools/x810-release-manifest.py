@@ -118,6 +118,33 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
         assets.append(record)
         assets_by_name[path.name] = record
 
+    # The public aggregate uses short, stable asset names. Component staging
+    # releases keep their versioned names, so translate the component checksum
+    # entries to their equivalent public alias after verifying the original
+    # component files above. The manifest continues to attest the same bytes.
+    public_aliases = {
+        "kernel": ("kernel.rpm", lambda name: name.startswith("linux-x810-") and name.endswith(".rpm")),
+        "rootfs": ("rootfs.tar.gz", lambda name: name.startswith("x810-fedora-") and name.endswith("-rootfs.tar.gz")),
+    }
+    for component_name, (alias, is_versioned_asset) in public_aliases.items():
+        alias_record = assets_by_name.get(alias)
+        if alias_record is None:
+            continue
+        checksums = components[component_name]["checksums"]
+        for checksum_name, checksum_text in list(checksums.items()):
+            rewritten = []
+            for line in checksum_text.splitlines():
+                match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
+                if not match:
+                    raise ValueError(f"invalid checksum line in {component_name}/{checksum_name}")
+                digest, filename = match.groups()
+                if is_versioned_asset(filename):
+                    if digest != alias_record["sha256"]:
+                        raise ValueError(f"public alias {alias} does not match {component_name} checksum for {filename}")
+                    filename = alias
+                rewritten.append(f"{digest}  {filename}")
+            checksums[checksum_name] = "\n".join(rewritten) + "\n"
+
     # The noarch support RPM is already inside the Tab Companion updater ZIP.
     # Drop its redundant standalone checksum entry from the aggregate metadata;
     # the rootfs archive and manifest remain checksummed and reusable.

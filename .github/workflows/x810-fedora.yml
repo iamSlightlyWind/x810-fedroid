@@ -256,7 +256,7 @@ jobs:
           python3 tools/make-port-update-bundle.py \
             --rpm "${rpms[0]}" \
             --build-info _ci/rootfs/usr/share/tab-companion/port-build.json \
-            --output _ci/release/x810-fedora-port.zip
+            --output _ci/release/update.zip
 
       - name: Publish the run-keyed port support release
         env:
@@ -264,13 +264,13 @@ jobs:
         run: |
           set -euo pipefail
           tag="x810-fedora-port-build-${BUILD_RUN_ID}"
-          asset=_ci/release/x810-fedora-port.zip
+          asset=_ci/release/update.zip
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$tag" "$asset" --repo "$GITHUB_REPOSITORY" \
               --target "$BUILD_COMMIT" --title "X810 Fedora build #${BUILD_RUN_NUMBER}" \
-              --notes "X810 Fedora release in progress; the completed release includes the port updater, Fedora rootfs, kernel/boot files, and clean-install bundle." \
+              --notes "X810 Fedora release in progress; the completed release includes the updater, Fedora rootfs, and kernel/boot files." \
               --latest=false
           fi
           latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
@@ -353,10 +353,17 @@ jobs:
               [ -n "$candidate" ] || continue
               dir="$RUNNER_TEMP/kernel-check-${GITHUB_RUN_ID}-${RANDOM}"
               mkdir -p "$dir"
-              if gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
-                  --pattern x810-release-manifest.json >/dev/null 2>&1; then
+              candidate_manifest=""
+              for manifest_name in manifest.json x810-release-manifest.json; do
+                if gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
+                    --pattern "$manifest_name" >/dev/null 2>&1; then
+                  candidate_manifest="$dir/$manifest_name"
+                  break
+                fi
+              done
+              if [ -n "$candidate_manifest" ]; then
                 candidate_key="$(python3 tools/x810-release-manifest.py key \
-                  "$dir/x810-release-manifest.json" kernel 2>/dev/null || true)"
+                  "$candidate_manifest" kernel 2>/dev/null || true)"
                 if [ "$candidate_key" = "$kernel_key" ]; then reusable="$candidate"; break; fi
               elif gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$dir" \
                   --pattern KERNEL-BUILD-KEY.txt --pattern BUNDLE-SHA256SUMS \
@@ -663,10 +670,12 @@ jobs:
           kdir="$RUNNER_TEMP/selected-kernel-${GITHUB_RUN_ID}"
           mkdir -p "$kdir"
           download_patterns=(
+            --pattern manifest.json
             --pattern x810-release-manifest.json
             --pattern BUILD-METADATA.txt
             --pattern BUNDLE-SHA256SUMS
             --pattern RPM-SHA256SUMS
+            --pattern kernel.rpm
             --pattern 'linux-x810-*.rpm'
             --pattern '*.img'
           )
@@ -676,8 +685,10 @@ jobs:
           fi
           gh release download "$KERNEL_TAG" --repo "$GITHUB_REPOSITORY" --dir "$kdir" "${download_patterns[@]}"
           if [ ! -f "$kdir/BUILD-METADATA.txt" ]; then
+            kernel_manifest="$kdir/manifest.json"
+            [ -f "$kernel_manifest" ] || kernel_manifest="$kdir/x810-release-manifest.json"
             python3 tools/x810-release-manifest.py materialize \
-              "$kdir/x810-release-manifest.json" kernel "$kdir"
+              "$kernel_manifest" kernel "$kdir"
           fi
           (cd "$kdir" && sha256sum -c BUNDLE-SHA256SUMS && sha256sum -c RPM-SHA256SUMS)
           if [ -f "$kdir/KERNEL-BUILD-KEY.txt" ]; then
@@ -689,6 +700,7 @@ jobs:
           fi
           shopt -s nullglob
           rpms=("$kdir"/linux-x810-*.rpm)
+          if [ "${#rpms[@]}" -eq 0 ] && [ -f "$kdir/kernel.rpm" ]; then rpms=("$kdir/kernel.rpm"); fi
           [ "${#rpms[@]}" -eq 1 ] || { echo "REFUSING: expected exactly one kernel RPM." >&2; exit 1; }
           kernel_rpm_sha256="$(sha256sum "${rpms[0]}" | cut -d' ' -f1)"
 
@@ -715,10 +727,17 @@ jobs:
               [ -n "$candidate" ] || continue
               rdir="$RUNNER_TEMP/rootfs-check-${GITHUB_RUN_ID}-${RANDOM}"
               mkdir -p "$rdir"
-              if gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$rdir" \
-                  --pattern x810-release-manifest.json >/dev/null 2>&1; then
+              candidate_manifest=""
+              for manifest_name in manifest.json x810-release-manifest.json; do
+                if gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$rdir" \
+                    --pattern "$manifest_name" >/dev/null 2>&1; then
+                  candidate_manifest="$rdir/$manifest_name"
+                  break
+                fi
+              done
+              if [ -n "$candidate_manifest" ]; then
                 candidate_key="$(python3 tools/x810-release-manifest.py key \
-                  "$rdir/x810-release-manifest.json" rootfs 2>/dev/null || true)"
+                  "$candidate_manifest" rootfs 2>/dev/null || true)"
                 if [ "$candidate_key" = "$rootfs_key" ]; then reusable="$candidate"; break; fi
               elif gh release download "$candidate" --repo "$GITHUB_REPOSITORY" --dir "$rdir" \
                   --pattern ROOTFS-BUILD-KEY.txt --pattern SHA256SUMS \
@@ -821,15 +840,18 @@ jobs:
           set -euo pipefail
           mkdir -p _ci/kernel
           gh release download "$KERNEL_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'linux-x810-*.rpm' --pattern RPM-SHA256SUMS \
-            --pattern x810-release-manifest.json --dir _ci/kernel
+            --pattern 'linux-x810-*.rpm' --pattern kernel.rpm --pattern RPM-SHA256SUMS \
+            --pattern manifest.json --pattern x810-release-manifest.json --dir _ci/kernel
           if [ ! -f _ci/kernel/RPM-SHA256SUMS ]; then
+            kernel_manifest=_ci/kernel/manifest.json
+            [ -f "$kernel_manifest" ] || kernel_manifest=_ci/kernel/x810-release-manifest.json
             python3 tools/x810-release-manifest.py materialize \
-              _ci/kernel/x810-release-manifest.json kernel _ci/kernel --rpm-only
+              "$kernel_manifest" kernel _ci/kernel --rpm-only
           fi
           (cd _ci/kernel && sha256sum -c RPM-SHA256SUMS)
           shopt -s nullglob
           rpms=(_ci/kernel/linux-x810-*.rpm)
+          if [ "${#rpms[@]}" -eq 0 ] && [ -f _ci/kernel/kernel.rpm ]; then rpms=(_ci/kernel/kernel.rpm); fi
           [ "${#rpms[@]}" -eq 1 ] || {
             echo "REFUSING: kernel release must contain exactly one X810 linux-x810 RPM." >&2
             exit 1
@@ -971,8 +993,9 @@ jobs:
 
           names = json.loads(sys.argv[1])
           required = {
-              "x810-fedora-port.zip", "x810-release-manifest.json",
+              "update.zip", "manifest.json",
               "boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img",
+              "kernel.rpm", "rootfs.tar.gz",
           }
           missing = sorted(required - set(names))
           obsolete = {
@@ -980,18 +1003,16 @@ jobs:
               "rootfs-manifest.txt", "BUILD-METADATA.txt",
               "KERNEL-BUILD-KEY.txt", "ROOTFS-BUILD-KEY.txt",
               "FULL-SET-BUILD-KEY.txt", "port-release.json", "vbmeta.img",
+              "x810-fedora-port.zip", "x810-release-manifest.json",
           }
           stale = sorted(name for name in names if name in obsolete
                          or name.startswith("x810-fedora-bootset-")
+                         or (name.startswith("linux-x810-") and name.endswith(".rpm"))
+                         or (name.startswith("x810-fedora-44-") and name.endswith("-rootfs.tar.gz"))
                          or (name.startswith("x810-fedora-sm-x810-") and name.endswith("-clean-install.tar.gz"))
                          or (name.startswith("x810-fedora-port-") and name.endswith(".noarch.rpm")))
           if stale:
               raise SystemExit("REFUSING to prune: aggregate still has obsolete standalone assets: " + ", ".join(stale))
-          patterns = {
-              "kernel RPM": lambda n: n.startswith("linux-x810-") and n.endswith(".rpm"),
-              "rootfs archive": lambda n: n.startswith("x810-fedora-") and n.endswith("-rootfs.tar.gz"),
-          }
-          missing.extend(label for label, predicate in patterns.items() if not any(predicate(n) for n in names))
           if missing:
               raise SystemExit("REFUSING to prune: latest aggregate is incomplete: " + ", ".join(missing))
           PY
