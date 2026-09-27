@@ -105,6 +105,7 @@ class SupportRpmStagingTests(unittest.TestCase):
 
     def test_port_update_repairs_uid_1000_camera_access(self):
         spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
+        self.assertIn("%global debug_package %{nil}", spec)
         self.assertIn("desktop_user=$(getent passwd 1000", spec)
         self.assertIn('usermod -a -G video "$desktop_user"', spec)
         self.assertIn('getent group input', spec)
