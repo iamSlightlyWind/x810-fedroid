@@ -234,6 +234,12 @@ def materialize(path: Path, component_name: str, directory: Path, *, rpm_only: b
         if not isinstance(record, dict):
             raise ValueError(f"malformed {component_name} payload record")
         filename = record.get("name")
+        # The previous aggregate manifest listed a convenience bootset ZIP
+        # alongside the individual partition images. New releases omit that
+        # duplicate archive, so it must not block reuse of an old manifest.
+        if (component_name == "kernel" and isinstance(filename, str)
+                and filename.startswith("x810-fedora-bootset-") and filename.endswith(".zip")):
+            continue
         expected_hash = record.get("sha256")
         expected_size = record.get("size_bytes")
         if not isinstance(filename, str) or Path(filename).name != filename:

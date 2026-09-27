@@ -157,6 +157,34 @@ class ReleaseManifestTest(unittest.TestCase):
             manifest_tool.materialize(release_manifest, "rootfs", target)
             self.assertNotIn(rpm.name, (target / "SHA256SUMS").read_text())
 
+    def test_old_manifest_can_be_materialized_without_retired_bootset_zip(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            kernel, rootfs = self.make_component_dirs(root)
+            payload = root / "payload"
+            payload.write_bytes(b"aggregate support")
+            assets = [*kernel.glob("*.img"), kernel / "linux-x810-1.aarch64.rpm",
+                      kernel / "x810-fedora-bootset-7.2.0-gts9wifi.zip",
+                      rootfs / "rootfs.tar.gz", rootfs / "port.rpm", payload]
+            document = manifest_tool.create(Namespace(
+                source_commit="d" * 40, kernel_dir=kernel, rootfs_dir=rootfs,
+                kernel_release="kernel-tag", rootfs_release="rootfs-tag",
+                release_tag="aggregate-tag", port_version="1.2.3", full_set_build_key="full-key",
+                asset=[str(item) for item in assets],
+            ))
+            legacy_zip = next(item for item in document["assets"] if item["name"].startswith("x810-fedora-bootset-"))
+            document["components"]["kernel"]["asset_files"].append(legacy_zip)
+            target = root / "kernel-target"
+            target.mkdir()
+            for source in kernel.iterdir():
+                if source.name not in {"BUILD-METADATA.txt", "BUNDLE-SHA256SUMS", "RPM-SHA256SUMS", "KERNEL-BUILD-KEY.txt",
+                                       "x810-fedora-bootset-7.2.0-gts9wifi.zip"}:
+                    shutil.copy2(source, target / source.name)
+            manifest_path = root / "legacy.json"
+            manifest_path.write_text(json.dumps(document), encoding="utf-8")
+            manifest_tool.materialize(manifest_path, "kernel", target)
+            self.assertTrue((target / "BUNDLE-SHA256SUMS").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
