@@ -158,8 +158,8 @@ config FINGERPRINT_EL721\
 \ttristate "EgisTec EL721 fingerprint sensor (secure-world companion)"\
 \tdepends on OF\
 ' drivers/misc/Kconfig
-grep -q 'egis_el721.o' drivers/misc/Makefile || \
-    echo 'obj-$(CONFIG_FINGERPRINT_EL721)\t+= egis_el721.o' >> drivers/misc/Makefile
+grep -Fqx 'obj-$(CONFIG_FINGERPRINT_EL721) += egis_el721.o' drivers/misc/Makefile || \
+    echo 'obj-$(CONFIG_FINGERPRINT_EL721) += egis_el721.o' >> drivers/misc/Makefile
 
 # Samsung K250A secure element (snvm): the embedded SE carrying the credential
 # HwVault uses to derive fingerprint template keys, reached by the EL721
@@ -181,8 +181,8 @@ config SEC_SNVM_WAKELOCK_METHOD\
 \tint "snvm wakelock method"\
 \tdefault 0\
 ' drivers/misc/Kconfig
-grep -q 'misc/snvm' drivers/misc/Makefile || \
-    echo 'obj-$(CONFIG_STAR_K250A_LEGO)\t+= snvm/' >> drivers/misc/Makefile
+grep -Fqx 'obj-$(CONFIG_STAR_K250A_LEGO) += snvm/' drivers/misc/Makefile || \
+    echo 'obj-$(CONFIG_STAR_K250A_LEGO) += snvm/' >> drivers/misc/Makefile
 
 # Secure-processor (SPSS/SPU) stack.  The fingerprint stack's Keymaster/StrongBox
 # services run on Samsung's secure processor, for which upstream has no driver
@@ -214,16 +214,16 @@ config QCOM_SPSS\
 \ttristate "Qualcomm Secure Processor Subsystem (SPSS) remoteproc"\
 \tdepends on ARCH_QCOM && REMOTEPROC && QCOM_SCM\
 ' drivers/remoteproc/Kconfig
-grep -q 'qcom_spss.o' drivers/remoteproc/Makefile || \
-    echo 'obj-$(CONFIG_QCOM_SPSS)\t+= qcom_spss.o' >> drivers/remoteproc/Makefile
+grep -Fqx 'obj-$(CONFIG_QCOM_SPSS) += qcom_spss.o' drivers/remoteproc/Makefile || \
+    echo 'obj-$(CONFIG_QCOM_SPSS) += qcom_spss.o' >> drivers/remoteproc/Makefile
 
 grep -q 'QCOM_GLINK_SPSS' drivers/rpmsg/Kconfig || sed -i '/^endmenu$/i \
 config QCOM_GLINK_SPSS\
 \ttristate "Qualcomm GLINK SPSS transport"\
 \tdepends on RPMSG_QCOM_GLINK\
 ' drivers/rpmsg/Kconfig
-grep -q 'qcom_glink_spss.o' drivers/rpmsg/Makefile || \
-    echo 'obj-$(CONFIG_QCOM_GLINK_SPSS)\t+= qcom_glink_spss.o' >> drivers/rpmsg/Makefile
+grep -Fqx 'obj-$(CONFIG_QCOM_GLINK_SPSS) += qcom_glink_spss.o' drivers/rpmsg/Makefile || \
+    echo 'obj-$(CONFIG_QCOM_GLINK_SPSS) += qcom_glink_spss.o' >> drivers/rpmsg/Makefile
 
 grep -q 'QCOM_SPCOM' drivers/soc/qcom/Kconfig || sed -i '/^endmenu$/i \
 config QCOM_SPCOM\
@@ -238,12 +238,12 @@ config QCOM_SPSS_IRQ\
 \ttristate "Qualcomm SPSS secure-processor IRQ notification"\
 \tdepends on ARCH_QCOM\
 ' drivers/soc/qcom/Kconfig
-grep -q 'spcom.o' drivers/soc/qcom/Makefile || \
-    echo 'obj-$(CONFIG_QCOM_SPCOM)\t+= spcom.o' >> drivers/soc/qcom/Makefile
-grep -q 'spss_utils.o' drivers/soc/qcom/Makefile || \
-    echo 'obj-$(CONFIG_QCOM_SPSS_UTILS)\t+= spss_utils.o' >> drivers/soc/qcom/Makefile
-grep -q 'qcom_spss_irq.o' drivers/soc/qcom/Makefile || \
-    echo 'obj-$(CONFIG_QCOM_SPSS_IRQ)\t+= qcom_spss_irq.o' >> drivers/soc/qcom/Makefile
+grep -Fqx 'obj-$(CONFIG_QCOM_SPCOM) += spcom.o' drivers/soc/qcom/Makefile || \
+    echo 'obj-$(CONFIG_QCOM_SPCOM) += spcom.o' >> drivers/soc/qcom/Makefile
+grep -Fqx 'obj-$(CONFIG_QCOM_SPSS_UTILS) += spss_utils.o' drivers/soc/qcom/Makefile || \
+    echo 'obj-$(CONFIG_QCOM_SPSS_UTILS) += spss_utils.o' >> drivers/soc/qcom/Makefile
+grep -Fqx 'obj-$(CONFIG_QCOM_SPSS_IRQ) += qcom_spss_irq.o' drivers/soc/qcom/Makefile || \
+    echo 'obj-$(CONFIG_QCOM_SPSS_IRQ) += qcom_spss_irq.o' >> drivers/soc/qcom/Makefile
 
 # drivers/dma-buf/heaps/Kconfig is included as a fragment and has no endmenu,
 # so this symbol is appended rather than inserted.
@@ -253,8 +253,8 @@ config DMABUF_HEAPS_SP_HLOS
 	tristate "Qualcomm HLOS/SPSS shared DMA-BUF heap"
 	depends on DMABUF_HEAPS
 SP_HLOS_KCONFIG
-grep -q 'qcom_sp_hlos_heap.o' drivers/dma-buf/heaps/Makefile || \
-    echo 'obj-$(CONFIG_DMABUF_HEAPS_SP_HLOS)\t+= qcom_sp_hlos_heap.o' >> drivers/dma-buf/heaps/Makefile
+grep -Fqx 'obj-$(CONFIG_DMABUF_HEAPS_SP_HLOS) += qcom_sp_hlos_heap.o' drivers/dma-buf/heaps/Makefile || \
+    echo 'obj-$(CONFIG_DMABUF_HEAPS_SP_HLOS) += qcom_sp_hlos_heap.o' >> drivers/dma-buf/heaps/Makefile
 
 # Kernel release tag must match the rootfs modules (vermagic ABI).
 echo "-gts9wifi" > localversion-gts9wifi

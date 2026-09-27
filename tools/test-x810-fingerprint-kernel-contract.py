@@ -31,8 +31,27 @@ class FingerprintKernelContractTests(unittest.TestCase):
         self.assertIn("snvm", modules)
         self.assertIn('cp "$here/files/egis_el721.c" drivers/misc/', prepare)
         self.assertIn('cp -r "$here/files/snvm/." drivers/misc/snvm/', prepare)
+        # Kbuild silently ignores malformed Makefile variable names. The
+        # earlier echo '\\t' spelling wrote the two characters backslash-t,
+        # so the configured modules never entered the kernel RPM.
+        for line in (
+            "obj-$(CONFIG_FINGERPRINT_EL721) += egis_el721.o",
+            "obj-$(CONFIG_STAR_K250A_LEGO) += snvm/",
+            "obj-$(CONFIG_QCOM_SPSS) += qcom_spss.o",
+            "obj-$(CONFIG_QCOM_GLINK_SPSS) += qcom_glink_spss.o",
+            "obj-$(CONFIG_QCOM_SPCOM) += spcom.o",
+            "obj-$(CONFIG_QCOM_SPSS_UTILS) += spss_utils.o",
+            "obj-$(CONFIG_QCOM_SPSS_IRQ) += qcom_spss_irq.o",
+            "obj-$(CONFIG_DMABUF_HEAPS_SP_HLOS) += qcom_sp_hlos_heap.o",
+        ):
+            self.assertIn(f"grep -Fqx '{line}'", prepare)
+            self.assertIn(f"echo '{line}'", prepare)
+        self.assertNotRegex(prepare, r"echo 'obj-[^']*\\\\t")
         self.assertIn("modules_install dtbs_install", spec)
         self.assertIn("/usr/lib/modules/*", spec)
+        self.assertIn("%check", spec)
+        self.assertIn('for module in egis_el721 snvm; do', spec)
+        self.assertIn('required fingerprint module missing from kernel RPM', spec)
 
 
 if __name__ == "__main__":

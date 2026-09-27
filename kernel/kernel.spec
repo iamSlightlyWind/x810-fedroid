@@ -55,6 +55,21 @@ install -Dm0644 System.map %{buildroot}/boot/System.map-$krel
 depmod -b %{buildroot}/usr -a %{kversion}-%{flavor}
 rm -f %{buildroot}/usr/lib/modules/*/build %{buildroot}/usr/lib/modules/*/source
 
+%check
+# These drivers are configured as modules and are the only Linux-facing
+# fingerprint reader/secure-element interfaces.  A Kconfig entry alone is not
+# enough: an invalid Makefile registration used to silently omit both modules
+# from the RPM while leaving the build green.
+modules_root=%{buildroot}/usr/lib/modules/%{kversion}-%{flavor}
+for module in egis_el721 snvm; do
+    if ! find "$modules_root" -type f \
+        \( -name "$module.ko" -o -name "$module.ko.*" \) \
+        -print -quit | grep -q .; then
+        echo "required fingerprint module missing from kernel RPM: $module" >&2
+        exit 1
+    fi
+done
+
 %files
 %license COPYING
 /boot/*
