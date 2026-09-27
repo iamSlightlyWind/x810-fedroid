@@ -37,14 +37,28 @@ def archive_path(name: str) -> str:
 
 
 def resolve_link(path: str, target: str) -> str:
-    """Resolve a link target within the archive root, rejecting escape."""
-    if target.startswith("/"):
-        candidate = posixpath.normpath(target.lstrip("/"))
-    else:
-        candidate = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
-    if candidate == ".." or candidate.startswith("../"):
-        fail(f"link escapes rootfs: {path!r} -> {target!r}")
-    return candidate
+    """Resolve a link as it behaves inside a mounted root filesystem.
+
+    Linux clamps excess ``..`` components at the filesystem root. Some Fedora
+    app launchers contain more parent components than needed (for example,
+    ``/usr/bin/foo -> ../../../../../../../usr/share/foo``); that is odd but
+    does not escape the mounted root. Archive member paths are validated
+    separately, and inspect() rejects any later member written beneath a
+    symlink so an extractor cannot follow one into its host filesystem.
+    """
+    parts = [] if target.startswith("/") else [
+        part for part in posixpath.dirname(path).split("/") if part
+    ]
+    for part in target.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            # At the root, Linux path resolution keeps clamping to the root.
+            continue
+        parts.append(part)
+    return "/".join(parts)
 
 
 def parse_manifest(path: str | None) -> dict[str, str]:

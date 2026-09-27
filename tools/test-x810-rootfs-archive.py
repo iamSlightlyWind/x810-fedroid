@@ -55,6 +55,15 @@ def make_archive(path, *, fstab=None, port=None, extra=None, os_release_link=Tru
 
 
 class RootfsArchiveTests(unittest.TestCase):
+    def test_resolves_overlong_relative_symlink_within_mounted_root(self):
+        self.assertEqual(
+            verifier.resolve_link(
+                "usr/bin/gnome-weather",
+                "../../../../../../../usr/share/org.gnome.Weather/org.gnome.Weather",
+            ),
+            "usr/share/org.gnome.Weather/org.gnome.Weather",
+        )
+
     def test_accepts_x810_fedora_rootfs_with_partlabel_root(self):
         with tempfile.TemporaryDirectory() as temp:
             archive = Path(temp) / "rootfs.tar.gz"
