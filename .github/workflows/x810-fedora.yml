@@ -43,7 +43,7 @@ jobs:
       branch: ${{ steps.identity.outputs.branch }}
     steps:
       - name: Checkout full history
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -101,7 +101,7 @@ jobs:
       PORT_VERSION_INPUT: ""
     steps:
       - name: Check out the workflow commit
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -114,7 +114,7 @@ jobs:
 
       - name: Restore Fedora 44 DNF tool cache
         id: restore_port_dnf
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/x810-dnf-port-cache
           # Bump toolchain-v1 if the Fedora package install list below changes.
@@ -174,7 +174,7 @@ jobs:
 
       - name: Save Fedora 44 DNF tool cache
         if: ${{ always() && !cancelled() && steps.restore_port_dnf.outputs.cache-hit != 'true' && steps.finalize_port_dnf.outcome == 'success' && steps.finalize_port_dnf.outputs.has_cache == 'true' }}
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/x810-dnf-port-cache
           key: x810-dnf-port-${{ runner.arch }}-fedora44-toolchain-v1
@@ -230,7 +230,7 @@ jobs:
       fedora_updates_compose: ${{ steps.plan.outputs.fedora_updates_compose }}
     steps:
       - name: Checkout full history for legacy fingerprint verification
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -387,7 +387,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Verify planned kernel fingerprint
         env:
@@ -407,7 +407,7 @@ jobs:
 
       - name: Restore kernel source and ccache
         id: restore_kernel_cache
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/x810-kernel-cache
           key: x810-kernel-${{ runner.arch }}-linux72-${{ hashFiles('kernel/**') }}
@@ -416,7 +416,7 @@ jobs:
 
       - name: Restore Fedora DNF cache for pinned kernel composes
         id: restore_kernel_dnf
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/x810-dnf-kernel-cache
           key: x810-dnf-kernel-${{ runner.arch }}-${{ needs.plan.outputs.fedora_base_compose }}-${{ needs.plan.outputs.fedora_updates_compose }}
@@ -542,14 +542,14 @@ jobs:
 
       - name: Save kernel source and ccache
         if: success() && steps.restore_kernel_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/x810-kernel-cache
           key: x810-kernel-${{ runner.arch }}-linux72-${{ hashFiles('kernel/**') }}
 
       - name: Save Fedora DNF cache
         if: success() && steps.restore_kernel_dnf.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/x810-dnf-kernel-cache
           key: x810-dnf-kernel-${{ runner.arch }}-${{ needs.plan.outputs.fedora_base_compose }}-${{ needs.plan.outputs.fedora_updates_compose }}
@@ -583,7 +583,7 @@ jobs:
       build_full_set: ${{ steps.resolve.outputs.build_full_set }}
     steps:
       - name: Checkout sources for rootfs key calculation
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -723,7 +723,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run rootfs Fedora signing-key contract test
         run: python3 tools/test-rootfs-repo-gpg.py
@@ -753,7 +753,7 @@ jobs:
 
       - name: Restore DNF cache for exact immutable Fedora composes
         id: restore_dnf_cache
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/x810-dnf-rootfs-cache
           key: x810-dnf-rootfs-${{ runner.arch }}-44-${{ needs.plan.outputs.fedora_base_compose }}-${{ needs.plan.outputs.fedora_updates_compose }}
@@ -839,7 +839,7 @@ jobs:
 
       - name: Save DNF cache for exact immutable Fedora composes
         if: ${{ always() && !cancelled() && steps.restore_dnf_cache.outputs.cache-hit != 'true' && steps.finalize_dnf_cache.outcome == 'success' && steps.finalize_dnf_cache.outputs.has_cache == 'true' }}
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/x810-dnf-rootfs-cache
           key: x810-dnf-rootfs-${{ runner.arch }}-44-${{ needs.plan.outputs.fedora_base_compose }}-${{ needs.plan.outputs.fedora_updates_compose }}
@@ -877,7 +877,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install RPM inspection tools
         run: |
