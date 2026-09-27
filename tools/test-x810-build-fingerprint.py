@@ -106,7 +106,7 @@ class FingerprintTests(unittest.TestCase):
         )
         self.assertNotEqual(
             rootfs_before,
-            self.key("rootfs", rootfs_recipe_revision="2"),
+            self.key("rootfs", rootfs_recipe_revision="3"),
         )
         self.assertEqual(
             kernel_before,

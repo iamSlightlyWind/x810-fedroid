@@ -187,3 +187,14 @@ python3 tools/x810-install release
 Never use `rootfs/mk-internal-storage.sh` for dual boot: it formats the entire
 userdata partition and leaves no Android userdata. The SD-card builder is a
 legacy X710-derived path and is not the supported X810 install route.
+
+## Maintainer reset build
+
+For a clean CI sanity check, open **Actions → Reset X810 Fedora builds**, run it
+on `main`, and type `RESET X810 FEDORA BUILDS`. It clears the repository's
+Actions caches, force-builds the kernel and rootfs, rebuilds the matching
+installer and support RPM, then prunes superseded X810 build releases only after
+both builds succeed. It preserves the latest push-keyed support update so
+existing Tab Companion clients can still resolve their exact build identity. If
+the build fails, the previously published release set is retained. This is a
+PC/GitHub build operation; it does not contact or modify a tablet.

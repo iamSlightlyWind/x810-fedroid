@@ -11,6 +11,32 @@ on:
       - "specs/**"
       - "tools/**"
       - ".github/workflows/x810-fedora.yml"
+  workflow_call:
+    inputs:
+      force_rebuild:
+        required: false
+        type: boolean
+        default: false
+      bootstrap_kernel_tag:
+        required: false
+        type: string
+        default: "kernel-7.2.0-gts9wifi-1"
+      port_version:
+        required: false
+        type: string
+        default: ""
+      desktop:
+        required: false
+        type: string
+        default: "gnome"
+      fedora_base_compose:
+        required: false
+        type: string
+        default: "Fedora-44-20260422.1"
+      fedora_updates_compose:
+        required: false
+        type: string
+        default: "Fedora-44-updates-20260926.0"
   workflow_dispatch:
     inputs:
       force_rebuild:
@@ -46,7 +72,9 @@ env:
   KVER: 7.2.0-gts9wifi
 
 concurrency:
-  group: x810-fedora-build-release
+  # The manual reset wrapper holds the normal build lock while it flushes
+  # caches; its reusable image child uses a distinct lock to avoid deadlock.
+  group: ${{ github.workflow == 'Reset X810 Fedora builds' && 'x810-fedora-build-release-reset-child' || 'x810-fedora-build-release' }}
   cancel-in-progress: false
 
 jobs:

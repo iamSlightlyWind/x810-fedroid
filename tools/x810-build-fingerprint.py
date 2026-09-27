@@ -25,7 +25,7 @@ KVER = "7.2.0-gts9wifi"
 # toolchain setup, build flags, or output assembly behavior changes. Cache-only
 # changes do not require a bump.
 KERNEL_RECIPE_REVISION = "1"
-ROOTFS_RECIPE_REVISION = "1"
+ROOTFS_RECIPE_REVISION = "2"
 FULL_SET_RECIPE_REVISION = "1"
 
 KERNEL_PATHS = ("kernel", "boot", "tools/make-twrp-zip.py")
