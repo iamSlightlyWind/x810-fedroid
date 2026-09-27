@@ -1,9 +1,9 @@
 [Unit]
 Description=Recover Qualcomm SSC and start the desktop sensor proxy
-After=gts9wifi-install-sensor-packages.service
+Requires=gts9wifi-panel-coldboot-recover.service
+Wants=hexagonrpcd-adsp-sensorspd.service
 After=gts9wifi-panel-coldboot-recover.service
 After=hexagonrpcd-adsp-sensorspd.service
-Before=display-manager.service
 ConditionPathExists=/usr/bin/ssccli
 
 [Service]

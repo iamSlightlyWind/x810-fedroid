@@ -37,6 +37,18 @@ if command -v getent >/dev/null 2>&1 && command -v usermod >/dev/null 2>&1; then
     fi
 fi
 if command -v systemctl >/dev/null 2>&1; then
+    # Remove only the exact old port-created 20s override. It cut off
+    # gts9wifi-wait-sensor-proxy while the required ADSP boot (25s) was still
+    # starting. The service no longer blocks GDM, so it can use its packaged
+    # bounded timeout without delaying the desktop.
+    sensor_timeout_override=/etc/systemd/system/gts9wifi-wait-sensor-proxy.service.d/timeout.conf
+    if [ -f "$sensor_timeout_override" ] && command -v cmp >/dev/null 2>&1; then
+        if printf '[Service]\nTimeoutStartSec=20s\n' | cmp -s - "$sensor_timeout_override"; then
+            rm -f "$sensor_timeout_override"
+            rmdir /etc/systemd/system/gts9wifi-wait-sensor-proxy.service.d \
+                >/dev/null 2>&1 || :
+        fi
+    fi
     systemctl daemon-reload >/dev/null 2>&1 || :
     # GNOME's power-profile UI uses the PPD API provided by tuned-ppd.
     systemctl enable tuned.service tuned-ppd.service >/dev/null 2>&1 || :

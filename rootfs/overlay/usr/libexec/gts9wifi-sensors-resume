@@ -25,40 +25,107 @@
 # probed SSC (status=4/NOPERMISSION).
 set -u
 
+# This helper runs inside gts9wifi-wait-sensor-proxy.service, whose unit has a
+# 210-second start timeout. Bound every phase together and leave at least 30s
+# for systemd to reap the helper and record the result if recovery stalls.
+MAX_RUNTIME_SEC=170
+monotonic_seconds() {
+	IFS=' ' read -r uptime_seconds _ < /proc/uptime || return 1
+	printf '%s\n' "${uptime_seconds%%.*}"
+}
+
+started_at=$(monotonic_seconds)
+deadline=$((started_at + MAX_RUNTIME_SEC))
+
+remaining_seconds() {
+	now=$(monotonic_seconds) || return 1
+	remaining=$((deadline - now))
+	[ "$remaining" -gt 0 ] || return 1
+	printf '%s\n' "$remaining"
+}
+
+run_bounded() {
+	# Leave two seconds for this shell to handle a timeout and exit cleanly.
+	remaining=$(remaining_seconds) || return 124
+	[ "$remaining" -gt 2 ] || return 124
+	command_timeout=$((remaining - 2))
+	timeout --kill-after=1 "${command_timeout}s" "$@"
+}
+
 i=0
 while [ "$i" -lt 90 ]; do
-	if ! systemctl list-jobs --no-legend 2>/dev/null |
-	     grep -qE 'suspend\.target|systemd-suspend\.service'; then
+	if ! jobs=$(run_bounded systemctl list-jobs --no-legend 2>/dev/null); then
+		echo "gts9wifi-sensors-resume: failed or timed out reading systemd jobs" >&2
+		exit 1
+	fi
+	if ! printf '%s\n' "$jobs" | grep -qE 'suspend\.target|systemd-suspend\.service'; then
 		break
 	fi
-	sleep 1
+	if ! remaining_seconds >/dev/null; then
+		echo "gts9wifi-sensors-resume: deadline expired waiting for suspend transaction" >&2
+		exit 1
+	fi
+	if ! run_bounded sleep 1; then
+		break
+	fi
 	i=$((i + 1))
 done
+if printf '%s\n' "$jobs" | grep -qE 'suspend\.target|systemd-suspend\.service'; then
+	echo "gts9wifi-sensors-resume: suspend transaction did not finish within 90 checks" >&2
+	exit 1
+fi
 
 # A service may still be marked active after a platform PM test while its
 # FastRPC/QMI client is stale.  A restart is cheap and gives SSC one clean
 # attachment both at boot and after a real resume.
 i=0
 while [ "$i" -lt 30 ]; do
-	if err=$(systemctl restart hexagonrpcd-adsp-sensorspd.service 2>&1); then
+	if err=$(run_bounded systemctl restart hexagonrpcd-adsp-sensorspd.service 2>&1); then
+		break
+	else
+		restart_status=$?
+	fi
+	if [ "$restart_status" -eq 124 ] || [ "$restart_status" -eq 137 ]; then
+		echo "gts9wifi-sensors-resume: deadline reached while restarting sensorspd" >&2
 		break
 	fi
 	i=$((i + 1))
 	[ "$i" = 1 ] && echo "gts9wifi-sensors-resume: sensorspd restart deferred until the suspend transaction ends: $err" >&2
-	sleep 1
+	if ! remaining_seconds >/dev/null; then
+		echo "gts9wifi-sensors-resume: deadline expired retrying sensorspd" >&2
+		break
+	fi
+	if ! run_bounded sleep 1; then
+		break
+	fi
 done
 
 attempt=0
-while [ "$attempt" -lt 45 ]; do
+# Each SSC probe has its own four-second cap, while run_bounded() also applies
+# the shared 170-second deadline across the wait, restart, and probe phases.
+while [ "$attempt" -lt 20 ]; do
+	if ! remaining_seconds >/dev/null; then
+		echo "gts9wifi-sensors-resume: overall recovery deadline expired" >&2
+		break
+	fi
 	attempt=$((attempt + 1))
-	output=$(timeout 4 ssccli --sensor accelerometer --timeout 2 2>&1 || true)
+	output=$(run_bounded timeout 4 ssccli --sensor accelerometer --timeout 2 2>&1 || true)
 	if printf '%s\n' "$output" |
 	   grep -q 'Accelerometer sensor measurement:'; then
-		systemctl restart iio-sensor-proxy.service
+		if ! run_bounded systemctl restart iio-sensor-proxy.service; then
+			echo "gts9wifi-sensors-resume: timed out restarting iio-sensor-proxy" >&2
+			exit 1
+		fi
 		echo "gts9wifi-sensors-resume: SSC ready after attempt $attempt; restarted SensorProxy for a fresh QMI client"
 		exit 0
 	fi
-	sleep 2
+	if ! remaining_seconds >/dev/null; then
+		echo "gts9wifi-sensors-resume: overall recovery deadline expired" >&2
+		break
+	fi
+	if ! run_bounded sleep 2; then
+		break
+	fi
 done
 
 echo "gts9wifi-sensors-resume: SSC did not recover after resume" >&2
