@@ -1,0 +1,419 @@
+#!/usr/bin/python3
+"""Create a read-only device-mapper view of X810's Android vendor LP.
+
+The on-disk structures follow AOSP fs_mgr/liblp's metadata_format.h (Apache
+2.0).  This intentionally implements only the small, fail-closed subset the
+X810 needs: one physical GPT partition named ``super``, LP metadata 10.0--10.2,
+and a single unambiguous ``vendor`` logical partition.  It never writes to
+super and never creates writable mappings.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+import re
+import stat
+import struct
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+
+
+GEOMETRY_MAGIC = 0x616C4467
+HEADER_MAGIC = 0x414C5030
+GEOMETRY_BYTES = 4096
+GEOMETRY_SIZE = 52
+RESERVED_BYTES = 4096
+SECTOR_SIZE = 512
+SLOT_SUFFIXED = 1 << 1
+ATTR_DISABLED = 1 << 3
+ATTR_MASK = 0x0F
+BLOCK_SLOT_SUFFIXED = 1 << 0
+MAX_METADATA_BYTES = 16 * 1024 * 1024
+MAX_TABLE_ENTRIES = 65536
+NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,36}$")
+
+
+class MetadataError(Exception):
+    """Invalid or unsupported Android logical-partition metadata."""
+
+
+@dataclass(frozen=True)
+class Extent:
+    sectors: int
+    target_type: int
+    target_data: int
+    target_source: int
+
+
+@dataclass(frozen=True)
+class Partition:
+    name: str
+    attributes: int
+    first_extent: int
+    extent_count: int
+    group_index: int
+
+
+@dataclass(frozen=True)
+class BlockDevice:
+    first_sector: int
+    size_bytes: int
+    name: str
+    flags: int
+
+
+@dataclass(frozen=True)
+class Metadata:
+    slot_count: int
+    block_devices: tuple[BlockDevice, ...]
+    partitions: tuple[Partition, ...]
+    extents: tuple[Extent, ...]
+
+
+def _checked_name(raw: bytes, what: str) -> str:
+    name_bytes = raw.split(b"\0", 1)[0]
+    if not name_bytes or any(raw[len(name_bytes):]):
+        raise MetadataError(f"{what}: malformed NUL-padded name")
+    try:
+        name = name_bytes.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise MetadataError(f"{what}: non-ASCII name") from exc
+    if not NAME_RE.fullmatch(name):
+        raise MetadataError(f"{what}: invalid name {name!r}")
+    return name
+
+
+def _read_exact(fd: int, size: int, offset: int) -> bytes:
+    data = os.pread(fd, size, offset)
+    if len(data) != size:
+        raise MetadataError(f"short read at byte offset {offset}")
+    return data
+
+
+def _parse_geometry(raw_block: bytes) -> tuple[int, int]:
+    if len(raw_block) != GEOMETRY_BYTES:
+        raise MetadataError("short metadata geometry block")
+    magic, struct_size = struct.unpack_from("<II", raw_block)
+    if magic != GEOMETRY_MAGIC or struct_size != GEOMETRY_SIZE:
+        raise MetadataError("invalid metadata geometry header")
+    geom = bytearray(raw_block[:struct_size])
+    expected = bytes(geom[8:40])
+    geom[8:40] = bytes(32)
+    if hashlib.sha256(geom).digest() != expected:
+        raise MetadataError("metadata geometry checksum mismatch")
+    max_size, slot_count, logical_block_size = struct.unpack_from("<III", raw_block, 40)
+    if max_size < SECTOR_SIZE or max_size > MAX_METADATA_BYTES or max_size % SECTOR_SIZE:
+        raise MetadataError(f"unsupported metadata maximum size {max_size}")
+    if slot_count < 1 or slot_count > 3:
+        raise MetadataError(f"unsupported metadata slot count {slot_count}")
+    if logical_block_size < SECTOR_SIZE or logical_block_size % SECTOR_SIZE:
+        raise MetadataError(f"invalid logical block size {logical_block_size}")
+    return max_size, slot_count
+
+
+def _parse_table_descriptor(header: bytes, offset: int) -> tuple[int, int, int]:
+    return struct.unpack_from("<III", header, offset)
+
+
+def _parse_table(
+    tables: bytes, descriptor: tuple[int, int, int], expected_entry_size: int, what: str
+) -> list[bytes]:
+    offset, count, entry_size = descriptor
+    if count > MAX_TABLE_ENTRIES:
+        raise MetadataError(f"{what}: unreasonable entry count {count}")
+    if entry_size != expected_entry_size:
+        raise MetadataError(
+            f"{what}: unsupported entry size {entry_size} (expected {expected_entry_size})"
+        )
+    end = offset + count * entry_size
+    if offset > len(tables) or end > len(tables):
+        raise MetadataError(f"{what}: table lies outside metadata tables")
+    return [tables[i : i + entry_size] for i in range(offset, end, entry_size)]
+
+
+def _parse_metadata_copy(fd: int, offset: int, max_size: int) -> Metadata:
+    fixed = _read_exact(fd, 128, offset)
+    (magic, major, minor, header_size) = struct.unpack_from("<IHHI", fixed, 0)
+    if magic != HEADER_MAGIC:
+        raise MetadataError("invalid metadata header magic")
+    if major != 10 or minor not in (0, 1, 2):
+        raise MetadataError(f"unsupported metadata version {major}.{minor}")
+    expected_header_size = 256 if minor >= 2 else 128
+    if header_size != expected_header_size or header_size > max_size:
+        raise MetadataError(f"invalid metadata header size {header_size}")
+    header = bytearray(_read_exact(fd, header_size, offset))
+    header_checksum = bytes(header[12:44])
+    header[12:44] = bytes(32)
+    if hashlib.sha256(header).digest() != header_checksum:
+        raise MetadataError("metadata header checksum mismatch")
+    tables_size = struct.unpack_from("<I", fixed, 44)[0]
+    tables_checksum = fixed[48:80]
+    if tables_size > max_size - header_size:
+        raise MetadataError("metadata tables exceed reserved metadata region")
+    tables = _read_exact(fd, tables_size, offset + header_size)
+    if hashlib.sha256(tables).digest() != tables_checksum:
+        raise MetadataError("metadata tables checksum mismatch")
+
+    descs = [
+        _parse_table_descriptor(fixed, where)
+        for where in (80, 92, 104, 116)
+    ]
+    ranges = []
+    for (table_offset, count, entry_size), what in zip(
+        descs, ("partitions", "extents", "groups", "block devices")
+    ):
+        if count > MAX_TABLE_ENTRIES or entry_size == 0:
+            raise MetadataError(f"{what}: invalid table descriptor")
+        end = table_offset + count * entry_size
+        if table_offset > tables_size or end > tables_size:
+            raise MetadataError(f"{what}: table lies outside metadata tables")
+        if end > table_offset:
+            ranges.append((table_offset, end, what))
+    ranges.sort()
+    for previous, current in zip(ranges, ranges[1:]):
+        if current[0] < previous[1]:
+            raise MetadataError(f"overlapping metadata tables: {previous[2]} and {current[2]}")
+
+    part_raw = _parse_table(tables, descs[0], 52, "partitions")
+    extent_raw = _parse_table(tables, descs[1], 24, "extents")
+    group_raw = _parse_table(tables, descs[2], 48, "groups")
+    block_raw = _parse_table(tables, descs[3], 64, "block devices")
+    if len(block_raw) != 1:
+        raise MetadataError(f"X810 mapping requires one super block device; found {len(block_raw)}")
+    groups = []
+    for index, row in enumerate(group_raw):
+        name = _checked_name(row[:36], f"group {index}")
+        flags = struct.unpack_from("<I", row, 36)[0]
+        if flags & ~1:
+            raise MetadataError(f"group {name}: unsupported flags 0x{flags:x}")
+        groups.append(name)
+
+    partitions = []
+    seen_names = set()
+    for index, row in enumerate(part_raw):
+        name = _checked_name(row[:36], f"partition {index}")
+        attributes, first_extent, extent_count, group_index = struct.unpack_from("<IIII", row, 36)
+        if name in seen_names:
+            raise MetadataError(f"duplicate logical partition {name}")
+        seen_names.add(name)
+        if attributes & ~ATTR_MASK:
+            raise MetadataError(f"partition {name}: unsupported attributes 0x{attributes:x}")
+        if attributes & ATTR_DISABLED:
+            continue
+        if extent_count == 0 or first_extent + extent_count > len(extent_raw):
+            raise MetadataError(f"partition {name}: invalid extent range")
+        if group_index >= len(groups):
+            raise MetadataError(f"partition {name}: invalid group index")
+        partitions.append(Partition(name, attributes, first_extent, extent_count, group_index))
+
+    extents = []
+    for index, row in enumerate(extent_raw):
+        sectors, target_type, target_data, target_source = struct.unpack("<Q I Q I", row)
+        if sectors == 0:
+            raise MetadataError(f"extent {index}: empty extent")
+        if target_type not in (0, 1):
+            raise MetadataError(f"extent {index}: unsupported target type {target_type}")
+        if target_type == 1 and (target_data != 0 or target_source != 0):
+            raise MetadataError(f"extent {index}: malformed zero target")
+        if target_type == 0 and target_source != 0:
+            raise MetadataError(f"extent {index}: unsupported physical source index {target_source}")
+        extents.append(Extent(sectors, target_type, target_data, target_source))
+
+    row = block_raw[0]
+    first_sector, _alignment, _alignment_offset = struct.unpack_from("<QII", row, 0)
+    size_bytes = struct.unpack_from("<Q", row, 16)[0]
+    name = _checked_name(row[24:60], "physical block device")
+    flags = struct.unpack_from("<I", row, 60)[0]
+    if name != "super":
+        raise MetadataError(f"expected physical partition super; metadata names {name!r}")
+    if flags & ~BLOCK_SLOT_SUFFIXED:
+        raise MetadataError(f"super: unsupported physical device flags 0x{flags:x}")
+    if first_sector >= size_bytes // SECTOR_SIZE or size_bytes % SECTOR_SIZE:
+        raise MetadataError("super: invalid first logical sector or physical size")
+    for partition in partitions:
+        for extent in extents[partition.first_extent : partition.first_extent + partition.extent_count]:
+            if extent.target_type == 0 and (
+                extent.target_data < first_sector
+                or extent.target_data + extent.sectors > size_bytes // SECTOR_SIZE
+            ):
+                raise MetadataError(f"partition {partition.name}: extent escapes super data region")
+
+    return Metadata(0, tuple([BlockDevice(first_sector, size_bytes, name, flags)]), tuple(partitions), tuple(extents))
+
+
+def read_metadata(path: str, slot: int = 0) -> Metadata:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    try:
+        geometry = None
+        errors = []
+        for offset in (RESERVED_BYTES, RESERVED_BYTES + GEOMETRY_BYTES):
+            try:
+                geometry = _parse_geometry(_read_exact(fd, GEOMETRY_BYTES, offset))
+                break
+            except MetadataError as exc:
+                errors.append(str(exc))
+        if geometry is None:
+            raise MetadataError("no valid metadata geometry: " + "; ".join(errors))
+        max_size, slot_count = geometry
+        if slot < 0 or slot >= slot_count:
+            raise MetadataError(f"metadata slot {slot} outside slot count {slot_count}")
+        metadata_base = RESERVED_BYTES + 2 * GEOMETRY_BYTES
+        region_size = max_size * slot_count * 2
+        total_bytes = os.fstat(fd).st_size
+        # For block devices st_size is normally zero; use BLKGETSIZE64.
+        if stat.S_ISBLK(os.fstat(fd).st_mode):
+            import fcntl
+
+            size_buf = bytearray(8)
+            fcntl.ioctl(fd, 0x80081272, size_buf, True)  # BLKGETSIZE64
+            total_bytes = struct.unpack("<Q", size_buf)[0]
+        if metadata_base + region_size > total_bytes:
+            raise MetadataError("super is too small for metadata geometry")
+        copy_base = metadata_base + slot * max_size * 2
+        copy_errors = []
+        for offset in (copy_base, copy_base + max_size):
+            try:
+                parsed = _parse_metadata_copy(fd, offset, max_size)
+                return Metadata(slot_count, parsed.block_devices, parsed.partitions, parsed.extents)
+            except MetadataError as exc:
+                copy_errors.append(str(exc))
+        raise MetadataError("no valid primary/backup metadata copy: " + "; ".join(copy_errors))
+    finally:
+        os.close(fd)
+
+
+def choose_vendor(metadata: Metadata, slot_suffix: str | None = None) -> Partition:
+    candidates = [p for p in metadata.partitions if p.name == "vendor" or p.name in ("vendor_a", "vendor_b")]
+    if not candidates:
+        raise MetadataError("metadata has no enabled vendor logical partition")
+    exact = [p for p in candidates if p.name == "vendor"]
+    if exact:
+        if len(candidates) != 1:
+            raise MetadataError("metadata has both vendor and slot-specific vendor partitions")
+        return exact[0]
+    if slot_suffix not in ("_a", "_b"):
+        raise MetadataError("vendor is A/B-suffixed but androidboot.slot_suffix is unavailable")
+    wanted = "vendor" + slot_suffix
+    selected = [p for p in candidates if p.name == wanted]
+    if len(selected) != 1:
+        raise MetadataError(f"metadata has no unique {wanted} partition")
+    return selected[0]
+
+
+def build_dm_table(metadata: Metadata, partition: Partition, device_path: str) -> str:
+    dev = metadata.block_devices[0]
+    try:
+        actual = os.stat(device_path)
+    except OSError as exc:
+        raise MetadataError(f"cannot stat {device_path}: {exc}") from exc
+    if stat.S_ISBLK(actual.st_mode):
+        import fcntl
+
+        fd = os.open(device_path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+        try:
+            size_buf = bytearray(8)
+            fcntl.ioctl(fd, 0x80081272, size_buf, True)
+            actual_size = struct.unpack("<Q", size_buf)[0]
+        finally:
+            os.close(fd)
+    else:
+        actual_size = actual.st_size
+    if actual_size != dev.size_bytes:
+        raise MetadataError(
+            f"super device size disagrees with LP metadata ({actual_size} != {dev.size_bytes} bytes)"
+        )
+
+    lines = []
+    logical_sector = 0
+    for extent in metadata.extents[partition.first_extent : partition.first_extent + partition.extent_count]:
+        if extent.target_type == 0:
+            target = f"linear {device_path} {extent.target_data}"
+        else:
+            target = "zero"
+        lines.append(f"{logical_sector} {extent.sectors} {target}")
+        logical_sector += extent.sectors
+    if not lines or logical_sector == 0:
+        raise MetadataError("vendor has no mappable extents")
+    return "\n".join(lines)
+
+
+def resolve_slot_suffix(cmdline_path: str = "/proc/cmdline") -> str | None:
+    try:
+        with open(cmdline_path, "rt", encoding="ascii") as stream:
+            cmdline = stream.read()
+    except OSError:
+        return None
+    values = re.findall(r"(?:^|\s)androidboot\.slot_suffix=(_[ab])(?:\s|$)", cmdline)
+    return values[-1] if values else None
+
+
+def _create_readonly_mapping(map_name: str, table: str) -> None:
+    subprocess.run(["dmsetup", "--readonly", "create", map_name, "--table", table], check=True)
+    try:
+        # Make systemd's /dev/mapper alias available before vendor.mount runs.
+        subprocess.run(["udevadm", "settle", "--timeout=10"], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ro = subprocess.run(["blockdev", "--getro", f"/dev/mapper/{map_name}"],
+                            check=True, text=True, stdout=subprocess.PIPE)
+        if ro.stdout.strip() != "1":
+            raise MetadataError("kernel did not expose the new vendor mapping as read-only")
+    except Exception:
+        # A failed /dev/mapper alias or RO check must not strand a name that
+        # blocks the next idempotent service start.
+        subprocess.run(["dmsetup", "remove", map_name], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        raise
+
+
+def map_vendor(device: str, map_name: str, dry_run: bool = False) -> str:
+    if map_name != "vendor" and not re.fullmatch(r"vendor-test-[A-Za-z0-9_-]{1,30}", map_name):
+        raise MetadataError("mapper name must be vendor (production) or vendor-test-* (tests)")
+    if not dry_run:
+        deadline = time.monotonic() + 15
+        while not os.path.exists(device) and time.monotonic() < deadline:
+            time.sleep(0.25)
+    device_stat = os.stat(device)
+    if not dry_run and not stat.S_ISBLK(device_stat.st_mode):
+        raise MetadataError("production super source must be a block device")
+    real_device = os.path.realpath(device)
+    if not dry_run and (os.path.basename(os.path.dirname(device)) != "by-partlabel" or os.path.basename(device) != "super"):
+        raise MetadataError("production super source must be /dev/disk/by-partlabel/super")
+    metadata = read_metadata(device, slot=0)
+    partition = choose_vendor(metadata, resolve_slot_suffix())
+    table = build_dm_table(metadata, partition, real_device)
+    if dry_run:
+        return table
+
+    existing = subprocess.run(["dmsetup", "info", "-c", "--noheadings", "-o", "name", map_name],
+                              check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if existing.returncode == 0 and existing.stdout.strip():
+        raise MetadataError(f"device-mapper name {map_name!r} already exists; refusing to replace it")
+    if existing.returncode not in (0, 1):
+        raise MetadataError("dmsetup info failed: " + existing.stderr.strip())
+    _create_readonly_mapping(map_name, table)
+    return table
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--device", default="/dev/disk/by-partlabel/super",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--name", default="vendor", help=argparse.SUPPRESS)
+    parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+    try:
+        table = map_vendor(args.device, args.name, args.dry_run)
+    except (MetadataError, OSError, subprocess.CalledProcessError) as exc:
+        print(f"gts9wifi-android-parts: {exc}", file=sys.stderr)
+        return 1
+    if args.dry_run:
+        print(table)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

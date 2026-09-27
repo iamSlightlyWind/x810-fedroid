@@ -27,7 +27,7 @@ class PortUpdateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.rpm = self.root / "x810-fedora-port-0.1.0-1000000.42.fc44.noarch.rpm"
+        self.rpm = self.root / "x810-fedora-port-0.1.0-1000000.42.fc44.aarch64.rpm"
         self.rpm.write_bytes(b"test rpm payload\n")
         self.info = self.root / "port-build.json"
         writer.write_build_info(self.info, version="0.1.0", run_id=9001, run_number=42,
@@ -38,7 +38,7 @@ class PortUpdateTests(unittest.TestCase):
 
     def query_rpm(self, command, *, text):
         self.assertEqual(command[:4], ["rpm", "-qp", "--qf", "%{NAME}\n%{VERSION}\n%{RELEASE}\n%{ARCH}"])
-        return "x810-fedora-port\n0.1.0\n1000000.42.fc44\nnoarch"
+        return "x810-fedora-port\n0.1.0\n1000000.42.fc44\naarch64"
 
     def test_emits_app_compatible_single_package_release_bundle(self):
         output = self.root / "x810-fedora-port.zip"
@@ -59,17 +59,17 @@ class PortUpdateTests(unittest.TestCase):
 
     def test_rejects_rpm_nevra_that_cannot_upgrade_per_build(self):
         with patch.object(bundle.subprocess, "check_output", return_value=
-                          "x810-fedora-port\n0.1.0\n1.fc44\nnoarch"):
+                          "x810-fedora-port\n0.1.0\n1.fc44\naarch64"):
             with self.assertRaisesRegex(ValueError, "does not uniquely increase"):
                 bundle.create_bundle(self.rpm, self.info, self.root / "bad.zip")
 
     def test_rejects_wrong_rpm_target_or_port_version(self):
         with patch.object(bundle.subprocess, "check_output", return_value=
-                          "x810-fedora-port\n0.1.1\n1000000.42.fc44\nnoarch"):
+                          "x810-fedora-port\n0.1.1\n1000000.42.fc44\naarch64"):
             with self.assertRaisesRegex(ValueError, "does not match"):
                 bundle.create_bundle(self.rpm, self.info, self.root / "bad.zip")
         with patch.object(bundle.subprocess, "check_output", return_value=
-                          "x810-fedora-port\n0.1.0\n1000000.42.fc44\naarch64"):
+                          "x810-fedora-port\n0.1.0\n1000000.42.fc44\nnoarch"):
             with self.assertRaisesRegex(ValueError, "does not match"):
                 bundle.create_bundle(self.rpm, self.info, self.root / "bad.zip")
 

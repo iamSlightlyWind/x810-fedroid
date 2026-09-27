@@ -1,0 +1,10 @@
+{
+  "distro": "Fedora 44",
+  "name": "libcamera",
+  "version": "0.7.1",
+  "release": "1.fc44",
+  "srpm_url": "https://kojipkgs.fedoraproject.org/compose/updates/Fedora-44-updates-20260926.0/compose/Everything/source/tree/Packages/l/libcamera-0.7.1-1.fc44.src.rpm",
+  "srpm_sha256": "7511fb0023f92f994a07e38f3bb2f9ca4b5d87fa3cdff2a01e1e3f6b9edfbbd6",
+  "source_tarball": "libcamera-v0.7.1.tar.bz2",
+  "fedora_patch": "0001-disable-rpi-pisp.patch"
+}

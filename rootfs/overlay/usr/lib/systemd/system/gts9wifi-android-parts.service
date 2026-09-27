@@ -1,0 +1,17 @@
+[Unit]
+Description=Create the read-only Android vendor logical-partition mapping
+DefaultDependencies=no
+After=systemd-udev-trigger.service
+Before=vendor.mount
+Conflicts=umount.target
+Before=umount.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/gts9wifi-android-parts
+ExecStop=/usr/bin/dmsetup remove vendor
+TimeoutStartSec=25s
+
+[Install]
+WantedBy=multi-user.target

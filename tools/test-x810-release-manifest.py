@@ -132,7 +132,7 @@ class ReleaseManifestTest(unittest.TestCase):
             root = Path(temp)
             kernel, rootfs = self.make_component_dirs(root)
             old = rootfs / "port.rpm"
-            rpm = rootfs / "x810-fedora-port-1.2.3-1000000.1.fc44.noarch.rpm"
+            rpm = rootfs / "x810-fedora-port-1.2.3-1000000.1.fc44.aarch64.rpm"
             old.rename(rpm)
             names = ["rootfs.tar.gz", rpm.name, "ROOTFS-BUILD-KEY.txt", "rootfs-manifest.txt"]
             (rootfs / "SHA256SUMS").write_text(checksum(rootfs, names), encoding="ascii")
@@ -161,7 +161,7 @@ class ReleaseManifestTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             kernel, rootfs = self.make_component_dirs(root)
-            support_rpm = rootfs / "x810-fedora-port-1.2.3-1000000.5.fc44.noarch.rpm"
+            support_rpm = rootfs / "x810-fedora-port-1.2.3-1000000.5.fc44.aarch64.rpm"
             (rootfs / "port.rpm").rename(support_rpm)
             rootfs_names = ["rootfs.tar.gz", support_rpm.name, "ROOTFS-BUILD-KEY.txt", "rootfs-manifest.txt"]
             (rootfs / "SHA256SUMS").write_text(checksum(rootfs, rootfs_names), encoding="ascii")

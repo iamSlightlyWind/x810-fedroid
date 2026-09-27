@@ -99,19 +99,17 @@ is not seen at all.
 | Exposed | accelerometer, rotation vector, ambient light, compass |
 
 The sensors live behind the ADSP's sensor core, not on an AP I2C bus. The port
-runs `hexagonrpcd` (sdsp, adsp-rootpd, adsp-sensorspd) and a patched
-`iio-sensor-proxy`; ambient light and compass are served over D-Bus, and screen
-auto-rotate works.
+includes `hexagonrpcd` and a patched `iio-sensor-proxy`, but the latest remote
+read-only inspection did not find SSC QRTR service 400; `ssccli` reported that
+the service was absent. Accelerometer-based auto-rotation and ALS/compass are
+therefore **not currently available** on the installed system. The unresolved
+live state is tracked in [Known Issues #25](Known-Issues.md#25-ssc-qmi-service-absent-tablet-rotation-unavailable).
 
-- libssc cannot reconnect a stale QMI client, so `hexagonrpcd-adsp-sensorspd`
-  and `iio-sensor-proxy` are restarted by a system-sleep hook on every wake.
-  Without it, sensors are dead for the rest of the session after the first
-  suspend.
-- systemd 259 never reads `/etc/systemd/system-sleep/`; the hook must live in
-  `/usr/lib/systemd/system-sleep/` or it is silently inert.
-- The restart conflicts with `suspend.target`. A queued but unexecuted job
-  leaves the unit reading `inactive`, so waiting on `ActiveState` returns
-  immediately and restarts happen too early — wait on `systemctl list-jobs`.
+The updated source prepares the X810 sensor-registry tree before the
+sensor-PD attaches and orders ADSP startup behind panel cold-boot recovery.
+This is a source-side recovery path, not yet a verified clean-boot or
+suspend/resume fix. Do not manually restart the ADSP or sensorspd: a failed
+sensor-PD attach can reset the shared ADSP and interrupt audio.
 
 Sensor rotation is not observable from the sensor values; orientation is
 verified by eye, and the mapping does not necessarily match the vendor's
@@ -445,35 +443,44 @@ Testing notes:
 | Trustlet | signed `dualfp`, loaded through `qcomtee` |
 | Coprocessor | SPSS/SPU stack (six ported modules) |
 
-Status: the Linux half and the whole secure processor are up — the sensor's
-3.3 V rail is published, the trustlet loads and verifies, and the SPU boots
-with its Android userspace peers (`sec_nvm`, `spdaemon`). The session stops at
-the TEE's `KEYMASTER_NOT_CONFIGURED`; what remains is the secure owner that
-configures `sp_keymaster` and restores HwVault credential 11, plus panel
-`cell_id`/HBM handling and a libfprint backend.
+Status: **experimental; fingerprint authentication is not available on X810.**
+The tracked Linux pieces include the EL721 `/dev/esfp0` companion, K250A
+`/dev/k250a` driver, and SPSS/QTEE transport sources. The observed secure-session
+failure is `KEYMASTER_NOT_CONFIGURED` (cache status `9936`); neither that error
+nor loaded modules prove that the secure biometric path is ready. There is no
+X810 `libfprint` backend or supported enrollment/verification path in this
+repository, and the GNOME/PAM integration has not been validated for this port.
 
-GNOME's unlock plumbing is already complete — Settings enrolment, GDM via PAM,
-gnome-shell lock screen — and only needs libfprint to see a reader. On any
-fingerprint port, check that split early: the desktop side is often finished
-while the backend is missing entirely.
+The panel part is not wholly missing in source: the ANA38407 panel driver
+(`kernel/files/panel-samsung-ana38407.c`) implements a read-only `cell_id`
+attribute and bounded `fod_mode` HBM controls (with watchdog cleanup and
+brightness restoration). This source implementation is not evidence that the
+currently installed kernel exposes or successfully exercises those controls;
+runtime validation remains separate.
 
-Notes for working in the secure world:
+The `gts9wifi-fingerprint-secure` helper expects a native owner that starts a
+boot-lifetime secure session and performs Keymaster/HwVault initialization.
+That is a security-sensitive credential operation, not a routine workaround
+for `9936`; do not invoke it or port the credential-restore path as a diagnostic
+step. The only appropriate next investigation before any such operation is
+read-only: establish which kernel/package is running, inspect the panel's
+published sysfs attributes and existing logs, and audit the secure-owner source
+and required per-device inputs. Keep the sensor powered down and do not enroll,
+delete, import, or restore credentials during that audit.
 
-- Probe the trustlet read-only first, with a known-resident control; a passing
-  read-only probe proves the TEE path before anything is risked.
-- The TA lookup needs three parameters, not two — the reference documentation
-  was wrong, and two parameters silently failed.
-- Large payloads need OBJREF and a big-enough pool; a too-small shared pool
-  fails in a way that does not point at the pool size.
-- A coprocessor that connects once must boot after its peers. The SPU only
-  boots once its NVM daemon and userspace peers are up; ordering, not driver
-  code, was the blocker.
-- Do privileged transitions in the object that owns the lifetime.
-- Distinguish factory data from a derived cache: some "missing" partitions can
-  be regenerated; others are per-unit calibration that must be preserved.
-- The modules load at boot through `modules-load.d`; they need no
-  device-tree node. (Earlier builds loaded nothing and needed a manual
-  `modprobe` of each.)
+Notes:
+
+- `rootfs/overlay/usr/lib/modules-load.d/gts9wifi-fingerprint.conf` currently
+  autoloads the sensor and secure-element modules only; it does not establish
+  that the SPU, TEE session, or biometric backend is ready.
+- The similar X910 Ubuntu port has a substantially more complete EL721 stack,
+  but its owner documents a persistent, boot-only secure DMA owner and
+  per-device firmware/calibration inputs. That is useful architectural
+  reference, not a safe drop-in fix for this X810 `KEYMASTER_NOT_CONFIGURED`
+  failure. See its
+  [fingerprint-reader notes](https://github.com/agcarbajo/ubuntu-galaxy-tab-s9-ultra/blob/main/docs/fingerprint-reader.md).
+- Do not touch secure credentials, TEE provisioning, or the SPU's live owner
+  as part of routine Linux port diagnostics.
 
 ---
 

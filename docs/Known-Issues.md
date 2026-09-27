@@ -18,9 +18,9 @@ reused, and a retired number is simply absent rather than reassigned
 | 9 | Discord/Roblox unreachable (DPI) | fixed — kernel rebuilt with `nfqueue` |
 | 10 | Front camera did not probe | fixed — wrong I2C address in the DTS |
 | 11 | libcamera had no sensor helper, so max gain | fixed — helper added, AGC runs |
-| 13 | Charging bypass on 25 W+ chargers | planned — needs a `gnome-control-center` patch |
+| 13 | Charging bypass on 25 W+ chargers | open — Linux driver/API support and verified hardware semantics are missing; not a GNOME-only patch |
 | 14 | Double tap to turn on the screen | fixed — with a GNOME extension UI |
-| 15 | Under-display fingerprint sensor (EgisTec EL721) | in progress — blocked at the TEE's `KEYMASTER_NOT_CONFIGURED` |
+| 15 | Under-display fingerprint sensor (EgisTec EL721) | open — current kernel lacks the reader modules; secure-world provisioning is separately blocked |
 | 16 | Hardware video decode (iris / VPU 3.0) | works with owner-supplied X810 CYG1 firmware; GitHub builds omit the proprietary PAS image; application support is partial |
 | 17 | Speaker volume capped (~−19 dB) | fixed — Cirrus speaker-protection DSP firmware now loads |
 | 18 | `/`, `/etc`, `/usr` owned by the image build user | fixed — this had silently disabled *every* `tmpfiles.d` entry |
@@ -29,7 +29,9 @@ reused, and a retired number is simply absent rather than reassigned
 | 21 | PipeWire speaker streams fail to link | fixed in the live configuration; reproducible system-wide WirePlumber fix now ships in the overlay and support RPM; pending clean-install validation |
 | 22 | GNOME camera clients cannot open `root:video` camera nodes | fixed in installer and support-RPM upgrade path; fresh-login/device validation pending |
 | 23 | No 120 Hz display mode | fixed — user confirmed 120 Hz works on-device; 60 Hz remains the default |
-| 24 | ADSP/sensor services auto-start despite the documented safety policy | new images and support-RPM upgrades now explicitly disable the risky ADSP start path; monitor boot/wake after update |
+| 24 | ADSP/sensorspd start ordering around panel coldboot recovery | fixed in source: the sensor-proxy unit requests `sensorspd` only after required panel recovery; live package update / clean-boot validation pending |
+| 25 | SSC QMI service absent; tablet rotation unavailable | open — live registry tree is normalized and `sensorspd` is active, but QRTR service 400 is absent; root cause remains below libssc/iio-sensor-proxy |
+| 26 | No GNOME power-profile/governor switcher | implemented in source with TuneD's PPD API on CPUFreq; update/install validation pending |
 
 Haptics are also enabled in the kernel source (stock-active-high GPIO18 plus
 `gpio-vibra`), but still need a kernel update and on-device ff-rumble check.
@@ -43,8 +45,9 @@ Also outstanding, not in the numbered register:
 - file capabilities are lost when the rootfs is packed (see below);
 - the VPU encoder node `/dev/video18` is untested;
 - early-boot timestamps read 1970 — the RTC has no valid time before NTP;
-- `gts9wifi-adsp-boot.service` ships disabled: starting the ADSP late can hang
-  or reset the SoC, and it needs root-causing;
+- ADSP/sensorspd must not be started outside the panel-ordered sensor-proxy
+  path. A failed SSC attach can still reset the shared ADSP, so do not start
+  the ADSP units manually or race them against panel recovery;
 - the patched userspace is built from source at image build time rather than
   shipped from a Fedora repository — `hexagonrpcd` (two patches),
   `iio-sensor-proxy` with libssc, and `libssc`/`pd-mapper` (not in Fedora at
@@ -61,44 +64,90 @@ Also outstanding, not in the numbered register:
 
 ## Open issues in detail
 
+### 26 — GNOME power profiles on Qualcomm CPUFreq
+
+The running X810 kernel exposes `schedutil`, `ondemand`, `userspace` and
+`performance` governors, but the image did not include either TuneD or
+`power-profiles-daemon`, so GNOME had no power-profile service to talk to. The
+source update now installs Fedora's `tuned-ppd` compatibility daemon and
+enables it for new images and support-package upgrades. Its default balanced
+profile remains selected; GNOME's power menu can request the standard
+power-saver or performance profiles. The device has no ACPI platform-profile
+interface, so the effective controls are CPUFreq-level only. Performance mode
+can increase power draw and heat; the physical UI/profile behavior still needs
+validation on the tablet after the update.
+
+### 24 — ADSP/sensorspd start ordering around panel coldboot recovery
+
+The sensor-proxy unit now explicitly requests `hexagonrpcd-adsp-sensorspd`
+using `Wants=` after required panel recovery; `After=` alone does not start a
+disabled unit. The sensorspd drop-in then requests the ADSP boot helper, FastRPC
+node readiness and writable HexagonFS tree in order. This keeps direct
+standalone autostart disabled while giving the sensor-proxy recovery path a
+deterministic dependency chain.
+
+The source and support RPM are updated, but the current tablet still has the
+older installed unit until the support update is applied. Do not manually start
+either ADSP unit or race it against panel recovery.
+
+### 25 — SSC QMI service absent; tablet rotation unavailable
+
+The reproducible startup chain prepares the tree before attaching `hexagonrpcd`
+to `sensorspd`: normalize sensor-tree timestamps to epoch zero, make the
+port-owned HexagonFS tree `fastrpc:fastrpc` writable, then wait for the SSC
+endpoint before starting the desktop proxy. The tree now has the cached JSON
+mtimes and ownership expected by Samsung's registry code.
+
+On the remote tablet, the cache and registry were normalized and the
+`fastrpc`-owned daemon is active, but `qrtr-lookup 400` remains empty and
+`ssccli` reports that SSC QMI service is not found. QRTR service 66 / sensor-PD
+service registration is visible, so the remaining failure is below
+`iio-sensor-proxy` and is not explained by package ordering alone. The tablet
+was not rebooted and its ADSP firmware was not replaced. The next validation is
+a clean, correctly ordered boot with an on-device recovery path available;
+avoid remoteproc/ADSP restarts while the tablet is unattended because that can
+interrupt audio.
+
 ### 13 — Charging bypass on 25 W+ chargers
 
 Running the tablet from the adapter instead of the battery pack, with a toggle
 in *GNOME Settings → Power*.
 
-The hardware and stock support are confirmed: `battery,ovp_bypass_mode` plus two
-register writes, and the kernel already has a `Bypass` charge type. What is
-missing is purely userspace — **neither UPower 1.91.4 nor GNOME 50.4 exposes a
-bypass control**, so this needs a small patch to `specs/gnome-control-center`.
-The correct place for such a control is the standard `charge_types` sysfs API
-rather than a device-private knob.
+This is not currently a GNOME-only issue. Although the power-supply core
+defines a generic `Bypass` charge type, the X810 SM5714 and SM5440 drivers do
+not expose `charge_type`/`charge_types` or a bypass register-control path in
+the current source. The cited `battery,ovp_bypass_mode` DT property has not
+been demonstrated to be a usable Linux control on this device. UPower 1.91.4
+uses charge types internally for its charge-threshold implementation, but
+does not expose a generic arbitrary charge-type setter; GNOME Control Center
+uses the threshold API instead. A real toggle therefore needs hardware/driver
+capability verified first, then a kernel ABI, a UPower API and a GNOME UI —
+not just a small control-center patch. Do not write charger registers or
+advertise bypass until the electrical and thermal semantics are established.
 
 ### 15 — Under-display fingerprint sensor (EgisTec EL721)
 
-The Linux half and the whole secure processor are up on the tablet:
+The current remote Fedora boot is **not exposing a fingerprint reader**:
+read-only inspection found no `/dev/esfp0` or `/dev/k250a`, no `egis_el721` or
+`snvm` module files under its `/lib/modules/7.2.0-gts9wifi`, and only the
+`qcomtee` module loaded. The `modules-load.d` file requests the reader modules,
+but cannot load modules absent from this installed kernel. The panel does expose
+`cell_id`, `fod_mode` and `fod_ready` attributes, which does not establish that
+the biometric stack works. Earlier sessions reported TEE status
+`KEYMASTER_NOT_CONFIGURED` / cache `9936`; that cannot be revalidated until a
+kernel containing the reader drivers is installed.
 
-- the ported EL721 driver, exposing `/dev/esfp0` with the 3.3 V rail published
-  and `gpio155` driven;
-- the K250A secure element (`snvm`) live as `/dev/k250a`;
-- the signed `dualfp` trustlet loading through `qcomtee`;
-- the SPSS/SPU stack (six ported modules) booting the SPU with its Android
-  userspace peers — `SP Apps were loaded successfully`, `SP Build v73.6`,
-  remoteproc `running`.
-
-The session still stops at the TEE's `KEYMASTER_NOT_CONFIGURED` (cache status
-`9936`). What remains is the secure owner that configures `sp_keymaster` and
-restores HwVault credential 11, then the panel `cell_id` / HBM handling and a
-libfprint backend.
-
-**GNOME's unlock path is already present** — Settings enrolment, GDM via PAM
-and the lock screen via gnome-shell — and only needs libfprint to see a reader.
+There is no supported X810 `libfprint` backend or validated GNOME/GDM/PAM
+enrollment path in this repository. Do not invoke secure-owner/Keymaster
+provisioning or touch credentials as a diagnostic step; first restore the
+missing kernel modules and re-evaluate the reader with read-only probes.
 
 Notes:
 
-- The modules load at boot through `modules-load.d/gts9wifi-fingerprint.conf`,
-  so `/dev/esfp0` and `/dev/k250a` exist on a plain boot. They need no
-  device-tree node — the live FDT has none. (Earlier builds loaded nothing and
-  needed a manual `modprobe` of each.)
+- The intended module list is in
+  `modules-load.d/gts9wifi-fingerprint.conf`, but the currently installed
+  kernel is missing those module files; the list alone does not create the
+  device nodes. Recheck after a kernel build/install.
 - Judge the trustlet read-only before porting anything, with a known-resident
   control, and beware that the TA lookup needs **three** parameters, not the two
   the reference documentation suggests.

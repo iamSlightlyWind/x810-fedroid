@@ -129,7 +129,8 @@ source_inputs_sha256() {
         {
             sha256sum rootfs/build-rootfs.sh rootfs/stage-public-firmware.sh \
                 tools/bdftool.py tools/stamp-port-metadata.py \
-                tools/build-port-support-rpm.sh tools/test-port-build-contract.py \
+                tools/build-port-support-rpm.sh tools/build-libcamera-hi1337-ipa.sh \
+                tools/test-port-build-contract.py \
                 tools/verify-x810-rootfs-archive.py
             find rootfs/overlay specs -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
         } | LC_ALL=C sort -k2
@@ -182,10 +183,9 @@ if find "$rootfs" -mindepth 1 -print -quit | grep -q .; then
 fi
 # Prevent a prior versioned local build from leaking its RPM into an
 # unversioned/debug build's release assets.
-old_port_rpms=("$outdir"/x810-fedora-port-*.noarch.rpm)
-if [ -e "${old_port_rpms[0]:-}" ]; then
-    rm -f "${old_port_rpms[@]}"
-fi
+find "$outdir" -maxdepth 1 -type f \
+    \( -name 'x810-fedora-port-*.noarch.rpm' \
+       -o -name 'x810-fedora-port-*.aarch64.rpm' \) -delete
 
 echo ">>> Installing rootfs packages"
 # --use-host-config supplies the container's Fedora RPM trust keys.  The
@@ -203,7 +203,7 @@ dnf -y --installroot="$rootfs" --releasever="$fedora_release" \
     libqmi libqrtr-glib protobuf-c libmbim \
     systemd-pam \
     atheros-firmware qcom-firmware \
-    e2fsprogs kmod
+    e2fsprogs kmod device-mapper
 
 if [ "$desktop" = "gnome" ]; then
     echo ">>> Installing the GNOME Workstation environment"
@@ -250,9 +250,9 @@ if [ "$desktop" = "gnome" ]; then
         --setopt=tsflags=nodocs \
         install libcamera libcamera-ipa libcamera-tools \
         pipewire-plugin-libcamera v4l-utils
-    # Fedora GNOME exposes power profiles through the PPD D-Bus API. TuneD's
-    # compatibility daemon maps those profiles onto this device's CPUFreq
-    # governors without pretending to provide ACPI platform-profile support.
+    # Fedora 44's GNOME power-profile UI talks to the PPD D-Bus API. On this
+    # Qualcomm CPUFreq device, TuneD's compatibility daemon supplies that API
+    # and maps profiles to the available schedutil/performance governors.
     dnf -y --installroot="$rootfs" --use-host-config "${dnf_repo_args[@]}" \
         --setopt=tsflags=nodocs install tuned-ppd
 fi
@@ -260,9 +260,12 @@ fi
 echo ">>> Installing native build dependencies (build container only)"
 # systemd: the base container image ships without it, but systemctl --root=
 # below needs the binary.
-dnf -y -q "${dnf_repo_args[@]}" install systemd meson ninja-build gcc git curl tar patch make \
+dnf -y -q "${dnf_repo_args[@]}" install systemd meson ninja-build gcc gcc-c++ git curl tar patch make \
+    rpm-build cpio openssl openssl-devel libyaml-devel libevent-devel \
+    libjpeg-turbo-devel libtiff-devel gnutls-devel python3-jinja2 \
+    python3-ply python3-pyyaml \
     "pkgconf-pkg-config" \
-    glib2-devel libgudev-devel systemd-devel polkit-devel kmod \
+    glib2-devel libgudev-devel libudev-devel systemd-devel polkit-devel kmod \
     libqmi-devel protobuf-c-devel qrtr-devel xz-devel \
     python3-devel python3-protobuf
 
@@ -378,6 +381,13 @@ fi
 echo ">>> Injecting local assets"
 if [ -f "$firmware_tar" ]; then
     tar xzf "$firmware_tar" -C "$rootfs"
+    sensor_tree="$rootfs/usr/share/qcom/sm8550/Samsung/gts9wifi"
+    if [ -d "$sensor_tree/sensors" ]; then
+        # The registry's cached JSON mtimes are epoch zero. Preserve this
+        # invariant across tar sources, then repeat it on-device after TWRP
+        # extracts the rootfs archive.
+        find "$sensor_tree" -exec touch -h -d @0 {} +
+    fi
 else
     missing_assets+=("firmware.tar.gz (Wi-Fi/BT/ADSP/audio blobs: run rootfs/fetch-local-assets.sh)")
 fi
@@ -572,29 +582,29 @@ for unit in \
     gts9wifi-grow-rootfs \
     gts9wifi-usb-net gts9wifi-wifi-recover gts9wifi-sensor-registry-perms \
     gts9wifi-x11-dir-fix.path gts9wifi-chronyd \
+    gts9wifi-android-parts.service vendor.mount \
     tuned.service tuned-ppd.service \
     mnt-vendor-persist.mount vendor-dsp.mount vendor-firmware_mnt.mount
 do
     systemctl --root="$rootfs" enable "$unit" >/dev/null 2>&1 \
         || echo "    WARN: unit not found (check name after hexagonrpcd patch): $unit"
 done
-# Enforce the known-safe default even if a package preset or earlier image
-# enabled these links. Do not mask them: they remain available for manual,
-# one-at-a-time diagnostics once ADSP startup is understood.
+# Keep ADSP and sensorspd out of standalone enablement even if a package
+# preset or earlier image enabled them. The sensor-proxy recovery unit starts
+# them on demand after panel coldboot recovery and after the FastRPC node and
+# writable HexagonFS sensor cache have been prepared.
 systemctl --root="$rootfs" disable gts9wifi-adsp-boot.service \
     hexagonrpcd-adsp-sensorspd.service >/dev/null 2>&1 || true
-# Deliberately NOT enabled, matching hard-won pmOS experience:
-# - hexagonrpcd-adsp-sensorspd: pulls in gts9wifi-adsp-boot via the hexagonfs
-#   drop-in's Requires=; the ADSP start can hang or reset the SoC, and doing
-#   it while panel-coldboot-recover runs its pm_test suspend froze the board
-#   completely.  Start it manually and watch.
-# - gts9wifi-adsp-boot.service: same, ships disabled in the pmOS port.
+# Do not add either ADSP unit to the enable list above: the wait-sensor-proxy
+# unit is the sole, panel-ordered path that requests sensorspd and its ADSP
+# dependency.
 # - gts9wifi-bt-revive.service: started by hand when the WCN sequencer
 #   takes hci0 down.
 # The preset in overlay/usr/lib/systemd/system-preset/85-gts9wifi.preset
 # keeps first-boot preset-all from stripping the enablement above.
-# TODO(phase-1.5): vendor make-dynpart-mappings and enable
-# gts9wifi-android-parts.service + vendor.mount (super -> erofs /vendor).
+# The port's small Android LP metadata reader creates only a read-only DM
+# mapping for the unique X810 `vendor` partition. It fails closed if metadata
+# is invalid or an A/B vendor choice cannot be proven from the boot cmdline.
 
 echo ">>> Cleaning"
 rm -rf "$rootfs/var/cache/libdnf5" "$rootfs/var/cache/dnf" \
@@ -613,9 +623,8 @@ echo "    Tab Companion port version: $stamped_version"
 
 support_rpm=""
 if [ "$port_version" != "unknown" ]; then
-    echo ">>> Building and installing the port-owned noarch support RPM"
+    echo ">>> Building and installing the port-owned aarch64 support RPM"
     # Build dependencies live only in the build container, never in the image.
-    dnf -y -q "${dnf_repo_args[@]}" install rpm-build
     support_rpm="$(bash "$repo_dir/tools/build-port-support-rpm.sh" \
         "$rootfs" "$port_version" "$outdir")"
     dnf -y --installroot="$rootfs" --use-host-config "${dnf_repo_args[@]}" \

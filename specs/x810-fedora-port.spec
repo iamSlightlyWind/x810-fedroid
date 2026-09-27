@@ -2,19 +2,23 @@ Name:           x810-fedora-port
 Version:        %{port_version}
 Release:        %{port_release}%{?dist}
 Summary:        Fedora device support for Samsung Galaxy Tab S9+ Wi-Fi
-License:        MIT
-BuildArch:      noarch
+License:        MIT AND LGPL-2.1-or-later AND BSD-2-Clause
+BuildArch:      aarch64
 Requires:       systemd
+Requires:       python3
+Requires:       device-mapper
+Requires:       libcamera-ipa%{?_isa} = 0.7.1-1.fc44
 Requires:       tuned-ppd
 
 Source0:        port-overlay.tar.gz
 Source1:        port-overlay.filelist
+Source2:        port-license.txt
 
 %description
-Port-owned, architecture-independent Fedora device integration for the
-Samsung Galaxy Tab S9+ Wi-Fi (SM-X810). This package contains the rootfs
-overlay and Tab Companion port identity only; it deliberately excludes the
-kernel, boot images, firmware payloads, and base Fedora packages.
+Port-owned Fedora device integration for the Samsung Galaxy Tab S9+ Wi-Fi
+(SM-X810), including the X810 HI1337 libcamera software-IPA helper. The helper
+is built for Fedora 44 aarch64 against the exact Fedora libcamera 0.7.1 build.
+This package deliberately excludes the kernel, boot images, and firmware.
 
 %prep
 %setup -q -c -T
@@ -24,6 +28,7 @@ kernel, boot images, firmware payloads, and base Fedora packages.
 %install
 mkdir -p %{buildroot}
 tar -xzf %{SOURCE0} -C %{buildroot}
+install -D -m0644 %{SOURCE2} %{buildroot}%{_licensedir}/%{name}/LICENSE
 
 %posttrans
 if command -v getent >/dev/null 2>&1 && command -v usermod >/dev/null 2>&1; then
@@ -55,14 +60,29 @@ if command -v systemctl >/dev/null 2>&1; then
         fi
     fi
     systemctl daemon-reload >/dev/null 2>&1 || :
-    # GNOME's power-profile UI uses the PPD API provided by tuned-ppd.
+    # The Android super mapping and vendor mount are read-only. Enable and
+    # start them after installing the support update; a missing/unsupported
+    # LP layout is fail-closed and must not make the RPM transaction fail.
+    systemctl enable gts9wifi-android-parts.service vendor.mount \
+        >/dev/null 2>&1 || :
+    systemctl start gts9wifi-android-parts.service vendor.mount \
+        >/dev/null 2>&1 || :
+    # Install the GNOME power-profile API on Fedora 44 using TuneD's PPD
+    # compatibility daemon. The balanced profile remains the default; users
+    # can select power-saver/performance from GNOME's normal power menu.
     systemctl enable tuned.service tuned-ppd.service >/dev/null 2>&1 || :
     systemctl start tuned-ppd.service >/dev/null 2>&1 || :
-    # This port's ADSP boot path is intentionally manual: it has previously
-    # hung/reset the tablet, especially when raced with panel coldboot resume.
-    # Update the preset and remove old autostart links on existing installs.
+    # Keep ADSP and sensorspd out of standalone preset enablement. The
+    # sensor-proxy recovery unit requests them only after panel coldboot
+    # recovery, with FastRPC node ownership and HexagonFS cache permissions
+    # prepared first.
+    systemctl enable gts9wifi-sensor-registry-perms.service \
+        >/dev/null 2>&1 || :
     systemctl disable --quiet gts9wifi-adsp-boot.service \
         hexagonrpcd-adsp-sensorspd.service >/dev/null 2>&1 || :
+    # Do not rerun the registry normalizer in a live transaction: it adjusts
+    # firmware-tree mtimes/ownership and could race an active sensorspd. The
+    # enabled boot unit prepares that tree before the next sensorspd attach.
 fi
 if command -v udevadm >/dev/null 2>&1; then
     udevadm control --reload >/dev/null 2>&1 || :
@@ -84,3 +104,6 @@ fi
 
 %files -f %{SOURCE1}
 %defattr(-,root,root,-)
+%license %{_licensedir}/%{name}/LICENSE
+%license %{_licensedir}/%{name}/libcamera/LGPL-2.1-or-later.txt
+%license %{_licensedir}/%{name}/libcamera/BSD-2-Clause.txt

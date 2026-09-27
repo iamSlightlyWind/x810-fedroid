@@ -90,7 +90,9 @@ jobs:
   build_port_update:
     needs: publication_identity
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    # The support RPM contains a Fedora 44/aarch64 libcamera IPA. Build it on
+    # a native arm64 runner rather than packaging a foreign-architecture .so.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
     env:
       FEDORA_VERSION: "44"
@@ -109,6 +111,7 @@ jobs:
         run: |
           set -euo pipefail
           bash -n tools/build-port-support-rpm.sh
+          bash -n tools/build-libcamera-hi1337-ipa.sh
           python3 tools/test-port-metadata.py
           python3 tools/test-port-update-bundle.py
 
@@ -117,8 +120,8 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/x810-dnf-port-cache
-          # Bump toolchain-v1 if the Fedora package install list below changes.
-          key: x810-dnf-port-${{ runner.arch }}-fedora44-toolchain-v1
+          # Bump toolchain-v2 if the Fedora package install list below changes.
+          key: x810-dnf-port-${{ runner.arch }}-fedora44-toolchain-v2
 
       - name: Stage the versioned overlay and this build identity
         run: |
@@ -135,7 +138,7 @@ jobs:
             _ci/rootfs/usr/share/tab-companion/port-build.json \
             "$port_version" "$BUILD_RUN_ID" "$BUILD_RUN_NUMBER" "$BUILD_COMMIT" "$BUILD_BRANCH"
 
-      - name: Build the noarch Fedora support RPM
+      - name: Build the aarch64 Fedora support RPM and HI1337 IPA
         id: build_port_rpm
         run: |
           set -euo pipefail
@@ -149,7 +152,11 @@ jobs:
                 --setopt=cachedir=/x810-dnf-cache \
                 --setopt=system_cachedir=/x810-dnf-cache \
                 --setopt=keepcache=True \
-                install rpm-build tar findutils python3 coreutils
+                install rpm-build tar findutils python3 coreutils cpio patch curl \
+                gcc-c++ meson ninja-build openssl openssl-devel libyaml-devel \
+                libevent-devel libjpeg-turbo-devel libtiff-devel gnutls-devel \
+                glib2-devel libudev-devel pkgconf-pkg-config systemd-devel \
+                python3-jinja2 python3-ply python3-pyyaml
               bash tools/build-port-support-rpm.sh \
                 _ci/rootfs "$PORT_VERSION" _ci/out \
                 "1000000.${BUILD_RUN_NUMBER}" \
@@ -177,7 +184,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/x810-dnf-port-cache
-          key: x810-dnf-port-${{ runner.arch }}-fedora44-toolchain-v1
+          key: x810-dnf-port-${{ runner.arch }}-fedora44-toolchain-v2
 
       - name: Install RPM inspection tool for the bundle manifest
         run: |
@@ -187,7 +194,7 @@ jobs:
       - name: Create updater manifest and ZIP
         run: |
           set -euo pipefail
-          mapfile -t rpms < <(find _ci/out -maxdepth 1 -type f -name 'x810-fedora-port-*.noarch.rpm' -print)
+          mapfile -t rpms < <(find _ci/out -maxdepth 1 -type f -name 'x810-fedora-port-*.aarch64.rpm' -print)
           [[ ${#rpms[@]} -eq 1 ]]
           python3 tools/make-port-update-bundle.py \
             --rpm "${rpms[0]}" \
@@ -734,6 +741,12 @@ jobs:
       - name: Check X810 ADSP startup ordering
         run: python3 tools/test-x810-adsp-panel-order.py
 
+      - name: Check X810 Android logical-partition mapper
+        run: python3 tools/test-x810-android-dynparts.py
+
+      - name: Check X810 GNOME camera app packaging
+        run: python3 tools/test-x810-camera-app.py
+
       - name: Verify planned rootfs fingerprint
         env:
           FEDORA_RELEASE: "44"
@@ -952,7 +965,7 @@ jobs:
                          or (name.startswith("linux-x810-") and name.endswith(".rpm"))
                          or (name.startswith("x810-fedora-44-") and name.endswith("-rootfs.tar.gz"))
                          or (name.startswith("x810-fedora-sm-x810-") and name.endswith("-clean-install.tar.gz"))
-                         or (name.startswith("x810-fedora-port-") and name.endswith(".noarch.rpm")))
+                         or (name.startswith("x810-fedora-port-") and name.endswith(".aarch64.rpm")))
           if stale:
               raise SystemExit("REFUSING to prune: aggregate still has obsolete standalone assets: " + ", ".join(stale))
           if missing:

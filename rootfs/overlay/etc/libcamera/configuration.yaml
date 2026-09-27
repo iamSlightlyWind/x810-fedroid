@@ -1,0 +1,7 @@
+%YAML 1.1
+---
+version: 1
+configuration:
+  ipa:
+    module_paths:
+      - /usr/lib64/libcamera/ipa-x810

@@ -58,7 +58,7 @@ def create_bundle(rpm_path, build_info_path, output_path):
     if len(fields) != 4:
         raise ValueError("rpm returned incomplete support package metadata")
     package_name, package_version, package_release, arch = fields
-    if package_name != "x810-fedora-port" or package_version != version or arch != "noarch":
+    if package_name != "x810-fedora-port" or package_version != version or arch != "aarch64":
         raise ValueError("support RPM name, version, or architecture does not match port metadata")
     if not re.fullmatch(rf"1000000\.{run_number}(?:\.[A-Za-z0-9._+~-]+)?", package_release):
         raise ValueError("support RPM release does not uniquely increase for this Actions run")

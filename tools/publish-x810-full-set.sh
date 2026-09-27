@@ -70,10 +70,10 @@ port_package_arch="$(manifest_value port_package_arch)" || {
 port_package_asset="$(manifest_value port_package_asset)" || {
   echo "REFUSING: rootfs manifest is missing package metadata." >&2; exit 1;
 }
-if [ "$port_package_name" != x810-fedora-port ] || [ "$port_package_arch" != noarch ] || \
+if [ "$port_package_name" != x810-fedora-port ] || [ "$port_package_arch" != aarch64 ] || \
    [[ "$port_package_version" != "$PORT_VERSION"-* ]] || \
-   [[ ! "$port_package_asset" =~ ^x810-fedora-port-[A-Za-z0-9._+-]+\.noarch\.rpm$ ]]; then
-  echo "REFUSING: rootfs manifest has invalid noarch x810-fedora-port metadata." >&2
+   [[ ! "$port_package_asset" =~ ^x810-fedora-port-[A-Za-z0-9._+-]+\.aarch64\.rpm$ ]]; then
+  echo "REFUSING: rootfs manifest has invalid aarch64 x810-fedora-port metadata." >&2
   exit 1
 fi
 shopt -s nullglob
@@ -161,9 +161,9 @@ try:
             raise ValueError("updater package metadata is malformed")
         if (record.get("package_name") != "x810-fedora-port"
                 or not str(record.get("package_version", "")).startswith(version + "-")
-                or not str(record.get("name", "")).endswith(".noarch.rpm")
+                or not str(record.get("name", "")).endswith(".aarch64.rpm")
                 or record.get("target") != {"os_id": "fedora", "os_version": "44", "arch": "aarch64", "device": "SM-X810"}):
-            raise ValueError("updater package target/version is not the expected Fedora 44 X810 noarch RPM")
+            raise ValueError("updater package target/version is not the expected Fedora 44 X810 aarch64 RPM")
         payload = archive.read(record["name"])
         if len(payload) != record.get("size") or hashlib.sha256(payload).hexdigest() != record.get("sha256"):
             raise ValueError("support RPM inside updater ZIP failed its size/SHA-256 check")

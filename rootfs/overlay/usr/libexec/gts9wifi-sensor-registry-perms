@@ -1,10 +1,25 @@
 #!/bin/sh
-# Samsung's stock persist partition ships the SSC sensor registry with
-# root-only permissions; hexagonrpcd runs as the fastrpc user and its
-# registry sync dies on every write (Permission denied) - the SSC never
-# finishes discovery and sensors stay dead.  Open the registry tree up
-# after the persist partition mounts.
+# Samsung's ADSP registry service caches the mtimes of every sensors/config
+# JSON in sensors/registry/sns_reg_config. The firmware payload records those
+# mtimes as epoch zero. TWRP's extraction can replace them with its current
+# clock, so the firmware decides the cache is stale and attempts a full rebuild
+# during FastRPC attach. Keep the served HexagonFS tree reproducible and
+# writable before sensorspd attaches, matching the validated X910 port.
 set -eu
-REG=/mnt/vendor/persist/sensors
-[ -d "$REG" ] || exit 0
-chmod -R a+rwX "$REG"
+TREE=/usr/share/qcom/sm8550/Samsung/gts9wifi
+
+[ -d "$TREE/sensors" ] || {
+	echo "gts9wifi-sensor-registry-perms: missing $TREE/sensors" >&2
+	exit 1
+}
+getent group fastrpc >/dev/null
+
+# Use GNU coreutils on the running Fedora system rather than relying on
+# recovery's unzip implementation to preserve dates. Firmware modifies the
+# registry cache with the fastrpc service account, so it owns the served tree.
+find "$TREE" -exec touch -h -d @0 {} +
+chown -R fastrpc:fastrpc "$TREE"
+
+if [ ! -e "$TREE/sensors/registry/sensors_registry" ]; then
+	echo "gts9wifi-sensor-registry-perms: registry marker missing; DSP may rebuild it" >&2
+fi

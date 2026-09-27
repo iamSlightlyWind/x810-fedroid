@@ -98,7 +98,7 @@ def check(rootfs, manifest_path, version, rpm_path=None):
     package_version = rpm_query(package_path, "%{VERSION}-%{RELEASE}")
     package_arch = rpm_query(package_path, "%{ARCH}")
     package_name = rpm_query(package_path, "%{NAME}")
-    if package_name != PACKAGE_NAME or package_arch != "noarch" or not package_version.startswith(version + "-"):
+    if package_name != PACKAGE_NAME or package_arch != "aarch64" or not package_version.startswith(version + "-"):
         fail("support RPM name/version/architecture does not match release")
     package_fields = {
         "port_package_name": package_name,
@@ -119,6 +119,15 @@ def check(rootfs, manifest_path, version, rpm_path=None):
     files = subprocess.check_output(["rpm", "-qpl", str(package_path)], text=True).splitlines()
     if PORT_FILE not in files:
         fail("support RPM does not own port.json")
+    for required_camera_file in (
+        "/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so",
+        "/etc/libcamera/configuration.yaml",
+        "/etc/environment.d/90-x810-libcamera.conf",
+    ):
+        if required_camera_file not in files:
+            fail(f"support RPM does not own its HI1337 libcamera integration: {required_camera_file}")
+    if "/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so.sign" in files:
+        fail("support RPM must not ship a signature that does not match Fedora's embedded IPA key")
     for vendor_config in ("/etc/locale.conf", "/etc/machine-info"):
         if vendor_config in files:
             fail(f"support RPM must not claim Fedora systemd config: {vendor_config}")

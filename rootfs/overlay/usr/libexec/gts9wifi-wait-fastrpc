@@ -1,0 +1,19 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Qualcomm remoteproc may return before udev has assigned the FastRPC device.
+set -eu
+i=0
+while [ "$i" -lt 60 ] && [ ! -e /dev/fastrpc-adsp ]; do
+	sleep 1
+	i=$((i + 1))
+done
+[ -e /dev/fastrpc-adsp ] || {
+	echo "gts9wifi-wait-fastrpc: /dev/fastrpc-adsp did not appear" >&2
+	exit 1
+}
+/usr/bin/udevadm settle --timeout=10
+owner_group=$(/usr/bin/stat -c '%U:%G' /dev/fastrpc-adsp)
+[ "$owner_group" = "fastrpc:fastrpc" ] || {
+	echo "gts9wifi-wait-fastrpc: unexpected node owner $owner_group" >&2
+	exit 1
+}

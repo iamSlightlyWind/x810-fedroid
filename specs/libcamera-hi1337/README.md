@@ -4,6 +4,13 @@ Patch adding a libcamera `CameraSensorHelper` for the SK Hynix HI-1337 as
 found on the Galaxy Tab S9 Wi-Fi (`gts9wifi`), where the port registers the
 sensor as **`hi1337-gts9u`**.
 
+## Scope
+
+This helper affects AGC and black-level correction only after the HI1337
+camera has been enumerated and libcamera has selected the simple software IPA.
+It does not fix sensor enumeration, portal/preview connection failures, or
+camera permissions.
+
 ## Why
 
 libcamera's software ISP refuses to create a sensor helper for an unknown
@@ -30,26 +37,32 @@ processed image is correctly coloured.
 | Gain model | `AnalogueGainLinear{ 1, 16, 0, 16 }` | Register `0x0213` holds codes 0..240 encoding `gain = 1 + code / 16`, i.e. 1×..16× — the same scheme libcamera already uses for the Hynix HM-1246 |
 | Black level | `4096` | Pedestal 64 at 10 bits, scaled to 16-bit as `blackLevel_` requires (same convention as the IMX219 entry) |
 
-## Applying
+## Building and deploying
 
-Built against Fedora's libcamera 0.7.1 source (`dnf download --source
-libcamera`), so the rebuild matches the distro ABI:
+The Fedora 44 support build compiles this helper against the exact pinned
+Fedora 44 libcamera source package and installs it in the separate
+`/usr/lib64/libcamera/ipa-x810/` directory. It does **not** replace Fedora's
+`/usr/lib64/libcamera/ipa/ipa_soft_simple.so`, so normal Fedora updates can
+continue replacing the vendor module safely.
 
-```sh
-# after extracting the libcamera source
-patch -p1 < add-hi1337-gts9u-camera-sensor-helper.patch
+For a local developer build, use the repo's native Fedora 44/aarch64 build
+container and run `tools/build-libcamera-hi1337-ipa.sh STAGING_ROOT`. The
+script fetches and checksum-verifies Fedora's pinned source RPM, applies the
+Fedora and X810 patches, builds the matching soft IPA, and stages the plugin
+plus its applicable license notices. It intentionally omits the locally
+produced `.sign`: Fedora's stock IPA is signed, while an untrusted custom IPA
+is loaded by libcamera in its isolated `soft_ipa_proxy` worker rather than
+being treated as an in-process signed module.
 
-meson setup build --buildtype=release \
-    -Dtest=false -Ddocumentation=disabled -Dpycamera=disabled -Dqcam=disabled \
-    -Dgstreamer=disabled -Dlc-compliance=disabled -Dpipelines=simple -Dv4l2=enabled
-ninja -C build -j3 src/ipa/simple/ipa_soft_simple.so
-sudo cp build/src/ipa/simple/ipa_soft_simple.so /usr/lib64/libcamera/ipa/
-```
+The port ships `/etc/libcamera/configuration.yaml` to prefer the X810 module
+path and an environment setting for applications that honor
+`LIBCAMERA_IPA_MODULE_PATH`. Existing desktop sessions may need a fresh login
+to pick up the environment setting. Do not copy the custom plugin over
+Fedora's system IPA file.
 
-Only the soft-ISP IPA module needs replacing. It is the one module Fedora
-ships **without** a `.sign` file (it runs as an in-process thread worker
-rather than an isolated process), so no re-signing is needed — unlike
-`ipa_rkisp1`/`ipa_rpi_vc4`/`ipa_mali_c55`.
+The RPM and pinned source make the *inputs and target ABI* repeatable, but the
+builder image and Fedora toolchain package set are not yet digest-locked, so
+this is not a claim of bit-for-bit reproducibility.
 
 ## Verified
 

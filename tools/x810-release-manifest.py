@@ -145,7 +145,7 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
                 rewritten.append(f"{digest}  {filename}")
             checksums[checksum_name] = "\n".join(rewritten) + "\n"
 
-    # The noarch support RPM is already inside the Tab Companion updater ZIP.
+    # The aarch64 support RPM is already inside the Tab Companion updater ZIP.
     # Drop its redundant standalone checksum entry from the aggregate metadata;
     # the rootfs archive and manifest remain checksummed and reusable.
     root_checksums = components["rootfs"]["checksums"]
@@ -158,7 +158,9 @@ def create(args: argparse.Namespace) -> dict[str, Any]:
         if not match:
             raise ValueError("invalid rootfs SHA256SUMS line while filtering standalone support RPM")
         name = match.group(2)
-        if name.startswith("x810-fedora-port-") and name.endswith(".noarch.rpm") and name not in assets_by_name:
+        if (name.startswith("x810-fedora-port-")
+                and name.endswith((".noarch.rpm", ".aarch64.rpm"))
+                and name not in assets_by_name):
             continue
         root_lines.append(line)
     root_checksums["SHA256SUMS"] = "\n".join(root_lines) + "\n"

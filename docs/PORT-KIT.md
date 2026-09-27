@@ -98,8 +98,9 @@ TCPM roles, PCIe0 pipe mux, sec-log console, split-GPU-KMS). DTS:
 
 - **hexagonrpcd 0.4.0** pinned with 2 custom patches: `hexagonrpc-large-inbufs.patch`,
   `support-samsung-sensor-registry-writes.patch` (+ Alpine's systemd-services patch).
-  Fedora's `hexagonrpc` package does **not** carry these → build in COPR. Enabled units:
-  `hexagonrpcd-sdsp`, `hexagonrpcd-adsp-rootpd`, `hexagonrpcd-adsp-sensorspd`.
+  Fedora's `hexagonrpc` package does **not** carry these → build in COPR.
+  `hexagonrpcd-adsp-sensorspd` is dependency-started by the sensor-proxy recovery
+  unit after panel recovery, not standalone-enabled.
 - **iio-sensor-proxy 3.9** built **with libssc** + `notify-slow-sensor-discovery.patch`
   (verify Fedora's build has libssc; else COPR).
 - **pd-mapper** (in Fedora), qrtr/tqftpserv infra (Fedora), rmtfs not used here
@@ -124,7 +125,8 @@ TCPM roles, PCIe0 pipe mux, sec-log console, split-GPU-KMS). DTS:
   every resume (libssc can't reconnect a stale QMI client)
 - `bt-revive`: rebind hci_uart_qca holding BT_EN (tlmm gpio 204) via gpio cdev
 - `bookcover-input`: fixes Samsung Book Cover Keyboard HID descriptor (python evdev)
-- `adsp-boot`: late ADSP start — **disabled by default** (can hang/reset the SoC)
+- `adsp-boot`: on-demand ADSP start requested by the sensor-proxy recovery unit,
+  which is ordered after panel coldboot recovery; it is not standalone-enabled.
 - udev: sensor mount-matrix, devfreq perms, Logitech Lightspeed
 - systemd conf drops: journal caps, fbdev, display hold, lid, SDDM, VM tuning
 

@@ -1,7 +1,5 @@
 [Unit]
-Description=Make the Samsung sensor registry writable for hexagonrpcd
-Requires=mnt-vendor-persist.mount
-After=mnt-vendor-persist.mount
+Description=Normalize and prepare the Samsung HexagonFS sensor tree for hexagonrpcd
 Before=hexagonrpcd-adsp-sensorspd.service
 
 [Service]

@@ -133,7 +133,7 @@ class InstallerTests(unittest.TestCase):
         # Tab Companion port-update feed or a package that installs Fedora.
         release = {"tag_name": "test", "assets": [{"name": name} for name in (
             "manifest.json",
-            "x810-fedora-port-1.2.3-1.noarch.rpm", "rootfs.tar.gz",
+            "x810-fedora-port-1.2.3-1.aarch64.rpm", "rootfs.tar.gz",
         )]}
         update, install = installer.release_checks(release)
         self.assertEqual(update.state, "INFO")

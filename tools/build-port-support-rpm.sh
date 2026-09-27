@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build the updater-installable Fedora support RPM from the X810 rootfs overlay.
-# The image's kernel, boot chain, firmware, and Fedora base packages are excluded.
+# Build the updater-installable Fedora support RPM from the X810 rootfs overlay
+# and its hash-pinned, Fedora 44 aarch64 HI1337 libcamera IPA.
+# The kernel, boot chain, and firmware remain excluded.
 set -euo pipefail
 
 if [ "$#" -lt 3 ] || [ "$#" -gt 5 ]; then
@@ -31,8 +32,8 @@ if { [ "$#" -eq 5 ] || [ -e "$build_info" ]; } && { [ ! -f "$build_info" ] || [ 
 	echo "build-port-support-rpm: build-info must be a regular, non-symlink file" >&2
 	exit 2
 fi
-if ! command -v rpmbuild >/dev/null || ! command -v rpm >/dev/null; then
-	echo "build-port-support-rpm: rpmbuild and rpm are required (install rpm-build)" >&2
+if ! command -v rpmbuild >/dev/null || ! command -v rpm >/dev/null || ! command -v readelf >/dev/null; then
+	echo "build-port-support-rpm: rpmbuild, rpm, and readelf are required (install rpm-build and binutils)" >&2
 	exit 2
 fi
 
@@ -101,19 +102,34 @@ install -Dm0644 "$rootfs/usr/share/tab-companion/port.json" \
 if [ -f "$build_info" ]; then
 	install -Dm0644 "$build_info" "$stage/usr/share/tab-companion/port-build.json"
 fi
+# The custom software IPA must be a native aarch64 module, not mislabeled as
+# noarch. It lives beside (not over) Fedora's RPM-owned module, and the global
+# libcamera configuration selects it first. The generated private build
+# signature is deliberately not staged: Fedora's libcamera will isolate this
+# port-specific module through its stock soft_ipa_proxy.
+bash "$repo_dir/tools/build-libcamera-hi1337-ipa.sh" "$stage"
+plugin="$stage/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so"
+plugin_machine="$(readelf -h "$plugin" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
+if [ "$plugin_machine" != AArch64 ]; then
+	echo "build-port-support-rpm: libcamera IPA is not an aarch64 binary ($plugin_machine)" >&2
+	exit 1
+fi
 tar -C "$stage" -czf "$top/SOURCES/port-overlay.tar.gz" .
-(cd "$stage" && find . \( -type f -o -type l \) -printf '/%P\n' | LC_ALL=C sort) \
+(cd "$stage" && find . \( -type f -o -type l \) -printf '/%P\n' \
+	| grep -v '^/usr/share/licenses/x810-fedora-port/' | LC_ALL=C sort) \
 	> "$top/SOURCES/port-overlay.filelist"
+install -m0644 "$repo_dir/LICENSE" "$top/SOURCES/port-license.txt"
+install -Dm0644 "$repo_dir/LICENSE" "$stage/usr/share/licenses/x810-fedora-port/LICENSE"
 cp "$repo_dir/specs/x810-fedora-port.spec" "$top/SPECS/"
 
 rpmbuild --define "_topdir $top" --define "port_version $version" \
 	--define "port_release $rpm_release" \
 	-bb "$top/SPECS/x810-fedora-port.spec" >&2
 
-mapfile -t built < <(find "$top/RPMS/noarch" -maxdepth 1 -type f \
-	-name 'x810-fedora-port-*.noarch.rpm' -print)
+mapfile -t built < <(find "$top/RPMS/aarch64" -maxdepth 1 -type f \
+	-name 'x810-fedora-port-*.aarch64.rpm' -print)
 if [ "${#built[@]}" -ne 1 ]; then
-	echo "build-port-support-rpm: expected exactly one noarch RPM" >&2
+	echo "build-port-support-rpm: expected exactly one aarch64 RPM" >&2
 	exit 1
 fi
 rpm_path="${built[0]}"
@@ -121,7 +137,7 @@ rpm_name="$(rpm -qp --qf '%{NAME}' "$rpm_path")"
 rpm_version="$(rpm -qp --qf '%{VERSION}' "$rpm_path")"
 rpm_release="$(rpm -qp --qf '%{RELEASE}' "$rpm_path")"
 rpm_arch="$(rpm -qp --qf '%{ARCH}' "$rpm_path")"
-if [ "$rpm_name" != x810-fedora-port ] || [ "$rpm_version" != "$version" ] || [ "$rpm_arch" != noarch ]; then
+if [ "$rpm_name" != x810-fedora-port ] || [ "$rpm_version" != "$version" ] || [ "$rpm_arch" != aarch64 ]; then
 	echo "build-port-support-rpm: built RPM metadata does not match the release" >&2
 	exit 1
 fi
@@ -133,6 +149,19 @@ comm -23 "$top/SOURCES/port-overlay.filelist" "$work/package-files" > "$work/mis
 if [ -s "$work/missing-files" ]; then
 	echo "build-port-support-rpm: RPM omits expected overlay files:" >&2
 	cat "$work/missing-files" >&2
+	exit 1
+fi
+if ! grep -Fxq '/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so' "$work/package-files" || \
+   ! grep -Fxq '/etc/libcamera/configuration.yaml' "$work/package-files" || \
+   ! grep -Fxq '/etc/environment.d/90-x810-libcamera.conf' "$work/package-files" || \
+   ! grep -Fxq '/usr/share/licenses/x810-fedora-port/LICENSE' "$work/package-files" || \
+   ! grep -Fxq '/usr/share/licenses/x810-fedora-port/libcamera/LGPL-2.1-or-later.txt' "$work/package-files" || \
+   ! grep -Fxq '/usr/share/licenses/x810-fedora-port/libcamera/BSD-2-Clause.txt' "$work/package-files"; then
+	echo "build-port-support-rpm: package omits the X810 libcamera helper/configuration" >&2
+	exit 1
+fi
+if grep -Fxq '/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so.sign' "$work/package-files"; then
+	echo "build-port-support-rpm: refusing to ship an IPA signature that does not match Fedora's key" >&2
 	exit 1
 fi
 if grep -Eq '^/(boot|boot/|lib/modules/|usr/lib/modules/|usr/lib/firmware/|lib/firmware/)' "$work/package-files"; then

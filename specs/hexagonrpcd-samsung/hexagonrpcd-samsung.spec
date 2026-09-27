@@ -4,7 +4,7 @@
 Name:       hexagonrpcd-samsung
 Version:    0.4.0
 Release:    1%{?dist}
-Summary:    Qualcomm HexagonFS daemon with Samsung sensor registry mapping
+Summary:    Qualcomm HexagonFS daemon with Samsung sensor registry support
 License:    GPL-3.0-or-later
 URL:        https://github.com/linux-msm/hexagonrpc
 Source0:    https://github.com/linux-msm/hexagonrpc/archive/refs/tags/v%{version}.tar.gz
@@ -20,9 +20,9 @@ BuildRequires: meson, ninja-build, gcc, pkgconf-pkg-config, systemd-devel
 
 %description
 Userspace FastRPC + HexagonFS daemon talking to the Qualcomm ADSP/SDSP
-remoteprocs.  Carries two patches the Galaxy Tab S9 port requires: larger
-FastRPC input buffers, and mapping Samsung's sensor registry writes onto the
-stock persist partition.
+remoteprocs. Carries the FastRPC buffer/extended-method support and Samsung
+sensor-registry read/write handling required by this device. The mapped files
+are served from the port-owned HexagonFS tree, not the Android persist mount.
 
 %prep
 %autosetup -n hexagonrpc-%{version} -p1
