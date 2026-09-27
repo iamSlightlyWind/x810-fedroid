@@ -50,6 +50,14 @@ if command -v getent >/dev/null 2>&1 && command -v usermod >/dev/null 2>&1; then
     fi
 fi
 if command -v systemctl >/dev/null 2>&1; then
+    # Earlier X810 images carried this exact system-level mask, which hides
+    # Fedora's vendor.mount unit even though the read-only Android LP mapping
+    # now supplies /dev/mapper/vendor. Remove only the known /dev/null mask;
+    # preserve any other local unit override.
+    vendor_mount_mask=/etc/systemd/system/vendor.mount
+    if [ -L "$vendor_mount_mask" ] && [ "$(readlink "$vendor_mount_mask")" = /dev/null ]; then
+        rm -f "$vendor_mount_mask"
+    fi
     # Remove only the exact old port-created 20s override. It cut off
     # gts9wifi-wait-sensor-proxy while the required ADSP boot (25s) was still
     # starting. The service no longer blocks GDM, so it can use its packaged

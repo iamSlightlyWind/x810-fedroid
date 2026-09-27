@@ -120,6 +120,35 @@ class SupportRpmStagingTests(unittest.TestCase):
             builder,
         )
 
+    def test_rpm_update_removes_only_legacy_vendor_mount_mask(self):
+        spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
+        match = re.search(
+            r'(?ms)^    vendor_mount_mask=/etc/systemd/system/vendor\.mount\n'
+            r'    if .*?^    fi$',
+            spec,
+        )
+        self.assertIsNotNone(match)
+        with tempfile.TemporaryDirectory(prefix="x810-vendor-mask-") as temp:
+            root = Path(temp)
+            unit = root / "vendor.mount"
+            snippet = match.group(0).replace(
+                "/etc/systemd/system/vendor.mount", str(unit)
+            )
+
+            unit.symlink_to("/dev/null")
+            subprocess.run(["bash", "-euc", snippet], check=True)
+            self.assertFalse(unit.is_symlink())
+
+            unit.write_text("local override\n", encoding="utf-8")
+            subprocess.run(["bash", "-euc", snippet], check=True)
+            self.assertEqual(unit.read_text(encoding="utf-8"), "local override\n")
+            unit.unlink()
+
+            unit.symlink_to("/tmp/vendor.mount")
+            subprocess.run(["bash", "-euc", snippet], check=True)
+            self.assertTrue(unit.is_symlink())
+            self.assertEqual(unit.readlink(), Path("/tmp/vendor.mount"))
+
     def test_gnome_power_profiles_use_tuned_ppd(self):
         builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")
         self.assertIn("install tuned-ppd", builder)
