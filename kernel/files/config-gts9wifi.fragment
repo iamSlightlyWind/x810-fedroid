@@ -292,7 +292,7 @@ CONFIG_NETFILTER_NETLINK_QUEUE=m
 CONFIG_NETFILTER_XT_TARGET_NFQUEUE=m
 CONFIG_NFT_QUEUE=m
 
-# EgisTec EL721 fingerprint sensor (under-display, SM-X710).  Linux only owns
+# EgisTec EL721 fingerprint sensor (under-display, SM-X810).  Linux only owns
 # the sensor rail and its enable line plus Samsung's non-data ioctl ABI on
 # /dev/esfp0; the signed dualfp TrustZone app does capture, matching and
 # templates.  The QTI TEE transport it needs (CONFIG_QCOMTEE) and the blob

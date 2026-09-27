@@ -9,9 +9,9 @@
  * enable/reset line, and implements the non-data portion of Samsung/EgisTec's
  * arm64 ioctl ABI used by the trusted fingerprint service.
  *
- * Ported to the Galaxy Tab S9 Wi-Fi (gts9wifi, SM-X710) from the Ubuntu
+ * Ported to the Galaxy Tab S9+ Wi-Fi (gts9pwifi, SM-X810) from the Ubuntu
  * Galaxy Tab S9 Ultra tree (agcarbajo/ubuntu-galaxy-tab-s9-ultra,
- * kernel/drivers/egis_el721.c).  gts9wifi differences: model X716, the stock
+ * kernel/drivers/egis_el721.c).  X810-specific metadata: model X816, the stock
  * position string, no GPIO-controlled sensor LDO (only the sleep/enable line
  * TLMM 155), and the 3.3 V BTP rail is not fatal while this port's device tree
  * declares no rpmh regulators.
@@ -41,7 +41,7 @@
 
 #define EL721_VENDOR			"EGISTEC"
 #define EL721_DEFAULT_NAME		"EL721"
-#define EL721_DEFAULT_MODEL		"X716"
+#define EL721_DEFAULT_MODEL		"X816"
 #define EL721_DEFAULT_POSITION						\
 	"13.30,0.00,9.10,9.10,14.80,14.80,12.00,12.00,5.00"
 #define EL721_SENSOR_TYPE		8
