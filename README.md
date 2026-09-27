@@ -1,80 +1,71 @@
 # Fedora on Samsung Galaxy Tab S9+ Wi-Fi (SM-X810)
 
-An experimental native Fedora 44 / GNOME port for the Wi-Fi Galaxy Tab S9+
-(`SM-X810`, `gts9pwifi`, Qualcomm SM8550). Fedora boots from the tablet's
-internal UFS using a mainline-based Linux `7.2.0-gts9wifi` kernel. The project
-supports a Fedora/One UI dual-boot layout; it is not an Android replacement
-image and it is **only for the exact SM-X810 Wi-Fi model**. Do not use it on
-the cellular SM-X816, Tab S9 Ultra, or another model.
+This project brings Fedora Workstation 44, GNOME, and a device-specific Linux
+kernel to the Wi-Fi-only Samsung Galaxy Tab S9+ (`SM-X810`, `gts9pwifi`,
+Qualcomm SM8550). Fedora runs from the tablet's internal UFS storage alongside
+One UI; this is **not** an Android replacement image.
 
-The port boots and dual-boot switching has been exercised on the physical
-tablet. The guided fresh-install script has host-side tests, but has **not**
-been validated end-to-end from stock Android on hardware. Read the limitations
-below and [`INSTALL.md`](INSTALL.md) before making partition changes.
+> **Experimental / device-specific.** Use only on the exact **SM-X810**. Do not
+> use these images or instructions on the cellular SM-X816, Tab S9 Ultra, or
+> another device. Partitioning changes and a fresh dual-boot setup erase
+> Android `userdata`. Back up anything important and make sure you can reach
+> Download Mode and TWRP before proceeding.
+
+The tablet has booted both Fedora and Android, and switching between their boot
+sets has been exercised on hardware. The Linux-PC guided installer has host-side
+tests, but the complete stock-Android-to-Fedora install/recovery flow has **not**
+been validated end-to-end on the physical tablet. Read [`INSTALL.md`](INSTALL.md)
+before changing partitions.
 
 ## Hardware compatibility
 
-✅ confirmed working on the tablet · 🟡 partial, limited, or pending a
-validation step · ❌ unavailable · ❓ not tested
+Status key: ✅ confirmed on the tablet · 🟡 partial, limited, or awaiting a
+specific validation · ❌ not working/unavailable · ❓ not tested.
 
-| Component | Status | Current X810 result |
+| Component | Status | X810 status |
 |---|:---:|---|
-| Display | ✅ | 2800×1752 panel; the user confirmed the selectable 120 Hz mode works. 60 Hz remains the default. |
-| Desktop | ✅ | Fedora Workstation GNOME on Wayland/GDM boots and is usable. |
-| GPU | ✅ | Adreno 740 hardware acceleration through Mesa Freedreno (OpenGL) and Turnip (Vulkan); not a software-rendering port. |
-| Touchscreen | 🟡 | Touch and normal screen orientation work; mapping remains about 1 cm off and dragging can be finicky. |
-| S Pen | 🟡 | Pen input and kernel-level palm rejection work; tilt is not implemented. Other dock/BLE features are not fully validated on X810. |
-| EF-DX815 keyboard cover | 🟡 | The keyboard works, but the controller can occasionally stop sending input. Tab Companion includes a targeted controller-reset action; see below. |
+| Display | ✅ | 2800×1752 AMOLED; 120 Hz is selectable and the owner has confirmed it works. 60 Hz remains the default. |
+| Desktop | ✅ | Fedora GNOME on Wayland/GDM boots and is usable. |
+| GPU / rendering | 🟡 | Adreno 740 hardware acceleration works through Mesa Freedreno (OpenGL) and Turnip (Vulkan). A GTK Vulkan setting currently avoids previously reported app artifacts; this is a workaround, not a demonstrated Mesa/driver root-cause fix. |
+| Touchscreen | 🟡 | Touch and normal orientation work; the pointer remains about 1 cm offset and dragging can be finicky. |
+| S Pen | 🟡 | Pen input and kernel-level palm rejection work. Tilt and some dock/Bluetooth features are unimplemented or unverified. |
+| EF-DX815 keyboard cover | 🟡 | Keyboard input works but may stop intermittently. Tab Companion offers a controller reset; it is recovery, not a confirmed permanent fix. |
 | Cover touchpad | ❓ | Not separately qualified. |
-| Wi-Fi | ✅ | WCN6855/ath11k works with the X810 firmware and board-data configuration. The port stays on kernel 7.2.0; later 7.2.1–7.2.6 stable kernels had a Wi-Fi regression. |
-| Bluetooth | ✅ | Controller initializes; the X810 radio firmware/coexistence fix is included. |
-| Built-in speakers | 🟡 | Stereo playback works on the current setup. A system-wide PipeWire/WirePlumber routing fix is in the port and its updater package; clean-install validation is pending. GNOME Settings' left/right output-test buttons have also been reported to freeze, so avoid those tests for now. |
-| Microphones | ❓ | The ALSA/PipeWire capture source is present, but microphone recording has not been qualified. |
-| Front and rear cameras | 🟡 | Sensor and libcamera support are integrated. Account permissions are fixed in the installer and port update; a fresh-login camera capture check is still pending. Rear focus is fixed/manual, not autofocus. |
-| Hardware video decode | 🟡 | Verified with the owner-supplied X810 CYG1 PAS firmware and stateful V4L2 M2M. Public builds omit this proprietary blob; Firefox and VLC do not use this path, and the encoder is untested. |
-| Motion sensors / auto-rotation | ❌ | Sensor support is in progress, but the current system does not receive the required SSC QMI service, so tablet rotation is unavailable. |
-| Battery and charging | 🟡 | Battery/charging support is present and the previous 96% charge cap is fixed. Samsung-equivalent battery aging behavior is not implemented. |
-| USB-C, USB host, docks | 🟡 | USB host, charging/PD and dock support are present; not every accessory/display combination has been validated. |
-| Haptics | 🟡 | Kernel support is prepared in source; physical vibration testing with the matching kernel is pending. |
-| Suspend/resume | 🟡 | Not qualified for dependable daily use; freezes have been reported. Save work and avoid unattended suspend experiments. |
-| Charging bypass | ❌ | No safe, verified Linux control exists yet. |
-| Fingerprint reader | ❌ | The X810 secure-world provisioning/backend is incomplete; fingerprint login is not available. |
+| Wi-Fi | ✅ | WCN6855/ath11k works with X810 firmware and board data. The port is pinned to kernel 7.2.0; later 7.2.1–7.2.6 stable kernels had a Wi-Fi regression. |
+| Bluetooth | ✅ | Controller and X810 radio firmware/coexistence configuration work. |
+| Speakers | 🟡 | Stereo playback has been heard in user tests, and a PipeWire/WirePlumber routing fix is packaged. GNOME's left/right output-test buttons have previously frozen Settings; avoid those tests until retested. |
+| Microphones | ❓ | A capture source is exposed, but microphone recording has not been qualified. |
+| Cameras | 🟡 | Front/rear sensors enumerate and libcamera support is integrated; a normal desktop capture flow still needs validation. Rear focus is fixed/manual, not autofocus. |
+| Hardware video decode | 🟡 | Stateful V4L2 decode was verified with owner-supplied X810 CYG1 firmware. Public releases omit that proprietary firmware; browser/VLC acceleration and encoding are not established. |
+| Motion sensors / auto-rotation | ❌ | Current startup still does not reliably expose the required SSC service. A source-side startup-order fix is committed, but update/clean-boot validation remains; rotation is unavailable on the current system. |
+| Battery / charging | 🟡 | Battery telemetry and charging work; the prior 96% cap is fixed. Not all chargers and charge behaviors have been validated. |
+| USB-C / powered USB hub | 🟡 | The owner reports that hub power passthrough now works. Other host, dock, and display combinations are not all tested. |
+| Haptics | 🟡 | Kernel support is prepared; physical vibration validation with the matching updated kernel is pending. |
+| Suspend / resume | 🟡 | Not qualified for dependable daily use; freezes have been reported. Save work and avoid unattended suspend experiments. |
+| Fingerprint reader | ❌ | Fingerprint login is not available. Source now fixes and checks kernel-module packaging, but the reader stack, secure-world/provisioning, and Linux authentication path have not been validated end-to-end. |
+| Charging bypass | ❌ | No safe, verified Linux control is available. |
 
-This table is a concise user-facing summary, not a substitute for subsystem
-notes. See [`docs/Hardware-Notes.md`](docs/Hardware-Notes.md) for technical
-details and [`docs/Known-Issues.md`](docs/Known-Issues.md) for the active issue
-register and validation caveats.
+These statuses describe what has been observed on this device, not promises for
+other units or every build. See [`docs/Hardware-Notes.md`](docs/Hardware-Notes.md)
+and [`docs/Known-Issues.md`](docs/Known-Issues.md) for caveats and subsystem
+details.
 
 ## Install Fedora
 
-### Before starting
+The supported entry point is the guided installer on a Linux PC. Requirements:
 
-- A Linux PC with Python 3, `adb`, `openssl`, and `sha256sum`.
-- An **unlocked** SM-X810 bootloader, working Android root, and model-compatible
-  TWRP. The tablet must be able to boot Android with USB debugging enabled so
-  the wizard can check it.
-- A complete backup of anything you want to keep. On a fresh dual-boot split,
-  Android `userdata` is resized and formatted; Android apps, settings, and
-  personal files on that partition will be erased. The installer saves GPT
-  metadata and four boot images, **not** a personal-data backup.
-- The vbmeta/TWRP setup required by the TWRP maintainer. This port does not
-  publish a vbmeta image and does not write the recovery partition.
+- Exact SM-X810 with an **unlocked bootloader**, Android root, USB debugging,
+  and a compatible TWRP recovery already available.
+- The TWRP/vbmeta setup specified by the TWRP maintainer. This project does not
+  provide a vbmeta image or install recovery.
+- Linux PC with Python 3, `adb`, `openssl`, and `sha256sum`; install the latter
+  three from your distribution's packages if missing.
+- A backup. A fresh split resizes and formats Android `userdata`, erasing its
+  apps, settings, and files. The installer saves GPT metadata and four boot
+  images to the PC, **not** your personal data.
 
-Install host tools if needed:
-
-```sh
-# Fedora
-sudo dnf install android-tools openssl coreutils
-# Debian / Ubuntu
-sudo apt install adb openssl coreutils
-# Arch
-sudo pacman -S android-tools openssl coreutils
-```
-
-### Guided Linux-PC installation
-
-Clone the repository, connect the tablet, approve the PC's ADB key in Android,
-then run:
+Clone the repo, boot Android, enable USB debugging, approve the PC's ADB key,
+connect the tablet, then run:
 
 ```sh
 git clone https://github.com/iamSlightlyWind/x810-fedroid.git
@@ -82,36 +73,28 @@ cd x810-fedroid
 python3 tools/x810-install
 ```
 
-The wizard downloads the matching rootfs, kernel package and boot images from
-the [latest aggregate release](https://github.com/iamSlightlyWind/x810-fedroid/releases/latest)
-and verifies them against `manifest.json`. It
-checks model/root/recovery state and partition geometry, asks for a Linux
-username, full name, hostname, password and Android/Fedora storage sizes, and
-leaves any unused capacity unpartitioned.
+The wizard checks the model, root/recovery state, and partition geometry; asks
+for a Linux account and storage sizes; downloads the matching release assets;
+and verifies their manifest. It is deliberately staged: it backs up selected
+metadata and boot images, changes only the specified Android/Fedora partition
+entries, then stops for you to reboot into TWRP manually. On a fresh split, you
+must use TWRP's **Wipe → Format Data** when prompted. The installer does not
+reboot the tablet for you. The installer writes Fedora to `linuxroot` and
+updates its four boot images; it does not flash the bootloader, modem, EFS,
+calibration partitions, recovery, or vbmeta.
 
-The flow is deliberately staged: it saves GPT metadata and the current
-`boot`, `init_boot`, `vendor_boot`, and `dtbo` images on the PC, changes only
-the Android `userdata` and Fedora `linuxroot` GPT entries, verifies the write,
-and then **stops without rebooting**. Follow its prompt to enter TWRP manually
-and resume the same install. On a fresh split, use TWRP's **Wipe → Format
-Data** screen when prompted; the installer does not issue that command. It
-then installs Fedora to `linuxroot`, provisions the chosen account and writes
-only those four boot images. Recovery, vbmeta, GPT/PIT beyond the two specified
-entries, bootloader, modem, EFS and calibration partitions are outside its
-write path.
+**Do not bypass a failed identity/geometry check or confirmation.** The exact
+TWRP partition refresh, Android data reinitialization, full rootfs install,
+first boot, and recovery path still need an end-to-end hardware validation.
+Follow the detailed checkpoints and recovery notes in [`INSTALL.md`](INSTALL.md).
 
-This installer is not yet a validated consumer flow: exact TWRP GPT refresh,
-Android data reinitialization, rootfs extraction, first boot and recovery have
-not all been tested together from stock Android on the physical tablet. Do not
-ignore a failed model/geometry check or typed-confirmation warning. Full steps,
-checkpoints, recovery commands and limitations are in [`INSTALL.md`](INSTALL.md).
+## Tab Companion
 
-## First Fedora boot and Tab Companion
-
-After Fedora boots, install the Fedora/X810 Tab Companion package. Get
-`tab-companion-fedora.zip` from the
-[latest Tab Companion release](https://github.com/iamSlightlyWind/tab-companion/releases/latest),
-extract it, and install the included RPM:
+The modified [Tab Companion](https://github.com/iamSlightlyWind/tab-companion)
+is maintained in its own repository; this Fedora port supplies its device
+support and Linux-port updates. The initial Fedora setup does not install the
+separate desktop application. After the first Fedora boot, install its Fedora
+RPM from the latest Tab Companion release:
 
 ```sh
 mkdir -p "$HOME/Downloads/tab-companion"
@@ -122,90 +105,87 @@ unzip -o "$HOME/Downloads/tab-companion/tab-companion-fedora.zip" \
 sudo dnf install "$HOME"/Downloads/tab-companion/package/*.rpm
 ```
 
-If `gh` is not installed, download the same ZIP from the release page in a
-browser, then run the `unzip` and `dnf install` commands. Open **Tab
-Companion** from GNOME's app grid or run `tab-companion`.
+If you do not use GitHub CLI (`gh`), download `tab-companion-fedora.zip` from
+the [release page](https://github.com/iamSlightlyWind/tab-companion/releases)
+in a browser, then run the `unzip` and `dnf install` commands above. Launch
+**Tab Companion** from GNOME's app grid or run `tab-companion`.
 
-- **Dualboot** shows the active system and stages the other saved boot set.
-  It validates the X810 target, image sizes and checksums, and verifies the
-  four partition writes. It does not reboot automatically; after it reports a
-  successful switch, reboot manually when ready. Android's storage usage is
-  unknown in Linux because Android encrypts `userdata`.
-- **Cover keyboard troubleshooting** can collect diagnostic logs and, with
-  authorization, reset the EF-DX815 STM32 controller if its keys stop
-  responding. The current Fedora/X810 app package includes this action; update
-  Tab Companion if it is absent. The reset rebinds only the controller driver;
-  it does not read key values, update firmware, or alter storage.
-  Keyboard/trackpad input pauses briefly during the reset. This is a recovery
-  action, not a fix for the intermittent controller fault.
-- The app also has S Pen, haptics and **Updates** sections; controls for
-  unvalidated hardware should be treated as experimental.
+The app includes:
 
-The Android-side switcher is an optional, separate app. Its source and current
-APK instructions are in the
-[Tab Companion Android-app README](https://github.com/iamSlightlyWind/tab-companion/blob/main/android-app/README.md).
-It requires Magisk root and pre-staged, verified boot sets; it only changes
-the four boot partitions and does not install Fedora, repartition storage, or
-repair TWRP/recovery.
+- **Dualboot:** shows the active system and prepares the other saved boot set.
+  It checks that the images target X810, verifies them and checks partition
+  writes. It does not reboot automatically; reboot manually after a successful
+  switch. Android's encrypted `userdata` usage cannot be measured from Fedora.
+- **Keyboard troubleshooting:** collects diagnostics and can reset the
+  EF-DX815 STM32 controller when input stops. It does not read key values or
+  change firmware/storage; input pauses briefly during reset. This is a
+  recovery action, not a permanent fix for the intermittent issue.
+- **Updates:** separate update checks for Tab Companion and Fedora device
+  support. Hardware controls not listed as confirmed above should be treated as
+  experimental.
 
-## Update an installed system
+An optional Android-side switcher is also maintained in the app repository. It
+requires Android root and pre-staged boot sets; it only switches boot images.
+It does not install Fedora, repartition storage, or repair recovery. See the
+[Android-app instructions](https://github.com/iamSlightlyWind/tab-companion/blob/main/android-app/README.md).
 
-Keep three kinds of updates separate:
+## Updating
 
-1. **Tab Companion app:** open **Updates → Tab Companion → Check → Install
-   update**. This updates the app package from its own repository.
-2. **Fedora/X810 device support:** open **Updates → Fedora on Samsung Galaxy
-   Tab S9+ Wi-Fi** (the Linux-port section), then **Check → Install update**.
-   The port's rolling release contains an `update.zip` with
-   the cumulative support RPM. The app checks the X810 target and package
-   metadata before asking DNF to install it. This applies device-integration
-   and userspace support fixes without replacing the whole Fedora rootfs.
-3. **Kernel/boot set:** these are **not** installed by the in-OS updater.
-   Kernel and boot-image releases must stay matched; the boot images are
-   manually installed through TWRP using the release's instructions. `kernel.rpm`
-   is a Fedora package, not a raw partition image. Do not flash it as an image
-   or mix it with boot images from another release.
+There are three separate update paths:
 
-Ordinary Fedora packages remain managed by DNF. The latest X810 aggregate
-release has `kernel.rpm`, `rootfs.tar.gz`, `update.zip`, `manifest.json`, and
-the four boot-partition images. The manifest binds the files to their source
-commit and build inputs. See
-[`docs/TAB-COMPANION-PORT-RELEASE.md`](docs/TAB-COMPANION-PORT-RELEASE.md) for
-what each artifact contains and how release/update matching works.
+1. **Tab Companion:** in the app, open **Updates → Tab Companion**, check, then
+   install the app update.
+2. **Fedora device support:** open the Linux-port entry in **Updates**, check,
+   then install. The Fedora port release provides a cumulative support RPM in
+   `update.zip`; Tab Companion installs it through DNF. It updates device
+   services/configuration and userspace fixes without replacing the Fedora
+   root filesystem.
+3. **Kernel and boot images:** these are **not** applied by the in-OS updater.
+   Install the matching boot-image set manually through TWRP, following the
+   release instructions. `kernel.rpm` is an RPM package, **not** a raw image to
+   flash. Keep the boot images and kernel release matched; do not mix files
+   across releases.
+
+Regular Fedora software updates continue to use DNF. The port updater is for
+X810-specific support, not a general Fedora upgrade or whole-rootfs migration.
+See [`docs/TAB-COMPANION-PORT-RELEASE.md`](docs/TAB-COMPANION-PORT-RELEASE.md)
+for release contents and update matching.
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [`INSTALL.md`](INSTALL.md) | Full PC/TWRP install flow, preflight checks, checkpoints and recovery |
-| [`docs/Hardware-Notes.md`](docs/Hardware-Notes.md) | Hardware behavior, drivers, measured limitations and diagnostics |
-| [`docs/Known-Issues.md`](docs/Known-Issues.md) | Current issue register and validation state |
-| [`docs/Device-Controls.md`](docs/Device-Controls.md) | GNOME controls and device-control command-line interface |
-| [`docs/x810-research/TAB-COMPANION.md`](docs/x810-research/TAB-COMPANION.md) | X810 dualboot app boundaries, boot sets and recovery |
-| [`docs/x810-research/BOOT-STRATEGY.md`](docs/x810-research/BOOT-STRATEGY.md) | X810 boot chain and partition safety notes |
-| [`docs/x810-research/HARDWARE-X810.md`](docs/x810-research/HARDWARE-X810.md) | Device-specific research notebook |
-| [`docs/TAB-COMPANION-PORT-RELEASE.md`](docs/TAB-COMPANION-PORT-RELEASE.md) | Port updater package and release contents |
+| [`INSTALL.md`](INSTALL.md) | Full Linux-PC/TWRP install, checkpoints, and recovery |
+| [`docs/Hardware-Notes.md`](docs/Hardware-Notes.md) | Hardware behavior, drivers, limitations, and diagnostics |
+| [`docs/Known-Issues.md`](docs/Known-Issues.md) | Open issues and validation status |
+| [`docs/Device-Controls.md`](docs/Device-Controls.md) | GNOME device controls and command-line interface |
+| [`docs/x810-research/BOOT-STRATEGY.md`](docs/x810-research/BOOT-STRATEGY.md) | Boot-chain and partition safety notes |
+| [`docs/x810-research/TAB-COMPANION.md`](docs/x810-research/TAB-COMPANION.md) | Dualboot boundaries, boot sets, and recovery |
+| [`docs/TAB-COMPANION-PORT-RELEASE.md`](docs/TAB-COMPANION-PORT-RELEASE.md) | Linux-port updater and release contents |
 
-## Build and project scope
+## Project and contributions
 
-This repository owns the X810 kernel/device tree, Fedora rootfs, port support
-package, firmware staging and Linux-PC installer. Tab Companion's app and
-update UI are maintained separately in
-[`iamSlightlyWind/tab-companion`](https://github.com/iamSlightlyWind/tab-companion).
-The main [`X810 Fedora build and release`](.github/workflows/x810-fedora.yml)
-workflow builds changed components, assembles one matched release and retains
-only the latest complete aggregate. This automation makes builds easier to
-repeat; it does not substitute for validating a fresh install on hardware.
+This repository contains the X810 kernel/device tree, Fedora rootfs integration,
+support package, firmware staging and Linux-PC installer. The Tab Companion
+application and its Android companion live in the separate repository linked
+above. The X810 GitHub Actions workflow builds changed components, assembles a
+matched release and retains the latest aggregate package; repeatable builds do
+not replace physical-device validation.
 
-The port uses the
-[X710 Fedora port](https://github.com/nacht20-de/gts9wifi-fedora-linux) as
-Linux/Fedora prior art, exact X810 CYG1 Samsung source as a hardware reference,
-and the [X910 Ubuntu Tab S9 Ultra project](https://github.com/agcarbajo/ubuntu-galaxy-tab-s9-ultra)
-as Tab Companion/dual-boot design prior art. X910 partition numbers, images and
-device assumptions are not reused as X810 evidence.
+The project draws on the
+[X710 Fedora port](https://github.com/nacht20-de/gts9wifi-fedora-linux) and the
+[X910 Ubuntu Tab S9 Ultra project](https://github.com/agcarbajo/ubuntu-galaxy-tab-s9-ultra)
+as prior art. Their device-specific images and partition assumptions are not
+used as X810 evidence. Contributions should be reproducible from the
+repository, and hardware claims should distinguish source/build status from
+tests on the physical SM-X810.
 
-## AI assistance
+## Firmware, licensing, and AI assistance
 
-This experimental, unofficial project was developed with AI assistance.
-Review the source and validate hardware claims before use; it is not an
-official Samsung or Fedora release.
+Proprietary Samsung/Qualcomm firmware is not stored in this repository. The
+project is unofficial and is not affiliated with Samsung or Fedora; per-file
+license headers and imported-source notices apply.
+
+AI tools assisted with parts of the research, code, and documentation. AI
+output can be wrong: review changes and verify hardware claims before relying
+on them.
