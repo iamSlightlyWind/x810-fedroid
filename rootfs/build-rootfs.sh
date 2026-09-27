@@ -250,6 +250,11 @@ if [ "$desktop" = "gnome" ]; then
         --setopt=tsflags=nodocs \
         install libcamera libcamera-ipa libcamera-tools \
         pipewire-plugin-libcamera v4l-utils
+    # Fedora GNOME exposes power profiles through the PPD D-Bus API. TuneD's
+    # compatibility daemon maps those profiles onto this device's CPUFreq
+    # governors without pretending to provide ACPI platform-profile support.
+    dnf -y --installroot="$rootfs" --use-host-config "${dnf_repo_args[@]}" \
+        --setopt=tsflags=nodocs install tuned-ppd
 fi
 
 echo ">>> Installing native build dependencies (build container only)"
@@ -566,6 +571,7 @@ for unit in \
     gts9wifi-grow-rootfs \
     gts9wifi-usb-net gts9wifi-wifi-recover gts9wifi-sensor-registry-perms \
     gts9wifi-x11-dir-fix.path gts9wifi-chronyd \
+    tuned.service tuned-ppd.service \
     mnt-vendor-persist.mount vendor-dsp.mount vendor-firmware_mnt.mount
 do
     systemctl --root="$rootfs" enable "$unit" >/dev/null 2>&1 \

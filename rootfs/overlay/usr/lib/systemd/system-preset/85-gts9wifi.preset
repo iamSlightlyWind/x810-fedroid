@@ -25,5 +25,7 @@ enable gts9wifi-chronyd.service
 enable mnt-vendor-persist.mount
 enable vendor-dsp.mount
 enable vendor-firmware_mnt.mount
+enable tuned.service
+enable tuned-ppd.service
 disable gts9wifi-adsp-boot.service
 disable hexagonrpcd-adsp-sensorspd.service

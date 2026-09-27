@@ -57,6 +57,20 @@ class SupportRpmStagingTests(unittest.TestCase):
         self.assertIn("systemctl disable --quiet gts9wifi-adsp-boot.service", spec)
         self.assertIn("hexagonrpcd-adsp-sensorspd.service", spec)
 
+    def test_gnome_power_profiles_use_tuned_ppd(self):
+        builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")
+        self.assertIn("install tuned-ppd", builder)
+        self.assertIn("tuned.service tuned-ppd.service", builder)
+
+        preset = (ROOT / "rootfs/overlay/usr/lib/systemd/system-preset/"
+                  "85-gts9wifi.preset").read_text(encoding="utf-8")
+        self.assertIn("enable tuned.service", preset)
+        self.assertIn("enable tuned-ppd.service", preset)
+
+        spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
+        self.assertIn("Requires:       tuned-ppd", spec)
+        self.assertIn("systemctl start tuned-ppd.service", spec)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

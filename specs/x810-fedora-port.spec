@@ -5,6 +5,7 @@ Summary:        Fedora device support for Samsung Galaxy Tab S9+ Wi-Fi
 License:        MIT
 BuildArch:      noarch
 Requires:       systemd
+Requires:       tuned-ppd
 
 Source0:        port-overlay.tar.gz
 Source1:        port-overlay.filelist
@@ -37,6 +38,9 @@ if command -v getent >/dev/null 2>&1 && command -v usermod >/dev/null 2>&1; then
 fi
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || :
+    # GNOME's power-profile UI uses the PPD API provided by tuned-ppd.
+    systemctl enable tuned.service tuned-ppd.service >/dev/null 2>&1 || :
+    systemctl start tuned-ppd.service >/dev/null 2>&1 || :
     # This port's ADSP boot path is intentionally manual: it has previously
     # hung/reset the tablet, especially when raced with panel coldboot resume.
     # Update the preset and remove old autostart links on existing installs.
