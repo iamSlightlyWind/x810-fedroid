@@ -7,8 +7,10 @@ are shipped together in one cumulative, noarch `x810-fedora-port` RPM. There is
 one package for the current port state, not a separate package per fix. Update
 `PORT_VERSION` only for a deliberate port-version change; every successful run
 on a main push also gets a unique RPM release based on its Actions run number.
-Manual/reset runs reuse the last successful push identity so Tab Companion can
-still resolve the bundle.
+Manual **Build new** runs reuse the last successful push identity so Tab
+Companion can still resolve the bundle. They rebuild all components and, only
+after a complete aggregate succeeds, prune older releases; dependency caches
+are retained.
 
 Pushing a relevant change to `main` runs `.github/workflows/x810-fedora.yml`.
 The workflow:

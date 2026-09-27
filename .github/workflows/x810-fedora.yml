@@ -11,59 +11,12 @@ on:
       - "specs/**"
       - "tools/**"
       - ".github/workflows/x810-fedora.yml"
-  workflow_call:
-    inputs:
-      force_rebuild:
-        required: false
-        type: boolean
-        default: false
-      bootstrap_kernel_tag:
-        required: false
-        type: string
-        default: "kernel-7.2.0-gts9wifi-1"
-      port_version:
-        required: false
-        type: string
-        default: ""
-      desktop:
-        required: false
-        type: string
-        default: "gnome"
-      fedora_base_compose:
-        required: false
-        type: string
-        default: "Fedora-44-20260422.1"
-      fedora_updates_compose:
-        required: false
-        type: string
-        default: "Fedora-44-updates-20260926.0"
   workflow_dispatch:
     inputs:
-      force_rebuild:
-        description: "Build new kernel, rootfs, and combined release even if matching successful builds exist"
+      build_new:
+        description: "Rebuild the kernel, rootfs, and complete release from scratch; after success, delete older releases (dependency caches are kept)"
         type: boolean
         default: false
-      bootstrap_kernel_tag:
-        description: "Legacy kernel release to use only when its source/input fingerprint matches this checkout"
-        type: string
-        default: "kernel-7.2.0-gts9wifi-1"
-      port_version:
-        description: "Optional MAJOR.MINOR.PATCH override; blank uses PORT_VERSION"
-        type: string
-        default: ""
-      desktop:
-        description: "Fedora image profile"
-        type: choice
-        options: [gnome, core]
-        default: gnome
-      fedora_base_compose:
-        description: "Pinned Fedora Everything compose"
-        type: string
-        default: "Fedora-44-20260422.1"
-      fedora_updates_compose:
-        description: "Pinned Fedora updates compose"
-        type: string
-        default: "Fedora-44-updates-20260926.0"
 
 permissions:
   actions: read
@@ -73,14 +26,12 @@ env:
   KVER: 7.2.0-gts9wifi
 
 concurrency:
-  # The manual reset wrapper holds the normal build lock; its reusable child
-  # uses a distinct lock to avoid parent/child deadlock.
-  group: ${{ github.workflow == 'Reset X810 Fedora builds' && 'x810-fedora-build-release-reset-child' || 'x810-fedora-build-release' }}
+  group: x810-fedora-build-release
   cancel-in-progress: false
 
 jobs:
   # Tab Companion resolves the updater bundle through the successful push run
-  # ID. A manual force-rebuild reuses the matching successful push identity;
+  # ID. A manual rebuild reuses the matching successful push identity;
   # it must not publish an updater tag that the client cannot resolve.
   publication_identity:
     if: github.ref == 'refs/heads/main'
@@ -100,10 +51,6 @@ jobs:
         id: identity
         env:
           GH_TOKEN: ${{ github.token }}
-          PORT_VERSION_INPUT: ${{ inputs.port_version || '' }}
-          DESKTOP_INPUT: ${{ inputs.desktop || 'gnome' }}
-          FEDORA_BASE_COMPOSE_INPUT: ${{ inputs.fedora_base_compose || 'Fedora-44-20260422.1' }}
-          FEDORA_UPDATES_COMPOSE_INPUT: ${{ inputs.fedora_updates_compose || 'Fedora-44-updates-20260926.0' }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
@@ -121,22 +68,11 @@ jobs:
               echo "No successful main-branch push build is available for this manual run." >&2
               exit 1
             }
-            # A manual/reset build may refresh an aggregate only if all
-            # release-affecting source is identical to its push identity.
+            # Manual runs refresh an aggregate only if all release-affecting
+            # source is identical to its successful push identity.
             git diff --quiet "$commit" "$GITHUB_SHA" -- \
               PORT_VERSION kernel boot rootfs specs tools .github/workflows/x810-fedora.yml || {
-              echo "Release inputs changed since the last successful push. Push and complete the normal build before running a reset/manual build." >&2
-              exit 1
-            }
-            port_version="$(tr -d '\r\n ' < PORT_VERSION)"
-            [[ -z "$PORT_VERSION_INPUT" || "$PORT_VERSION_INPUT" == "$port_version" ]] || {
-              echo "A manual release cannot override PORT_VERSION under an existing push identity." >&2
-              exit 1
-            }
-            [[ "$DESKTOP_INPUT" == gnome && \
-               "$FEDORA_BASE_COMPOSE_INPUT" == Fedora-44-20260422.1 && \
-               "$FEDORA_UPDATES_COMPOSE_INPUT" == Fedora-44-updates-20260926.0 ]] || {
-              echo "Manual release publication must use the standard GNOME profile and pinned Fedora composes." >&2
+              echo "Release inputs changed since the last successful push. Push and complete the normal build before running a manual rebuild." >&2
               exit 1
             }
           fi
@@ -162,7 +98,7 @@ jobs:
       BUILD_RUN_NUMBER: ${{ needs.publication_identity.outputs.run_number }}
       BUILD_COMMIT: ${{ needs.publication_identity.outputs.commit }}
       BUILD_BRANCH: ${{ needs.publication_identity.outputs.branch }}
-      PORT_VERSION_INPUT: ${{ inputs.port_version || '' }}
+      PORT_VERSION_INPUT: ""
     steps:
       - name: Check out the workflow commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -311,13 +247,13 @@ jobs:
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-          BOOTSTRAP_KERNEL_TAG: ${{ inputs.bootstrap_kernel_tag || 'kernel-7.2.0-gts9wifi-1' }}
+          BOOTSTRAP_KERNEL_TAG: kernel-7.2.0-gts9wifi-1
           PUBLICATION_RUN_ID: ${{ needs.publication_identity.outputs.run_id }}
-          FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
-          PORT_VERSION_INPUT: ${{ inputs.port_version || '' }}
-          DESKTOP: ${{ inputs.desktop || 'gnome' }}
-          FEDORA_BASE_COMPOSE: ${{ inputs.fedora_base_compose || 'Fedora-44-20260422.1' }}
-          FEDORA_UPDATES_COMPOSE: ${{ inputs.fedora_updates_compose || 'Fedora-44-updates-20260926.0' }}
+          FORCE_REBUILD: ${{ inputs.build_new || false }}
+          PORT_VERSION_INPUT: ""
+          DESKTOP: gnome
+          FEDORA_BASE_COMPOSE: Fedora-44-20260422.1
+          FEDORA_UPDATES_COMPOSE: Fedora-44-updates-20260926.0
           FIRMWARE_SHA256: "30cace40556fdaf1577c76bedc1b1a6236f4acc23e9300253b3834fa7ed4bab5"
         run: |
           set -euo pipefail
@@ -1026,7 +962,7 @@ jobs:
             echo "Aggregate publication did not succeed; preserving the previous complete release set."
             # On ordinary pushes, remove this run's support-only staging tag so
             # a failed image publication cannot leave a misleading update.
-            # Manual/reset runs reuse the existing push tag and must not delete it.
+            # Manual runs reuse the existing push tag and must not delete it.
             if [[ "$EVENT_NAME" == push && -n "$latest_tag" && \
                   "$PORT_RELEASE_TAG" != "$latest_tag" ]] && \
                gh release view "$PORT_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
