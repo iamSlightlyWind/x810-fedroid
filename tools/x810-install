@@ -1958,7 +1958,7 @@ NEW={shlex.quote(username)}
 FULL={shlex.quote(full_name)}
 HOST={shlex.quote(hostname)}
 PASSFILE=/tmp/x810-install-password
-chroot "$ROOT" /usr/sbin/useradd --create-home --groups wheel --shell /bin/bash --comment "$FULL" "$NEW"
+chroot "$ROOT" /usr/sbin/useradd --create-home --groups wheel,video --shell /bin/bash --comment "$FULL" "$NEW"
 chroot "$ROOT" /usr/sbin/chpasswd --encrypted < "$PASSFILE"
 chroot "$ROOT" /usr/sbin/usermod --lock root
 printf '%s\\n' "$HOST" > "$ROOT/etc/hostname"

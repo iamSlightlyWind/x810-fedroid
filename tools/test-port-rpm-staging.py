@@ -33,6 +33,12 @@ class SupportRpmStagingTests(unittest.TestCase):
             (ROOT / "rootfs/overlay/usr/lib/systemd/user/wireplumber.service.d").exists()
         )
 
+    def test_port_update_repairs_uid_1000_camera_access(self):
+        spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
+        self.assertIn("desktop_user=$(getent passwd 1000", spec)
+        self.assertIn('usermod -a -G video "$desktop_user"', spec)
+        self.assertIn("--groups wheel,video", (ROOT / "tools/x810-install").read_text())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

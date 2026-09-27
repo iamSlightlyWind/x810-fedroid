@@ -194,10 +194,12 @@ Raw captures are in git-ignored `probes/android-baseline/`.
   sensor/actuator subdevices. This proves enumeration, not that image capture
   works; no camera stream or image was opened during this audit.
 - The video and media nodes are `root:video` mode `0660`; the desktop account
-  was not in `video`, which would prevent camera clients from opening them.
-  Added `fedora` to the `video` group in the live rootfs and in the image
-  builder. The already-running SSH session retains its old supplementary
-  groups; a new login session is needed to observe the change.
+  was not in `video`, which prevents camera clients from opening them. The
+  clean-install script now creates the chosen UID-1000 account in `video`, and
+  the updater RPM repairs that membership on existing installs. The already
+  running desktop session retains its old supplementary groups until a new
+  login. This fixes the permission failure, not intermittent sensor/ISP
+  discovery; actual camera capture still needs a live test.
 - The installed rootfs already contains libcamera and PipeWire's libcamera
   SPA plugin. Its GNOME camera app was absent. Fedora 44 names that RPM
   `snapshot` (not `gnome-snapshot`); the rootfs builder now installs the

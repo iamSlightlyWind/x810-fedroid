@@ -25,6 +25,16 @@ mkdir -p %{buildroot}
 tar -xzf %{SOURCE0} -C %{buildroot}
 
 %posttrans
+if command -v getent >/dev/null 2>&1 && command -v usermod >/dev/null 2>&1; then
+    # The installer assigns the chosen desktop account UID 1000. Add it to
+    # video on existing installations so the updater repairs camera-node
+    # access as well; a fresh image has no UID 1000 yet and is handled by the
+    # installer's useradd command.
+    desktop_user=$(getent passwd 1000 | cut -d: -f1)
+    if [ -n "$desktop_user" ] && getent group video >/dev/null 2>&1; then
+        usermod -a -G video "$desktop_user" || :
+    fi
+fi
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || :
 fi
