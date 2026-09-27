@@ -37,9 +37,10 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 | Microphones | ❓ | A capture source is exposed, but microphone recording has not been qualified. |
 | Cameras | 🟡 | Front/rear sensors enumerate and libcamera support is integrated; a normal desktop capture flow still needs validation. Rear focus is fixed/manual, not autofocus. |
 | Hardware video decode | 🟡 | Stateful V4L2 decode was verified with owner-supplied X810 CYG1 firmware. Public releases omit that proprietary firmware; browser/VLC acceleration and encoding are not established. |
+| Qualcomm NPU / HTP | ❌ | CDSP remains disabled and no Fedora QNN/HTP runtime is integrated. The port now preserves the X810 CDSP firmware carveouts, but inference has not been enabled or tested. |
 | Motion sensors / auto-rotation | ❌ | Current startup still does not reliably expose the required SSC service. A source-side startup-order fix is committed, but update/clean-boot validation remains; rotation is unavailable on the current system. |
 | Battery / charging | 🟡 | Battery telemetry and charging work; the prior 96% cap is fixed. Not all chargers and charge behaviors have been validated. |
-| USB-C / powered USB hub | 🟡 | The owner reports that hub power passthrough now works. Other host, dock, and display combinations are not all tested. |
+| USB-C / powered USB hub | ✅ | The owner has confirmed that a powered USB hub supplies power to the tablet. Data passthrough and other host, dock, and display combinations are not all tested. |
 | Haptics | 🟡 | Kernel support is prepared; physical vibration validation with the matching updated kernel is pending. |
 | Suspend / resume | 🟡 | Not qualified for dependable daily use; freezes have been reported. Save work and avoid unattended suspend experiments. |
 | Fingerprint reader | ❌ | Fingerprint login is not available. Source now fixes and checks kernel-module packaging, but the reader stack, secure-world/provisioning, and Linux authentication path have not been validated end-to-end. |
