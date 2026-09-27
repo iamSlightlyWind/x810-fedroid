@@ -5,8 +5,8 @@
 # Actions arm64 runner container (see .github/workflows/rootfs.yml) or locally:
 #
 #   podman run --rm -it -v "$PWD:/work:Z" -w /work \
-#       -e BUILDER_IMAGE=quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a \
-#       quay.io/fedora/fedora@sha256:e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a \
+#       -e BUILDER_IMAGE=quay.io/fedora/fedora@sha256:78839470162801db2182957e00652f09c4fecfd552435f4fe4569604679a9030 \
+#       quay.io/fedora/fedora@sha256:78839470162801db2182957e00652f09c4fecfd552435f4fe4569604679a9030 \
 #       ./rootfs/build-rootfs.sh
 #
 # Optional X810_DNF_CACHE_DIR selects an external DNF5 cache directory; it

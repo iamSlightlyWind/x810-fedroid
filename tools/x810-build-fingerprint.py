@@ -17,7 +17,7 @@ from pathlib import Path
 
 BUILDER_IMAGE = (
     "quay.io/fedora/fedora@sha256:"
-    "e75c580674741c20556f49c24e2d1417b0455abcbda807ce9e3e3acd8765379a"
+    "78839470162801db2182957e00652f09c4fecfd552435f4fe4569604679a9030"
 )
 LINUX_SOURCE_SHA256 = "f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
 KVER = "7.2.0-gts9wifi"
