@@ -128,7 +128,8 @@ TCPM roles, PCIe0 pipe mux, sec-log console, split-GPU-KMS). DTS:
   reboots; Mutter PowerSaveMode revival after lid wake
 - `sensors-resume` (+ system-sleep hook): restart sensorspd + iio-sensor-proxy after
   every resume (libssc can't reconnect a stale QMI client)
-- `bt-revive`: rebind hci_uart_qca holding BT_EN (tlmm gpio 204) via gpio cdev
+- `bt-revive`: rebind hci_uart_qca while holding the XO-clock strobe (TLMM GPIO 204)
+  via gpio cdev; the separate BT_EN line is TLMM GPIO 81
 - `bookcover-input`: fixes Samsung Book Cover Keyboard HID descriptor (python evdev)
 - `adsp-boot`: on-demand ADSP start requested by the sensor-proxy recovery unit,
   which is ordered after panel coldboot recovery; it is not standalone-enabled.
