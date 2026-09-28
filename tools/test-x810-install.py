@@ -611,6 +611,20 @@ class InstallerTests(unittest.TestCase):
             gpt_write.assert_not_called(); install_fs.assert_not_called()
             self.assertEqual(status, 0)
 
+    def test_fresh_install_stops_before_release_download_when_android_preflight_fails(self):
+        output = io.StringIO()
+        failed = [installer.Check("Android root", "STOP", "su unavailable")]
+        with patch.object(installer.platform, "system", return_value="Linux"), \
+             patch.object(installer.shutil, "which", return_value="/usr/bin/adb"), \
+             patch.object(installer, "android_preflight", return_value=("serial", failed)), \
+             patch.object(installer, "open_install_bundle") as open_bundle, \
+             contextlib.redirect_stdout(output):
+            status = installer.run_install(None)
+        self.assertEqual(status, 2)
+        open_bundle.assert_not_called()
+        self.assertIn("Android root", output.getvalue())
+        self.assertIn("installer made no tablet changes", output.getvalue())
+
     def test_rootfs_and_four_boot_writes_are_readback_checked_with_fake_adb(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
                                                               {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):

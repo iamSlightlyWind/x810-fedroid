@@ -16,6 +16,12 @@ optional text menu instead, run `python3 tools/x810-install menu`. The
 `--bundle` option remains for older self-contained bundles or extracted bundle
 directories.
 
+Before downloading the large rootfs, a fresh install checks that exactly one
+usable Android ADB target is connected and that model, bootloader-unlocked, and
+root checks pass. A resumed install similarly requires the tablet already be
+in TWRP before it downloads. If these checks fail, fix the PC/ADB/Android state
+first and rerun; no release payload is downloaded and no tablet is changed.
+
 The host needs Python 3, `adb`, `openssl`, and `sha256sum`. Install the tools
 with your distribution's package manager, for example:
 

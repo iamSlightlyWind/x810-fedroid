@@ -2184,19 +2184,30 @@ def run_install(bundle_path: Path | None, serial: str | None = None,
         print(f"STOP: adb is required ({package_hint('adb')}).")
         return 2
     try:
+        # Fail before fetching the multi-gigabyte rootfs when a fresh install
+        # is not yet at the required Android/ADB stage. Resume runs instead
+        # require TWRP already, and likewise check that before downloading.
+        preflight_target: str | None = None
+        if resume_from is None:
+            preflight_target, android_checks = android_preflight(adb, serial, runner=runner)
+            show_checks(android_checks)
+            if any(check.state == "STOP" for check in android_checks):
+                print("STOP: resolve Android model/unlock/root checks manually; installer made no tablet changes.")
+                return 2
+        else:
+            preflight_target, _ = adb_target(adb, serial, runner, {"recovery"})
+
         with open_install_bundle(bundle_path) as bundle:
             print(f"Verified X810 install set {bundle.manifest['bundle_version']} for {EXPECTED_MODEL}.")
             resume_checkpoint = None
             if resume_from is not None:
-                target, state = adb_target(adb, serial, runner, {"recovery"})
+                target, state = adb_target(adb, preflight_target, runner, {"recovery"})
                 resume_checkpoint = validate_resume_checkpoint(resume_from.expanduser(), target, bundle)
                 print("Resume checkpoint matches this device, bundle, and local recovery backups; Android preflight is not repeated.")
             else:
-                target, android_checks = android_preflight(adb, serial, runner=runner)
-                show_checks(android_checks)
-                if any(check.state == "STOP" for check in android_checks):
-                    print("STOP: resolve Android model/unlock/root checks manually; installer made no tablet changes.")
-                    return 2
+                # Confirm Android is still connected after release acquisition;
+                # never continue using a stale pre-download ADB observation.
+                target, _ = adb_target(adb, preflight_target, runner, {"device"})
                 print("\nAndroid preflight passed. Enter TWRP manually; this script will not reboot the tablet.")
                 input_func("After TWRP is fully loaded with USB debugging/ADB available, press Enter: ")
                 target, state = adb_target(adb, target, runner, {"recovery"})
