@@ -87,6 +87,34 @@ class MoonlightV4L2LauncherTests(unittest.TestCase):
         self.assertNotIn("flatpak override", text)
         self.assertNotIn("DRM_FORCE_DIRECT", text.split("exec flatpak", 1)[1])
 
+    def test_launcher_uses_v4l2m2m_not_vaapi(self):
+        text = LAUNCHER.read_text(encoding="utf-8")
+        self.assertIn("H264_DECODER_HINT=h264_v4l2m2m", text)
+        self.assertIn("HEVC_DECODER_HINT=hevc_v4l2m2m", text)
+        self.assertNotIn("LIBVA_DRIVER_NAME", text)
+        self.assertNotIn("vaapi", text.lower())
+        self.assertNotIn("--device=all", text)
+        self.assertIn("do not bind /dev/video17", text)
+
+    def test_experiment_does_not_claim_decoder_hints_prove_hardware_decode(self):
+        experiment = (ROOT / "docs/x810-research/MOONLIGHT-V4L2-EXPERIMENT.md").read_text(encoding="utf-8")
+        normalized_experiment = " ".join(experiment.split())
+        self.assertIn("does not bind a specific `/dev/videoN` node", normalized_experiment)
+        self.assertIn("decoder selection on **Automatic**", normalized_experiment)
+        self.assertIn("may still classify the V4L2 M2M decoder as software", normalized_experiment)
+        self.assertIn("H264_DECODER_HINT)", normalized_experiment)
+        self.assertIn("Moonlight streaming decode has not been tested on the tablet", normalized_experiment)
+
+    def test_docs_distinguish_decoder_encoder_and_vaapi(self):
+        notes = (ROOT / "docs/Hardware-Notes.md").read_text(encoding="utf-8")
+        experiment = (ROOT / "docs/x810-research/MOONLIGHT-V4L2-EXPERIMENT.md").read_text(encoding="utf-8")
+        self.assertIn("`/dev/video17` — stateful V4L2 M2M MPLANE", notes)
+        self.assertIn("`/dev/video18` — untested", notes)
+        self.assertIn("there is no\nVA-API driver for it", notes)
+        self.assertIn("not VA-API", experiment)
+        self.assertIn("streaming decode has not been", experiment)
+        self.assertIn("1dd6cdb567d9c79bcbd8caee13d999a447a8b413", experiment)
+
     def test_desktop_entry_is_an_opt_in_launcher_not_the_default_flatpak_entry(self):
         text = DESKTOP.read_text(encoding="utf-8")
         self.assertIn("Name=Moonlight (X810 V4L2 decode)", text)
