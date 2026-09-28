@@ -1,5 +1,6 @@
 [Unit]
-Description=Normalize and prepare the Samsung HexagonFS sensor tree for hexagonrpcd
+Description=Stage X810 stock sensor configs and persist registry for hexagonrpcd
+RequiresMountsFor=/vendor /mnt/vendor/persist
 Before=hexagonrpcd-adsp-sensorspd.service
 
 [Service]

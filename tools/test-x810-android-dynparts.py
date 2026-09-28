@@ -4,18 +4,20 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.machinery
 import os
+import runpy
 import struct
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "rootfs/overlay/usr/libexec/gts9wifi-android-parts"
-dyn = importlib.machinery.SourceFileLoader("gts9wifi_dynparts", str(SCRIPT)).load_module()
+# Avoid writing Python bytecode into the production rootfs overlay.
+dyn = SimpleNamespace(**runpy.run_path(str(SCRIPT)))
 
 
 def lp_name(name: str, length: int = 36) -> bytes:

@@ -90,26 +90,32 @@ either ADSP unit or race it against panel recovery.
 
 ### 25 — SSC QMI service absent; tablet rotation unavailable
 
-The reproducible startup chain prepares the tree before attaching `hexagonrpcd`
-to `sensorspd`: normalize sensor-tree timestamps to epoch zero, make the
-port-owned HexagonFS tree `fastrpc:fastrpc` writable, then wait for the SSC
-endpoint before starting the desktop proxy. The tree now has the cached JSON
-mtimes and ownership expected by Samsung's registry code.
+The startup chain now stages a private `/run` HexagonFS tree from this tablet's
+mounted CYG1 `/vendor/etc/sensors` and `/mnt/vendor/persist/sensors/registry`
+before attaching `hexagonrpcd` to `sensorspd`. It validates that the persistent
+registry cache matches the vendor JSON mtimes, copies the files without
+changing Android partitions, and supplies the target's socinfo selector values
+where mainline sysfs does not expose Samsung's aliases. The desktop proxy then
+waits for the SSC endpoint.
 
 The latest read-only check on the installed tablet found `gts9wifi-adsp-boot`
 active but `hexagonrpcd-adsp-sensorspd`, `iio-sensor-proxy`, and the sensor wait
 unit inactive/failed; `qrtr-lookup 400` returned no service. Earlier snapshots
 showed QRTR service 66, but that does not imply the required SSC service is
-registered. The root cause is still below `iio-sensor-proxy`; package ordering
-alone has not explained it.
+registered. The installed runtime has not yet been tested with the new
+X810-specific registry composition; package ordering alone has not explained
+the missing service.
 
-The next support update uses the same hash-locked `libssc`/`iio-sensor-proxy`
-builder as a clean image and adds an early-claim race guard in the proxy. This
-removes image-versus-update build drift and addresses one userspace race; it
-cannot create a missing QRTR service. The update has not yet been installed or
-validated on the tablet. Next, use a supervised, correctly ordered boot with a
-recovery path available; do not manually restart remoteproc or sensorspd while
-the tablet is unattended, since a failed attach can interrupt audio.
+The support update uses the same hash-locked `libssc`/`iio-sensor-proxy`
+builder as a clean image and adds an early-claim race guard in the proxy. It
+also replaces donor-model sensor inputs with a checked runtime composition of
+the tablet's own stock config and persist registry. These changes remove
+image-versus-update build drift and address two plausible userspace causes;
+they cannot create a missing QRTR service. The update has not yet been
+installed or validated on the tablet. Next, use a supervised, correctly
+ordered boot with a recovery path available; do not manually restart remoteproc
+or sensorspd while the tablet is unattended, since a failed attach can
+interrupt audio.
 
 ### 13 — Charging bypass on 25 W+ chargers
 

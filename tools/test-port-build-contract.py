@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify the image, support RPM, and published rootfs manifest agree."""
 import argparse
+import configparser
 import hashlib
 import json
 import re
@@ -13,6 +14,8 @@ VERSION_RE = re.compile(r"^(?:0|[1-9][0-9]{0,19})\.(?:0|[1-9][0-9]{0,19})\.(?:0|
 PORT_FILE = "/usr/share/tab-companion/port.json"
 HI1337_TUNING_FILE = "/usr/share/libcamera/ipa/simple/hi1337-gts9u.yaml"
 PACKAGE_NAME = "x810-fedora-port"
+PPD_CONFIG = "/etc/tuned/ppd.conf"
+TUNED_PERFORMANCE_PROFILE = "/usr/lib/tuned/profiles/throughput-performance/tuned.conf"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -38,8 +41,40 @@ def rpm_query(rpm_path, query):
     ).strip()
 
 
+def check_power_profile_mapping(rootfs):
+    """Verify GNOME's PPD API selects a real TuneD CPU performance profile."""
+    rootfs = Path(rootfs)
+    ppd_path = rootfs / PPD_CONFIG.lstrip("/")
+    tuned_path = rootfs / TUNED_PERFORMANCE_PROFILE.lstrip("/")
+    if not ppd_path.is_file():
+        fail("rootfs is missing tuned-ppd's PowerProfiles profile map")
+    if not tuned_path.is_file():
+        fail("rootfs is missing TuneD's throughput-performance profile")
+
+    ppd = configparser.ConfigParser(interpolation=None, strict=False)
+    ppd.read(ppd_path, encoding="utf-8")
+    if ppd.get("main", "default", fallback="") != "balanced":
+        fail("tuned-ppd must default to the balanced profile")
+    mappings = ppd["profiles"] if ppd.has_section("profiles") else {}
+    expected_mappings = {
+        "power-saver": "powersave",
+        "balanced": "balanced",
+        "performance": "throughput-performance",
+    }
+    if any(mappings.get(name) != value for name, value in expected_mappings.items()):
+        fail("GNOME PPD profile map does not select the expected TuneD profiles")
+
+    profile = configparser.ConfigParser(interpolation=None, strict=False)
+    profile.read(tuned_path, encoding="utf-8")
+    if profile.get("cpu", "governor", fallback="") != "performance":
+        fail("TuneD throughput-performance profile does not request the performance governor")
+    if profile.get("cpu", "min_perf_pct", fallback="") != "100":
+        fail("TuneD throughput-performance profile does not request full CPU minimum performance")
+
+
 def check(rootfs, manifest_path, version, rpm_path=None):
     rootfs = Path(rootfs)
+    check_power_profile_mapping(rootfs)
     tuning_overlay = REPO_ROOT / "rootfs/overlay" / HI1337_TUNING_FILE.lstrip("/")
     tuning_image = rootfs / HI1337_TUNING_FILE.lstrip("/")
     if not tuning_overlay.is_file() or tuning_overlay.is_symlink():

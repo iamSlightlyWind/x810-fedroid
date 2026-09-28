@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import re
+import runpy
 import subprocess
 import tempfile
 import unittest
@@ -12,6 +13,36 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SupportRpmStagingTests(unittest.TestCase):
+    def test_ppd_profile_map_targets_a_real_tuned_performance_profile(self):
+        contract = runpy.run_path(str(ROOT / "tools/test-port-build-contract.py"))
+        check_mapping = contract["check_power_profile_mapping"]
+        with tempfile.TemporaryDirectory() as temp:
+            rootfs = Path(temp)
+            ppd = rootfs / "etc/tuned/ppd.conf"
+            profile = rootfs / "usr/lib/tuned/profiles/throughput-performance/tuned.conf"
+            ppd.parent.mkdir(parents=True)
+            profile.parent.mkdir(parents=True)
+            ppd.write_text(
+                "[main]\ndefault=balanced\n\n"
+                "[profiles]\npower-saver=powersave\nbalanced=balanced\n"
+                "performance=throughput-performance\n",
+                encoding="utf-8",
+            )
+            profile.write_text(
+                "[cpu]\ngovernor=performance\nmin_perf_pct=100\n",
+                encoding="utf-8",
+            )
+            check_mapping(rootfs)
+
+            # A syntactically present mapping is not enough: the selected
+            # profile must actually request the performance governor.
+            profile.write_text(
+                "[cpu]\ngovernor=schedutil\nmin_perf_pct=100\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                check_mapping(rootfs)
+
     def test_hi1337_tuning_flows_to_fresh_image_and_support_rpm(self):
         tuning = ROOT / (
             "rootfs/overlay/usr/share/libcamera/ipa/simple/hi1337-gts9u.yaml"
@@ -227,7 +258,26 @@ class SupportRpmStagingTests(unittest.TestCase):
         self.assertIn("Requires:       tuned-ppd", spec)
         self.assertIn("systemctl start tuned-ppd.service", spec)
 
-    def test_sensor_startup_is_ordered_and_hexagonfs_cache_is_writable(self):
+        build_contract = (ROOT / "tools/test-port-build-contract.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("check_power_profile_mapping(rootfs)", build_contract)
+        self.assertIn('"performance": "throughput-performance"', build_contract)
+        self.assertIn('"balanced": "balanced"', build_contract)
+        self.assertIn('"power-saver": "powersave"', build_contract)
+        self.assertIn('"governor", fallback="") != "performance"', build_contract)
+        self.assertIn('"min_perf_pct", fallback="") != "100"', build_contract)
+
+        kernel_config = (ROOT / "kernel/files/config-mainline.aarch64").read_text(
+            encoding="utf-8"
+        )
+        for governor in (
+            "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y",
+            "CONFIG_CPU_FREQ_GOV_PERFORMANCE=y",
+        ):
+            self.assertIn(governor, kernel_config)
+
+    def test_sensor_startup_stages_the_exact_x810_registry_before_hexagonrpcd(self):
         builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")
         enabled_units = builder.split("for unit in \\\n", 1)[1].split("\ndo\n", 1)[0]
         self.assertNotIn("gts9wifi-adsp-boot", enabled_units)
@@ -236,15 +286,21 @@ class SupportRpmStagingTests(unittest.TestCase):
 
         cache_fix = (ROOT / "rootfs/overlay/usr/libexec/"
                      "gts9wifi-sensor-registry-perms").read_text(encoding="utf-8")
-        self.assertIn("/usr/share/qcom/sm8550/Samsung/gts9wifi", cache_fix)
-        self.assertIn("touch -h -d @0", cache_fix)
-        self.assertIn("chown -R fastrpc:fastrpc", cache_fix)
-        self.assertIn("sensors/registry/sensors_registry", cache_fix)
+        self.assertIn('VENDOR_SENSOR = Path("/vendor/etc/sensors")', cache_fix)
+        self.assertIn('PERSIST_SENSOR = Path("/mnt/vendor/persist/sensors/registry")', cache_fix)
+        self.assertIn('PERSIST_OUTPUT_PATH = "/mnt/vendor/persist/sensors/registry/registry"',
+                      cache_fix)
+        self.assertIn("shutil.copy2", cache_fix)
+        self.assertIn("cached_mtime != int(path.stat().st_mtime)", cache_fix)
+        self.assertIn("os.chown(entry, uid, gid", cache_fix)
+        self.assertIn('"sensors_registry"', cache_fix)
+        self.assertNotIn("touch -h -d @0", cache_fix)
         self.assertNotIn("chmod -R a+rwX", cache_fix)
 
         builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")
         self.assertIn('sensor_tree="$rootfs/usr/share/qcom/sm8550/Samsung/gts9wifi"', builder)
-        self.assertIn('find "$sensor_tree" -exec touch -h -d @0 {} +', builder)
+        self.assertIn('rm -rf -- "$sensor_tree/sensors" "$sensor_tree/socinfo"', builder)
+        self.assertNotIn('find "$sensor_tree" -exec touch -h -d @0 {} +', builder)
 
         sensorspd = (ROOT / "rootfs/overlay/etc/systemd/system/"
                      "hexagonrpcd-adsp-sensorspd.service.d/"
@@ -252,6 +308,12 @@ class SupportRpmStagingTests(unittest.TestCase):
         self.assertIn("Requires=gts9wifi-adsp-boot.service", sensorspd)
         self.assertIn("gts9wifi-sensor-registry-perms.service", sensorspd)
         self.assertIn("After=gts9wifi-adsp-boot.service", sensorspd)
+        self.assertIn("-R /run/gts9wifi-hexagonfs", sensorspd)
+
+        registry_service = (ROOT / "rootfs/overlay/usr/lib/systemd/system/"
+                            "gts9wifi-sensor-registry-perms.service").read_text(
+                                encoding="utf-8")
+        self.assertIn("RequiresMountsFor=/vendor /mnt/vendor/persist", registry_service)
 
         wait_proxy = (ROOT / "rootfs/overlay/usr/lib/systemd/system/"
                       "gts9wifi-wait-sensor-proxy.service").read_text(encoding="utf-8")

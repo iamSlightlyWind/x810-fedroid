@@ -115,9 +115,9 @@ if command -v systemctl >/dev/null 2>&1; then
         >/dev/null 2>&1 || :
     systemctl disable --quiet gts9wifi-adsp-boot.service \
         hexagonrpcd-adsp-sensorspd.service >/dev/null 2>&1 || :
-    # Do not rerun the registry normalizer in a live transaction: it adjusts
-    # firmware-tree mtimes/ownership and could race an active sensorspd. The
-    # enabled boot unit prepares that tree before the next sensorspd attach.
+    # Do not stage the Android vendor/persist registry during a live RPM
+    # transaction: it could race an active sensorspd. The boot oneshot builds
+    # a private /run tree before the next sensorspd attach.
 fi
 if command -v udevadm >/dev/null 2>&1; then
     udevadm control --reload >/dev/null 2>&1 || :

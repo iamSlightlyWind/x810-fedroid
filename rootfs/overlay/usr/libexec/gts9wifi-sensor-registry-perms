@@ -1,25 +1,249 @@
-#!/bin/sh
-# Samsung's ADSP registry service caches the mtimes of every sensors/config
-# JSON in sensors/registry/sns_reg_config. The firmware payload records those
-# mtimes as epoch zero. TWRP's extraction can replace them with its current
-# clock, so the firmware decides the cache is stale and attempts a full rebuild
-# during FastRPC attach. Keep the served HexagonFS tree reproducible and
-# writable before sensorspd attaches, matching the validated X910 port.
-set -eu
-TREE=/usr/share/qcom/sm8550/Samsung/gts9wifi
+#!/usr/bin/python3
+"""Stage an X810-specific, volatile HexagonFS tree from stock Android data.
 
-[ -d "$TREE/sensors" ] || {
-	echo "gts9wifi-sensor-registry-perms: missing $TREE/sensors" >&2
-	exit 1
+Samsung's vendor sensor configs and the generated registry live on different
+read-only/read-write Android partitions.  Compose them under /run so the
+FastRPC daemon sees the exact CYG1 config plus this tablet's own persist
+registry, without serving sibling-model config or writing Android persist.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import pwd
+import grp
+import shutil
+import sys
+import tempfile
+
+
+BASE = Path("/usr/share/qcom/sm8550/Samsung/gts9wifi")
+VENDOR_SENSOR = Path("/vendor/etc/sensors")
+PERSIST_SENSOR = Path("/mnt/vendor/persist/sensors/registry")
+SOCINFO = Path("/sys/devices/soc0")
+RUN_DIR = Path("/run")
+RUN_LINK = RUN_DIR / "gts9wifi-hexagonfs"
+PERSIST_OUTPUT_PATH = "/mnt/vendor/persist/sensors/registry/registry"
+CONFIG_CACHE_PREFIX = "/vendor/etc/sensors/config/"
+SOCINFO_PREFIX = "/sys/devices/soc0/"
+# The mainline qcom-socinfo driver may not expose Android's Samsung aliases.
+# These fallback values were captured read-only in TWRP on the target
+# SM-X816B / gts9p (soc_id 519, hw_platform MTP, platform_subtype Unknown,
+# platform_subtype_id 0, platform_version 65536). A live Fedora sysfs value
+# wins whenever the kernel provides one.
+SOCINFO_FALLBACK = {
+    "hw_platform": "MTP",
+    "platform_subtype": "Unknown",
+    "platform_subtype_id": "0",
+    "platform_version": "65536",
+    "soc_id": "519",
 }
-getent group fastrpc >/dev/null
+SOCINFO_KEYS = frozenset(SOCINFO_FALLBACK)
 
-# Use GNU coreutils on the running Fedora system rather than relying on
-# recovery's unzip implementation to preserve dates. Firmware modifies the
-# registry cache with the fastrpc service account, so it owns the served tree.
-find "$TREE" -exec touch -h -d @0 {} +
-chown -R fastrpc:fastrpc "$TREE"
 
-if [ ! -e "$TREE/sensors/registry/sensors_registry" ]; then
-	echo "gts9wifi-sensor-registry-perms: registry marker missing; DSP may rebuild it" >&2
-fi
+class StageError(RuntimeError):
+    """The Android sensor inputs cannot safely form the HexagonFS tree."""
+
+
+def _require_plain_tree(path: Path) -> None:
+    if path.is_symlink() or not path.is_dir():
+        raise StageError(f"expected a real directory: {path}")
+    for entry in path.rglob("*"):
+        if entry.is_symlink():
+            raise StageError(f"refusing symlink in stock sensor input: {entry}")
+        if not entry.is_dir() and not entry.is_file():
+            raise StageError(f"unsupported stock sensor input: {entry}")
+
+
+def _copy_tree(source: Path, destination: Path) -> None:
+    _require_plain_tree(source)
+    shutil.copytree(source, destination, copy_function=shutil.copy2)
+
+
+def _parse_registry_sources(config: bytes) -> list[str]:
+    output_seen = False
+    version_seen = False
+    socinfo_names: list[str] = []
+    for raw_line in config.decode("utf-8").splitlines():
+        if raw_line.startswith("version="):
+            if raw_line != "version=6" or version_seen:
+                raise StageError(f"unsupported or duplicate stock sensor registry version: {raw_line}")
+            version_seen = True
+            continue
+        if not raw_line.startswith("file="):
+            continue
+        key, separator, source = raw_line[5:].partition("=")
+        if not separator or not key or not source:
+            raise StageError("malformed file= entry in stock sns_reg_config")
+        if key == "output":
+            if source != PERSIST_OUTPUT_PATH:
+                raise StageError(f"unexpected registry output path: {source}")
+            output_seen = True
+        elif source.startswith(SOCINFO_PREFIX):
+            name = source[len(SOCINFO_PREFIX):]
+            if not name or "/" in name or name != key:
+                raise StageError(f"unsupported socinfo source in stock config: {source}")
+            socinfo_names.append(name)
+    if not output_seen:
+        raise StageError("stock sns_reg_config lacks the expected persist output")
+    if not version_seen:
+        raise StageError("stock sns_reg_config lacks the expected version=6 header")
+    if len(socinfo_names) != len(set(socinfo_names)) or set(socinfo_names) != SOCINFO_KEYS:
+        missing = sorted(SOCINFO_KEYS - set(socinfo_names))
+        extra = sorted(set(socinfo_names) - SOCINFO_KEYS)
+        raise StageError(
+            f"stock sns_reg_config has an unexpected socinfo selector set "
+            f"(missing={missing}, extra={extra})"
+        )
+    return socinfo_names
+
+
+def _validate_persist_registry(config_dir: Path, output_dir: Path) -> None:
+    marker = output_dir / "sensors_registry"
+    cache_path = output_dir / "sns_reg_config"
+    if not marker.is_file() or marker.stat().st_size != 0:
+        raise StageError("stock persist registry completion marker is missing or non-empty")
+    if not cache_path.is_file() or cache_path.stat().st_size == 0:
+        raise StageError("stock persist registry cache is missing or empty")
+
+    try:
+        document = json.loads(cache_path.read_text(encoding="utf-8"))
+        entries = document["sns_reg_config"]
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise StageError(f"stock persist registry cache is not valid JSON: {exc}") from exc
+    if not isinstance(entries, dict):
+        raise StageError("stock persist registry cache has no entry map")
+
+    json_files = sorted(config_dir.glob("*.json"))
+    if not json_files:
+        raise StageError("stock vendor sensor config directory contains no JSON files")
+    expected_keys = {CONFIG_CACHE_PREFIX + item.name for item in json_files}
+    cached_keys = {
+        key for key in entries
+        if isinstance(key, str)
+        and key.startswith(CONFIG_CACHE_PREFIX)
+        and key.endswith(".json")
+    }
+    if cached_keys != expected_keys:
+        missing = sorted(expected_keys - cached_keys)
+        extra = sorted(cached_keys - expected_keys)
+        raise StageError(f"persist registry cache/config file set differs (missing={missing}, extra={extra})")
+
+    for path in json_files:
+        key = CONFIG_CACHE_PREFIX + path.name
+        record = entries.get(key)
+        if not isinstance(record, dict):
+            raise StageError(f"persist registry cache entry is malformed: {key}")
+        try:
+            cached_mtime = int(record["data"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise StageError(f"persist registry cache has no numeric mtime: {key}") from exc
+        if cached_mtime != int(path.stat().st_mtime):
+            raise StageError(
+                f"registry cache is stale for {path.name}: cache={cached_mtime}, "
+                f"vendor={int(path.stat().st_mtime)}; boot stock Android once to refresh persist"
+            )
+
+
+def _chown_tree(path: Path, uid: int, gid: int) -> None:
+    for entry in [path, *path.rglob("*")]:
+        os.chown(entry, uid, gid, follow_symlinks=False)
+
+
+def _socinfo_value(directory: Path, name: str) -> bytes:
+    source = directory / name
+    if source.is_file():
+        value = source.read_bytes()
+        if value.strip():
+            return value
+        raise StageError(f"X810 socinfo input is empty: {source}")
+    fallback = SOCINFO_FALLBACK.get(name)
+    if fallback is None:
+        raise StageError(f"required X810 socinfo input is missing: {source}")
+    return (fallback + "\n").encode("ascii")
+
+
+def stage_runtime_tree(
+    *,
+    base: Path,
+    vendor_sensor: Path,
+    persist_sensor: Path,
+    socinfo: Path,
+    run_dir: Path,
+    fastrpc_uid: int,
+    fastrpc_gid: int,
+) -> Path:
+    """Build the checked runtime tree and atomically publish its /run link."""
+    config_dir = vendor_sensor / "config"
+    sns_reg_config = vendor_sensor / "sns_reg_config"
+    persist_output = persist_sensor / "registry"
+    persist_version = persist_sensor / "sns_reg_version"
+    dsp_adsp = base / "dsp" / "adsp"
+
+    _require_plain_tree(config_dir)
+    if not sns_reg_config.is_file() or sns_reg_config.is_symlink():
+        raise StageError(f"stock vendor sensor registry config is missing: {sns_reg_config}")
+    if not persist_output.is_dir() or persist_output.is_symlink():
+        raise StageError(f"stock persist registry output is missing: {persist_output}")
+    _require_plain_tree(persist_output)
+    if not persist_version.is_file() or persist_version.read_bytes() != b"version=6\0":
+        raise StageError("stock persist sns_reg_version is missing or not version 6")
+    _validate_persist_registry(config_dir, persist_output)
+    socinfo_names = _parse_registry_sources(sns_reg_config.read_bytes())
+    _require_plain_tree(dsp_adsp)
+
+    run_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+    run_link = run_dir / "gts9wifi-hexagonfs"
+    staging = Path(tempfile.mkdtemp(prefix="gts9wifi-hexagonfs.", dir=run_dir))
+    temporary_link = run_dir / f".gts9wifi-hexagonfs-link.{os.getpid()}"
+    try:
+        (staging / "dsp").mkdir()
+        _copy_tree(dsp_adsp, staging / "dsp" / "adsp")
+        (staging / "sensors").mkdir()
+        _copy_tree(config_dir, staging / "sensors" / "config")
+        shutil.copy2(sns_reg_config, staging / "sensors" / "sns_reg.conf")
+        _copy_tree(persist_output, staging / "sensors" / "registry")
+        shutil.copy2(persist_version, staging / "sensors" / "sns_reg_version")
+
+        socinfo_dest = staging / "socinfo"
+        socinfo_dest.mkdir()
+        for name in socinfo_names:
+            (socinfo_dest / name).write_bytes(_socinfo_value(socinfo, name))
+
+        _chown_tree(staging, fastrpc_uid, fastrpc_gid)
+        if run_link.exists() and not run_link.is_symlink():
+            raise StageError(f"refusing to replace non-symlink runtime path: {run_link}")
+        temporary_link.unlink(missing_ok=True)
+        temporary_link.symlink_to(staging.name, target_is_directory=True)
+        os.replace(temporary_link, run_link)
+        return run_link
+    except Exception:
+        temporary_link.unlink(missing_ok=True)
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def main() -> int:
+    try:
+        user = pwd.getpwnam("fastrpc")
+        group = grp.getgrnam("fastrpc")
+        tree = stage_runtime_tree(
+            base=BASE,
+            vendor_sensor=VENDOR_SENSOR,
+            persist_sensor=PERSIST_SENSOR,
+            socinfo=SOCINFO,
+            run_dir=RUN_DIR,
+            fastrpc_uid=user.pw_uid,
+            fastrpc_gid=group.gr_gid,
+        )
+    except (OSError, StageError) as exc:
+        print(f"gts9wifi-sensor-registry-perms: {exc}", file=sys.stderr)
+        return 1
+    print(f"gts9wifi-sensor-registry-perms: staged X810 stock HexagonFS at {tree}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

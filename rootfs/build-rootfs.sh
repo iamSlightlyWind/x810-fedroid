@@ -357,12 +357,13 @@ echo ">>> Injecting local assets"
 if [ -f "$firmware_tar" ]; then
     tar xzf "$firmware_tar" -C "$rootfs"
     sensor_tree="$rootfs/usr/share/qcom/sm8550/Samsung/gts9wifi"
-    if [ -d "$sensor_tree/sensors" ]; then
-        # The registry's cached JSON mtimes are epoch zero. Preserve this
-        # invariant across tar sources, then repeat it on-device after TWRP
-        # extracts the rootfs archive.
-        find "$sensor_tree" -exec touch -h -d @0 {} +
-    fi
+    # The pinned firmware archive is the sibling X710 donor and its sensor
+    # config/registry contains model-specific orientation and calibration.
+    # Never ship those files as X810 inputs: before sensorspd starts, the
+    # boot-time staging unit composes a volatile tree from this tablet's own
+    # mounted /vendor and /mnt/vendor/persist. Keep only the shared ADSP
+    # skeletons from the archive; socinfo is read from this kernel at runtime.
+    rm -rf -- "$sensor_tree/sensors" "$sensor_tree/socinfo"
 else
     missing_assets+=("firmware.tar.gz (Wi-Fi/BT/ADSP/audio blobs: run rootfs/fetch-local-assets.sh)")
 fi
