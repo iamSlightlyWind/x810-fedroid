@@ -10,6 +10,7 @@ PANEL_UNIT = ROOT / "rootfs/overlay/usr/lib/systemd/system/gts9wifi-panel-coldbo
 ADSP_UNIT = ROOT / "rootfs/overlay/usr/lib/systemd/system/gts9wifi-adsp-boot.service"
 WAIT_FASTRPC = ROOT / "rootfs/overlay/usr/libexec/gts9wifi-wait-fastrpc"
 ADSP_START = ROOT / "rootfs/overlay/usr/libexec/gts9wifi-adsp-boot"
+PD_MAPPER_ORDER = ROOT / "rootfs/overlay/etc/systemd/system/pd-mapper.service.d/10-gts9wifi-adsp-order.conf"
 
 
 def main() -> None:
@@ -18,6 +19,7 @@ def main() -> None:
     adsp = ADSP_UNIT.read_text(encoding="utf-8")
     helper = WAIT_FASTRPC.read_text(encoding="utf-8")
     start = ADSP_START.read_text(encoding="utf-8")
+    mapper_order = PD_MAPPER_ORDER.read_text(encoding="utf-8")
     assert "Requires=gts9wifi-panel-coldboot-recover.service" in order
     assert "After=gts9wifi-panel-coldboot-recover.service" in order
     assert "pm_test" in panel
@@ -25,6 +27,9 @@ def main() -> None:
     assert "ExecStart=/usr/libexec/gts9wifi-adsp-boot" in adsp
     assert "Requires=vendor-firmware_mnt.mount" in order
     assert "After=vendor-firmware_mnt.mount" in order
+    assert "Requires=gts9wifi-adsp-boot.service" in mapper_order
+    assert "After=gts9wifi-adsp-boot.service" in mapper_order
+    assert "Wants=gts9wifi-adsp-boot.service" not in mapper_order
     assert "source_dir=/vendor/firmware_mnt/image" in start
     assert "refusing non-read-only APNHLOS mount" in start
     assert '"$source_dir/adsp_dtb.mdt"' in start

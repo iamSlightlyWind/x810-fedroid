@@ -12,9 +12,12 @@ limit. An `After=` on `sensorspd` alone does not start or order `pd-mapper`.
 
 The additive drop-in at
 `rootfs/overlay/etc/systemd/system/pd-mapper.service.d/10-gts9wifi-adsp-order.conf`
-makes `pd-mapper` want and follow that existing, panel-ordered ADSP unit and
-retry a failed mapper start after three seconds. This matches the local
-X910 Ubuntu drop-in and the X910 pmOS drop-in, adjusted to X810 unit names.
+makes `pd-mapper` require and follow that existing, panel-ordered ADSP unit
+and retry a failed mapper start after three seconds. The stronger `Requires=`
+is deliberate: the tablet's journal showed the first ADSP firmware attempts
+failing while `pd-mapper` nevertheless started under the former `Wants=`
+dependency, then remained running when the exact CYG1 helper succeeded later.
+The local X910 ports use `Wants=`, but that did not protect this X810 sequence.
 
 The reference ports exposed an additional packaging requirement: `pd-mapper`
 needs the device's `adspr.jsn`, `adsps.jsn`, `adspua.jsn`, and `cdspr.jsn`
