@@ -5,7 +5,7 @@ After=local-fs.target
 [Service]
 Type=oneshot
 ExecStartPre=/bin/sleep 25
-ExecStart=/bin/sh -c "grep -q running /sys/class/remoteproc/remoteproc0/state || echo start > /sys/class/remoteproc/remoteproc0/state"
+ExecStart=/usr/libexec/gts9wifi-adsp-boot
 TimeoutStartSec=110
 RemainAfterExit=yes
 

@@ -1,0 +1,88 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Stage the tablet's own signed CYG1 ADSP firmware from the read-only APNHLOS
+# partition before starting remoteproc. Fedora's generic sm8550 firmware has
+# different ADSP/DTB metadata and fails PAS validation on this SM-X810 (-22).
+# Keep proprietary blobs out of the port/release while making fresh installs
+# reproducible: the stock firmware partition is retained alongside linuxroot.
+set -eu
+
+source_dir=/vendor/firmware_mnt/image
+dest_dir=/usr/lib/firmware/qcom/sm8550
+remoteproc=
+
+if ! mountpoint -q /vendor/firmware_mnt; then
+	echo "gts9wifi-adsp-boot: APNHLOS firmware mount is unavailable" >&2
+	exit 1
+fi
+mount_opts=$(findmnt -rn -M /vendor/firmware_mnt -o OPTIONS 2>/dev/null || true)
+case ",$mount_opts," in
+	*,ro,*) ;;
+	*) echo "gts9wifi-adsp-boot: refusing non-read-only APNHLOS mount" >&2; exit 1 ;;
+esac
+
+for required in adsp.mdt adsp_dtb.mdt; do
+	if [ ! -s "$source_dir/$required" ]; then
+		echo "gts9wifi-adsp-boot: missing CYG1 firmware $source_dir/$required" >&2
+		exit 1
+	fi
+done
+
+# Stage all Qualcomm ADSP ELF segments into a temporary directory first, so a
+# missing segment cannot leave the firmware directory half-overwritten.
+stage=$(mktemp -d /run/x810-adsp-fw.XXXXXX)
+trap 'rm -rf -- "$stage"' EXIT HUP INT TERM
+set -- "$source_dir/adsp.mdt" "$source_dir/adsp_dtb.mdt" \
+	"$source_dir"/adsp.b* "$source_dir"/adsp_dtb.b*
+have_adsp_segment=0
+have_dtb_segment=0
+for file do
+	[ -s "$file" ] || continue
+	name=${file##*/}
+	case "$name" in
+		adsp.b*) have_adsp_segment=1 ;;
+		adsp_dtb.b*) have_dtb_segment=1 ;;
+		adsp.mdt|adsp_dtb.mdt) ;;
+		*) continue ;;
+	esac
+	cp -- "$file" "$stage/$name"
+done
+if [ "$have_adsp_segment" -ne 1 ] || [ "$have_dtb_segment" -ne 1 ]; then
+	echo "gts9wifi-adsp-boot: incomplete CYG1 ADSP segment set" >&2
+	exit 1
+fi
+
+install -d -m 0755 "$dest_dir"
+for file in "$stage"/*; do
+	name=${file##*/}
+	if ! cmp -s -- "$file" "$dest_dir/$name" 2>/dev/null; then
+		install -m 0644 -- "$file" "$dest_dir/$name"
+	fi
+done
+
+for directory in /sys/class/remoteproc/remoteproc*; do
+	[ -r "$directory/name" ] || continue
+	if [ "$(cat "$directory/name")" = adsp ]; then
+		remoteproc=$directory
+		break
+	fi
+done
+[ -n "$remoteproc" ] || { echo "gts9wifi-adsp-boot: ADSP remoteproc not found" >&2; exit 1; }
+
+state=$(cat "$remoteproc/state")
+if [ "$state" != running ]; then
+	echo start > "$remoteproc/state"
+fi
+
+attempt=0
+while [ "$attempt" -lt 20 ]; do
+	state=$(cat "$remoteproc/state" 2>/dev/null || true)
+	[ "$state" = running ] && {
+		echo "gts9wifi-adsp-boot: ADSP running with CYG1 firmware"
+		exit 0
+	}
+	attempt=$((attempt + 1))
+	sleep 1
+done
+echo "gts9wifi-adsp-boot: ADSP did not reach running state (state=$state)" >&2
+exit 1
