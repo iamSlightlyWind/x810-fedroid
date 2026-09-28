@@ -9,6 +9,7 @@ import urllib.error
 import contextlib
 import io
 import json
+import os
 import struct
 import tempfile
 import uuid
@@ -127,26 +128,68 @@ class InstallerTests(unittest.TestCase):
             release.write_text('ID="fedora"\nID_LIKE="rhel centos"\nEVIL=$(touch /tmp/nope)\n')
             self.assertEqual(installer.linux_ids(release), {"fedora", "rhel", "centos"})
 
-    def test_no_update_requires_a_local_bundle_path(self):
+    def test_no_update_does_not_accept_an_explicit_bundle_override(self):
         stderr = io.StringIO()
-        with patch.object(sys, "argv", [str(SCRIPT), "install", "--no-update"]), \
+        with patch.object(sys, "argv", [str(SCRIPT), "install", "--no-update", "--bundle", "/tmp/ignored"]), \
              contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as error:
             installer.main()
         self.assertEqual(error.exception.code, 2)
-        self.assertIn("--no-update requires --bundle", stderr.getvalue())
+        self.assertIn("selects the cached release automatically", stderr.getvalue())
 
-    def test_no_update_passes_the_local_bundle_to_installer(self):
+    def test_no_update_uses_cached_bundle_without_querying_github(self):
         class TTY(io.StringIO):
             def isatty(self):
                 return True
 
-        local_bundle = Path("/tmp/x810-local-bundle")
-        with patch.object(sys, "argv", [str(SCRIPT), "install", "--no-update", "--bundle", str(local_bundle)]), \
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.make_valid_bundle(Path(temporary) / "cached")
+            with patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
+                            {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
+                cached_bundle = installer.validate_install_bundle(root)
+        with patch.object(sys, "argv", [str(SCRIPT), "install", "--no-update"]), \
              patch.object(sys, "stdin", TTY()), patch.object(sys, "stdout", TTY()), \
+             patch.object(installer, "find_cached_install_bundle", return_value=cached_bundle), \
              patch.object(installer, "run_install", return_value=0) as run_install, \
              patch.object(installer, "latest_release", side_effect=AssertionError("local mode must not query GitHub")):
             self.assertEqual(installer.main(), 0)
-        run_install.assert_called_once_with(local_bundle, None, False, None)
+        run_install.assert_called_once_with(cached_bundle, None, False, None)
+
+    def test_no_update_stops_if_no_valid_cache_exists(self):
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        stderr = io.StringIO()
+        with patch.object(sys, "argv", [str(SCRIPT), "install", "--no-update"]), \
+             patch.object(sys, "stdin", TTY()), patch.object(sys, "stdout", TTY()), \
+             patch.object(installer, "find_cached_install_bundle", side_effect=ValueError("no complete cached X810 install release found")), \
+             patch.object(installer, "run_install") as run_install, \
+             patch.object(installer, "latest_release", side_effect=AssertionError("must not query GitHub")), \
+             contextlib.redirect_stderr(stderr):
+            self.assertEqual(installer.main(), 2)
+        run_install.assert_not_called()
+        self.assertIn("--no-update found no valid cached install set", stderr.getvalue())
+
+    def test_find_cached_install_bundle_picks_newest_complete_valid_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            old = self.make_valid_bundle(cache / "old-release")
+            newest = self.make_valid_bundle(cache / "new-release")
+            old_manifest = old / installer.CLEAN_MANIFEST
+            new_manifest = newest / installer.CLEAN_MANIFEST
+            os.utime(old_manifest, ns=(1_000_000_000, 1_000_000_000))
+            os.utime(new_manifest, ns=(2_000_000_000, 2_000_000_000))
+            (cache / "incomplete-release").mkdir()
+            (cache / "incomplete-release" / "rootfs.tar.gz.part").write_bytes(b"partial")
+            with patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
+                            {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
+                selected = installer.find_cached_install_bundle(cache)
+            self.assertEqual(selected.root, newest.resolve())
+
+    def test_find_cached_install_bundle_fails_without_complete_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(ValueError, "no complete cached X810 install release"):
+                installer.find_cached_install_bundle(Path(temporary))
 
     def test_release_check_distinguishes_compact_manifest_from_clean_installer(self):
         checks = installer.release_checks(None)

@@ -1118,8 +1118,14 @@ def extract_clean_bundle(archive_path: Path, destination: Path) -> Path:
 
 
 @contextmanager
-def open_install_bundle(bundle_path: Path | None):
+def open_install_bundle(bundle_path: Path | InstallBundle | None):
     """Open a legacy local bundle or assemble install files from latest release."""
+    if isinstance(bundle_path, InstallBundle):
+        # --no-update fully verified this cache entry before any ADB activity;
+        # reuse the same result rather than hashing the multi-gigabyte rootfs a
+        # second time.
+        yield bundle_path
+        return
     if bundle_path is None:
         print("\nChecking GitHub for the latest X810 install release...", flush=True)
         release = latest_release()
@@ -1131,9 +1137,8 @@ def open_install_bundle(bundle_path: Path | None):
         # Use a deterministic per-tag cache so an interrupted/failed attempt
         # can resume from already verified multi-gigabyte assets. The tag is
         # hashed instead of being used as a path component.
-        cache_home = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser()
         tag_key = hashlib.sha256(tag.encode("utf-8")).hexdigest()[:24]
-        cache_path = cache_home / "x810-fedroid" / "releases" / tag_key
+        cache_path = default_release_cache_root() / tag_key
         print(f"Found {tag}; verified downloads are cached at {cache_path}.", flush=True)
         root = download_release_install_set(release, cache_path)
         yield validate_install_bundle(root)
@@ -1148,6 +1153,46 @@ def open_install_bundle(bundle_path: Path | None):
             raise ValueError(f"bundle does not exist: {path}")
         root = extract_clean_bundle(path, Path(temporary) / "bundle")
         yield validate_install_bundle(root)
+
+
+def default_release_cache_root() -> Path:
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser()
+    return cache_home / "x810-fedroid" / "releases"
+
+
+def find_cached_install_bundle(cache_root: Path | None = None) -> InstallBundle:
+    """Return the newest fully verified release cache without network access."""
+    releases = (cache_root or default_release_cache_root()).expanduser()
+    if releases.is_symlink() or not releases.is_dir():
+        raise ValueError(f"no cached X810 install release found under {releases}")
+
+    candidates: list[tuple[int, Path]] = []
+    try:
+        for child in releases.iterdir():
+            if child.is_symlink() or not child.is_dir():
+                continue
+            manifest_path = child / CLEAN_MANIFEST
+            if manifest_path.is_symlink() or not manifest_path.is_file():
+                # A release interrupted before all assets were verified never
+                # receives the completion manifest and is not an install set.
+                continue
+            try:
+                candidates.append((manifest_path.stat().st_mtime_ns, child))
+            except OSError:
+                continue
+    except OSError as error:
+        raise ValueError(f"could not inspect cached X810 releases under {releases}: {error}") from error
+
+    rejected: list[str] = []
+    for _mtime, candidate in sorted(candidates, key=lambda row: (row[0], row[1].name), reverse=True):
+        try:
+            return validate_install_bundle(candidate)
+        except (OSError, ValueError) as error:
+            rejected.append(f"{candidate.name}: {error}")
+    if rejected:
+        details = "; ".join(rejected[:3])
+        raise ValueError(f"no valid cached X810 install release found under {releases}; {details}")
+    raise ValueError(f"no complete cached X810 install release found under {releases}")
 
 
 def _release_asset_index(release: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -2428,7 +2473,7 @@ def describe_install_plan(layout: dict[str, Any], split: dict[str, int] | None,
     return "INSTALL FEDORA ON SM-X810 AND ERASE LINUXROOT", android, linux
 
 
-def run_install(bundle_path: Path | None, serial: str | None = None,
+def run_install(bundle_path: Path | InstallBundle | None, serial: str | None = None,
                 plan_only: bool = False, resume_from: Path | None = None,
                 runner=command, binary_reader=adb_binary,
                 stream_runner=None, input_func=input,
@@ -2639,7 +2684,7 @@ def run_install(bundle_path: Path | None, serial: str | None = None,
 
 def show_install_path() -> None:
     print("\nFedora on SM-X810 — installation status\n")
-    print("Run `python3 tools/x810-install` for the guided flow or `install --no-update --bundle PATH` to use a local bundle without querying GitHub.")
+    print("Run `python3 tools/x810-install` to fetch the latest release, `install --no-update` to use the newest complete cached release offline, or `install --bundle PATH` for a specific local bundle.")
     print("The installer requires Android unlocked/rooted, manual TWRP entry, one release with a verified manifest and matching install assets, and typed confirmations.")
     print("It backs up GPT metadata and boot/init_boot/vendor_boot/dtbo, then may resize only userdata/linuxroot.")
     print("For a stock layout, it writes GPT, saves a credential-free resume checkpoint, and stops for your manual TWRP reboot.")
@@ -2735,7 +2780,7 @@ def main() -> int:
     install = sub.add_parser("install", help="guided X810 Fedora installation (interactive; destructive steps are confirmed)")
     install.add_argument("--bundle", type=Path, help="local extracted bundle directory or clean-install .tar.gz (default: download latest release)")
     install.add_argument("--no-update", action="store_true",
-                         help="do not query GitHub; install from the local path supplied with --bundle")
+                         help="use the newest complete SHA-256-verified release already in the local cache; never query GitHub")
     install.add_argument("--serial", help="ADB serial when more than one device is connected")
     install.add_argument("--resume-from", type=Path, help="resume after the installer wrote GPT and you manually rebooted into TWRP; path is the private backup/checkpoint directory")
     install.add_argument("--plan-only", action="store_true", help="validate bundle/device/layout and show the plan without backups or tablet writes")
@@ -2766,12 +2811,20 @@ def main() -> int:
         parser.print_help()
         return 0
     if args.action == "install":
-        if args.no_update and args.bundle is None:
-            parser.error("install --no-update requires --bundle with a local bundle directory or clean-install .tar.gz")
+        if args.no_update and args.bundle is not None:
+            parser.error("install --no-update selects the cached release automatically; omit --bundle")
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             print("STOP: guided install requires an interactive terminal for typed confirmations.", file=sys.stderr)
             return 2
-        return run_install(args.bundle, args.serial, args.plan_only, args.resume_from)
+        bundle_path: Path | InstallBundle | None = args.bundle
+        if args.no_update:
+            try:
+                bundle_path = find_cached_install_bundle()
+            except (OSError, ValueError) as error:
+                print(f"INSTALL STOPPED: --no-update found no valid cached install set ({error}).", file=sys.stderr)
+                return 2
+            print(f"Using verified cached release {bundle_path.manifest['bundle_version']}; no GitHub request will be made.", flush=True)
+        return run_install(bundle_path, args.serial, args.plan_only, args.resume_from)
     if args.action == "restore-boot-set":
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             print("STOP: boot restore requires an interactive terminal for typed confirmation.", file=sys.stderr)

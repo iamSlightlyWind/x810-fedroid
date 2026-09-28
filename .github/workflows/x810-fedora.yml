@@ -252,6 +252,7 @@ jobs:
           python3 tools/test-x810-moonlight-v4l2.py
           python3 tools/test-x810-rootfs-archive.py
           python3 tools/test-x810-sensor-attach-recovery.py
+          python3 tools/test-x810-install.py
           python3 tools/test-x810-pd-limits.py
           python3 tools/test-x810-npu-memory-policy.py
           python3 tools/test-x810-fingerprint-kernel-contract.py
