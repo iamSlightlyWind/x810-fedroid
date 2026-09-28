@@ -114,10 +114,14 @@ if command -v systemctl >/dev/null 2>&1; then
     if command -v modprobe >/dev/null 2>&1; then
         modprobe icc_osm_l3 >/dev/null 2>&1 || :
     fi
+    # Migrate the enabled sensor-recovery unit from its previous
+    # multi-user.target link to the new graphical.target ordering. Reenable
+    # changes symlinks only; do not trigger a live sensorspd/ADSP restart.
+    systemctl reenable gts9wifi-wait-sensor-proxy.service \
+        >/dev/null 2>&1 || :
     # Keep ADSP and sensorspd out of standalone preset enablement. The
-    # sensor-proxy recovery unit requests them only after panel coldboot
-    # recovery, with FastRPC node ownership and HexagonFS cache permissions
-    # prepared first.
+    # graphical sensor-recovery unit requests them after GNOME and panel
+    # recovery, with FastRPC ownership and HexagonFS permissions prepared.
     systemctl enable gts9wifi-sensor-registry-perms.service \
         >/dev/null 2>&1 || :
     systemctl disable --quiet gts9wifi-adsp-boot.service \

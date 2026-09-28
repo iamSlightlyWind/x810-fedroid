@@ -52,6 +52,10 @@ def main() -> int:
             "SSC recovery must be started by the desktop target, not multi-user")
     require("After=display-manager.service" in sensor_pd_dropin,
             "sensor-PD can still attach before GNOME and miss delayed SSC failure")
+    require("systemctl reenable gts9wifi-wait-sensor-proxy.service" in spec,
+            "RPM update does not migrate the old multi-user enablement link")
+    require("systemctl try-restart gts9wifi-wait-sensor-proxy.service" not in spec,
+            "RPM update must not start/restart the sensor recovery in a live session")
 
     for patch in (
         "notify-slow-sensor-discovery.patch",
