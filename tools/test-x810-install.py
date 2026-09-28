@@ -971,6 +971,18 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(client.streams, ["rootfs.tar.gz"])
             provision.assert_not_called()
 
+    def test_install_password_has_no_minimum_length_requirement(self):
+        text_answers = iter(["Alice Example", "alice", "tablet"])
+        password_answers = iter(["42", "42"])
+        with patch.object(installer, "hash_password", return_value="$6$short-pass") as hash_password:
+            details = installer.prompt_install_details(
+                100 * 1024**3, 32 * 1024**3,
+                password_reader=lambda _prompt: next(password_answers),
+                input_func=lambda _prompt: next(text_answers),
+            )
+        self.assertEqual(details["password_hash"], "$6$short-pass")
+        hash_password.assert_called_once_with("42")
+
     def test_account_setup_never_stages_plaintext_password(self):
         calls = []
         class FakeClient:

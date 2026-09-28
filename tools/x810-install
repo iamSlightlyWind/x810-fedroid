@@ -1848,8 +1848,6 @@ def prompt_install_details(total_bytes: int, minimum_fedora_bytes: int,
         repeated = password_reader("Repeat password: ")
         if not password:
             print("Password may not be empty.")
-        elif len(password) < 8:
-            print("Use at least 8 characters.")
         elif "\n" in password or "\r" in password or "\x00" in password:
             print("Password may not contain newline or NUL characters.")
         elif password != repeated:
