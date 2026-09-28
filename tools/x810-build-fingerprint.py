@@ -21,19 +21,24 @@ KVER = "7.2.0-gts9wifi"
 # Bump the relevant revision when its reusable-workflow Docker commands,
 # toolchain setup, build flags, or output assembly behavior changes. Cache-only
 # changes do not require a bump.
-KERNEL_RECIPE_REVISION = "1"
-ROOTFS_RECIPE_REVISION = "2"
+KERNEL_RECIPE_REVISION = "2"
+ROOTFS_RECIPE_REVISION = "3"
 FULL_SET_RECIPE_REVISION = "1"
 
-KERNEL_PATHS = ("kernel", "boot", "tools/make-twrp-zip.py")
+KERNEL_PATHS = (
+    "kernel", "boot", "firmware/x810-cyg1",
+    "tools/make-twrp-zip.py", "tools/x810-gpu-firmware.py",
+)
 ROOTFS_PATHS = (
     "rootfs",
+    "firmware/x810-cyg1",
     "specs",
     "tools/bdftool.py",
     "tools/stamp-port-metadata.py",
     "tools/build-port-support-rpm.sh",
     "tools/test-port-build-contract.py",
     "tools/verify-x810-rootfs-archive.py",
+    "tools/x810-gpu-firmware.py",
 )
 FULL_SET_PATHS = (
     "tools/build-x810-clean-install-bundle.py",

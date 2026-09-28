@@ -175,23 +175,11 @@ cryptographic signature. Rootfs builds pin Fedora compose repositories and sourc
 record package/source provenance, and normalize archive metadata; this does
 not claim bit-for-bit reproducibility across all compiler/toolchain behavior.
 
-The rootfs and boot-image builds also need the six exact X810 CYG1 Adreno
-firmware blobs. Fedora's generic SM8550 files share the same names but are
-rejected by the tablet's secure GPU loader. Do not add the proprietary blobs
-or device-unique data to git or the public bundle. For a local build, stage
-them from an owner-supplied extraction with:
-
-```sh
-python3 tools/x810-gpu-firmware.py stage \
-  --source /path/to/X810-CYG1/vendor-extract/firmware \
-  --dest local-assets/x810-gpu-firmware
-```
-
-GitHub Actions expects an `X810_GPU_FIRMWARE_URL` secret pointing to an
-archive of those files (and `X810_GPU_FIRMWARE_TOKEN` if it is private). Each
-blob is SHA-256 checked, and the final `vendor_boot.img` is checked to contain
-the exact signed set before publication. A missing or mismatched set fails
-the build rather than emitting a release that falls back to a TTY.
+The rootfs and boot-image builds include the six exact X810 CYG1 Adreno
+firmware blobs under `firmware/x810-cyg1/`. The repository owner confirmed
+redistribution rights. Each blob is SHA-256 checked, and the final
+`vendor_boot.img` is checked to contain the exact signed set before
+publication. Fedora's generic same-named SM8550 files are not interchangeable.
 
 ## Useful read-only commands
 

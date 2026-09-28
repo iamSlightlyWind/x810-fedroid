@@ -105,6 +105,7 @@ repo_dir="$(dirname "$script_dir")"
 rootfs="${ROOTFS_DIR:-$repo_dir/out/rootfs}"
 outdir="${OUT_DIR:-$repo_dir/out}"
 assets="$repo_dir/local-assets"
+gpu_firmware_source="${X810_GPU_FIRMWARE_DIR:-$repo_dir/firmware/x810-cyg1}"
 rootfs_real="$(realpath -m "$rootfs")"
 dnf_cache_real="$(realpath -m "$dnf_cache_dir")"
 if [[ "$dnf_cache_real" == "$rootfs_real" || "$dnf_cache_real" == "$rootfs_real/"* ]]; then
@@ -112,6 +113,13 @@ if [[ "$dnf_cache_real" == "$rootfs_real" || "$dnf_cache_real" == "$rootfs_real/
     exit 2
 fi
 mkdir -p "$dnf_cache_dir"
+
+# The generic Fedora a740_zap is not accepted by the X810 CYG1 TrustZone.
+# Fail before the expensive DNF install instead of emitting an image that
+# predictably leaves GNOME/GDM at a TTY. Verify the redistributed, pinned
+# CYG1 blobs before building either boot images or the rootfs.
+python3 "$repo_dir/tools/x810-gpu-firmware.py" verify-source \
+    --source "$gpu_firmware_source"
 
 tree_sha256() {
     local tree="$1"
@@ -130,6 +138,7 @@ source_inputs_sha256() {
             sha256sum rootfs/build-rootfs.sh rootfs/stage-public-firmware.sh \
                 tools/bdftool.py tools/stamp-port-metadata.py \
                 tools/build-port-support-rpm.sh tools/build-libcamera-hi1337-ipa.sh \
+                tools/x810-gpu-firmware.py \
                 tools/build-x810-sensor-proxy.sh tools/test-x810-sensor-proxy-claim-race.py \
                 tools/test-x810-sensor-proxy-stack.py \
                 tools/test-port-build-contract.py \
@@ -407,6 +416,11 @@ if ! command -v python3 >/dev/null 2>&1; then
     dnf -y "${dnf_repo_args[@]}" install python3
 fi
 "$script_dir/stage-public-firmware.sh" "$rootfs"
+
+echo ">>> Staging the exact SM-X810 CYG1 Adreno 740 firmware"
+python3 "$repo_dir/tools/x810-gpu-firmware.py" stage \
+    --source "$gpu_firmware_source" \
+    --dest "$rootfs/usr/lib/firmware/qcom"
 
 if [ -d "$assets/modules/$kver" ]; then
     mkdir -p "$rootfs/usr/lib/modules"

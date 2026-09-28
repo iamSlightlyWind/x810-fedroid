@@ -371,8 +371,14 @@ The GPU firmware has to be in the initramfs. The Samsung-signed zap shader
 plus `a740_sqe.fw` and `gmu_gen70200.bin` are dracut `install_items`, because
 the GPU probes before the root filesystem is up. The device tree's
 `zap-shader` node names `qcom/a740_zap.mdt` with the split `.b00`/`.b01`/
-`.b02` form, while some sources publish a single `.mbn` — check which form the
-loader expects.
+`.b02` form. Fedora's generic, same-named SM8550 blobs are not interchangeable
+with this tablet's CYG1 signed firmware: the generic set is rejected by the
+GPU secure loader (`error -22`), leaving accelerated GNOME unable to start.
+The six CYG1 blobs are pinned by SHA-256 in `firmware/x810-cyg1/`, staged into
+both the rootfs and vendor-boot initramfs, and verified in the finished
+initramfs. The repository owner confirmed redistribution rights for this set.
+If any firmware hash differs, the build stops rather than publishing an image
+known to fail GPU startup.
 
 There is no proprietary Qualcomm GPU driver to switch away from on this
 device: the kernel driver is mainline and both GL and Vulkan are Mesa.

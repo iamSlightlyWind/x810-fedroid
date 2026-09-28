@@ -48,6 +48,8 @@ x810-install-backup-*/
 *.tar.lz4
 *.img
 *.bin
+# Owner-authorized, SHA-256-pinned X810 CYG1 GPU firmware redistributed by this port.
+!firmware/x810-cyg1/gmu_gen70200.bin
 *.log
 __pycache__/
 *.py[cod]

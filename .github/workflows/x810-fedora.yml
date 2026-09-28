@@ -113,6 +113,7 @@ jobs:
           bash -n tools/build-port-support-rpm.sh
           bash -n tools/build-libcamera-hi1337-ipa.sh
           bash -n tools/build-x810-sensor-proxy.sh
+          bash -n tools/diagnose-x810-mic.sh
           python3 tools/test-port-metadata.py
           python3 tools/test-port-update-bundle.py
           python3 tools/test-x810-sensor-proxy-stack.py
@@ -245,6 +246,7 @@ jobs:
         run: |
           python3 tools/test-x810-build-fingerprint.py
           python3 tools/test-x810-release-manifest.py
+          python3 tools/test-x810-gpu-firmware.py
           python3 tools/test-rootfs-repo-gpg.py
           python3 tools/test-rootfs-zram-config.py
           python3 tools/test-port-rpm-staging.py
@@ -438,6 +440,14 @@ jobs:
           path: ${{ runner.temp }}/x810-dnf-kernel-cache
           key: x810-dnf-kernel-${{ runner.arch }}-${{ needs.plan.outputs.fedora_base_compose }}-${{ needs.plan.outputs.fedora_updates_compose }}
 
+      - name: Verify and stage X810 CYG1 GPU firmware
+        run: |
+          set -euo pipefail
+          destination="$RUNNER_TEMP/x810-gpu-firmware"
+          mkdir -p "$destination"
+          python3 tools/x810-gpu-firmware.py stage \
+            --source firmware/x810-cyg1 --dest "$destination"
+
       - name: Build kernel RPM, initramfs, boot bundle and TWRP zip
         env:
           FIRMWARE_URL: https://github.com/nacht20-de/gts9wifi-fedora/releases/download/kernel-7.2.0-rc3-gts9wifi-2/firmware-samsung-gts9wifi-v2.tar.gz
@@ -458,6 +468,7 @@ jobs:
             -v "$PWD:/work" -w /work \
             -v "$RUNNER_TEMP/x810-kernel-cache:/x810-cache" \
             -v "$RUNNER_TEMP/x810-dnf-kernel-cache:/var/cache/libdnf5" \
+            -v "$RUNNER_TEMP/x810-gpu-firmware:/x810-gpu-firmware:ro" \
             quay.io/fedora/fedora:44 \
             bash -lc '
               set -euxo pipefail
@@ -513,6 +524,8 @@ jobs:
               curl -sfL "$FIRMWARE_URL" -o /tmp/fw.tar.gz
               echo "$FIRMWARE_SHA256  /tmp/fw.tar.gz" | sha256sum -c -
               tar xzf /tmp/fw.tar.gz -C /
+              python3 /work/tools/x810-gpu-firmware.py stage \
+                --source /x810-gpu-firmware --dest /usr/lib/firmware/qcom
               cp -a /work/boot/dracut/90gts9wifi-usbnet /usr/lib/dracut/modules.d/
               cp /work/boot/dracut/dracut.conf.d/gts9wifi.conf /usr/lib/dracut/dracut.conf.d/
               dracut --kver "$KVER" --force /tmp/initramfs.img
@@ -522,6 +535,7 @@ jobs:
                 --initramfs /tmp/initramfs.img \
                 --cmdline /work/boot/cmdline.txt \
                 --bootconfig /work/boot/bootconfig.txt --out out-bundle
+              python3 /work/tools/x810-gpu-firmware.py check-vendor-boot out-bundle/vendor_boot.img
               shopt -s nullglob
               kernel_rpms=(out-kernel/linux-x810-*.rpm)
               [ "${#kernel_rpms[@]}" -eq 1 ] || { echo "expected exactly one linux-x810 RPM" >&2; exit 1; }
@@ -796,6 +810,14 @@ jobs:
           curl -sfL "$FIRMWARE_URL" -o _ci/firmware.tar.gz
           echo "$FIRMWARE_SHA256  _ci/firmware.tar.gz" | sha256sum -c -
 
+      - name: Verify and stage X810 CYG1 GPU firmware
+        run: |
+          set -euo pipefail
+          destination="$RUNNER_TEMP/x810-gpu-firmware"
+          mkdir -p "$destination"
+          python3 tools/x810-gpu-firmware.py stage \
+            --source firmware/x810-cyg1 --dest "$destination"
+
       - name: Download the exact RPM from this repository's X810 kernel release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -839,11 +861,13 @@ jobs:
           docker run --rm \
             -v "$PWD:/work" -w /work \
             -v "$RUNNER_TEMP/x810-dnf-rootfs-cache:/x810-dnf-cache" \
-            -e FEDORA_RELEASE -e FEDORA_BASE_COMPOSE -e FEDORA_UPDATES_COMPOSE \
+            -v "$RUNNER_TEMP/x810-gpu-firmware:/x810-gpu-firmware:ro" \
+          -e FEDORA_RELEASE -e FEDORA_BASE_COMPOSE -e FEDORA_UPDATES_COMPOSE \
             -e GTS9_DESKTOP -e PORT_VERSION \
             -e FIRMWARE_TARBALL=/work/_ci/firmware.tar.gz \
             -e FIRMWARE_SOURCE_URL="$FIRMWARE_URL" \
             -e KERNEL_RPM=/work/_ci/kernel.rpm \
+            -e X810_GPU_FIRMWARE_DIR=/x810-gpu-firmware \
             -e X810_DNF_CACHE_DIR=/x810-dnf-cache \
             -e BUILDER_IMAGE=quay.io/fedora/fedora:44 \
             quay.io/fedora/fedora:44 \

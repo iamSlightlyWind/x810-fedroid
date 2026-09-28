@@ -108,21 +108,23 @@ class FingerprintTests(unittest.TestCase):
     def test_recipe_revision_changes_only_its_component_key(self):
         kernel_before = self.key("kernel")
         rootfs_before = self.key("rootfs")
+        next_kernel_revision = str(int(MODULE.KERNEL_RECIPE_REVISION) + 1)
+        next_rootfs_revision = str(int(MODULE.ROOTFS_RECIPE_REVISION) + 1)
         self.assertNotEqual(
             kernel_before,
-            self.key("kernel", kernel_recipe_revision="2"),
+            self.key("kernel", kernel_recipe_revision=next_kernel_revision),
         )
         self.assertNotEqual(
             rootfs_before,
-            self.key("rootfs", rootfs_recipe_revision="3"),
+            self.key("rootfs", rootfs_recipe_revision=next_rootfs_revision),
         )
         self.assertEqual(
             kernel_before,
-            self.key("kernel", rootfs_recipe_revision="2"),
+            self.key("kernel", rootfs_recipe_revision=MODULE.ROOTFS_RECIPE_REVISION),
         )
         self.assertEqual(
             rootfs_before,
-            self.key("rootfs", kernel_recipe_revision="2"),
+            self.key("rootfs", kernel_recipe_revision=MODULE.KERNEL_RECIPE_REVISION),
         )
 
     def test_full_set_key_tracks_assembler_inputs_and_both_components(self):
