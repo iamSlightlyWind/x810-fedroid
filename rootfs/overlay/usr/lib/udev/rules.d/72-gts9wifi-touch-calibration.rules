@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT
+# Restore the four-corner FTS1BA90A calibration measured on this SM-X810.
+# The transform was applied successfully on the tablet, but used to live only
+# under /etc and was therefore lost when linuxroot was reinstalled. Keep the
+# correction small and device-specific; GNOME/Mutter still handles output
+# rotation separately.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="FTS1BA90A Touchscreen", \
+	ENV{LIBINPUT_CALIBRATION_MATRIX}="0.94655 0 -0.02330 0 0.94728 0.06605"

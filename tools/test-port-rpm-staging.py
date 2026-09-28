@@ -13,6 +13,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SupportRpmStagingTests(unittest.TestCase):
+    def test_measured_x810_touch_calibration_is_in_fresh_image_and_update(self):
+        rule_path = (
+            ROOT
+            / "rootfs/overlay/usr/lib/udev/rules.d/72-gts9wifi-touch-calibration.rules"
+        )
+        self.assertTrue(rule_path.is_file())
+        rule = rule_path.read_text(encoding="utf-8")
+        self.assertIn('ATTRS{name}=="FTS1BA90A Touchscreen"', rule)
+        self.assertIn(
+            'ENV{LIBINPUT_CALIBRATION_MATRIX}="0.94655 0 -0.02330 0 0.94728 0.06605"',
+            rule,
+        )
+
+        # Both install paths stage the complete rootfs overlay, so this one
+        # measured device rule reaches clean installs and support-RPM updates.
+        for builder in ("rootfs/build-rootfs.sh", "tools/build-port-support-rpm.sh"):
+            self.assertIn(
+                'cp -a "$repo_dir/rootfs/overlay/."',
+                (ROOT / builder).read_text(encoding="utf-8"),
+            )
+
     def test_ppd_profile_map_targets_a_real_tuned_performance_profile(self):
         contract = runpy.run_path(str(ROOT / "tools/test-port-build-contract.py"))
         check_mapping = contract["check_power_profile_mapping"]
