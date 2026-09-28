@@ -14,6 +14,7 @@ CARD_LINK = OVERLAY / "conf.d/sm8550/Samsung-Galaxy-Tab-S9.conf"
 CARD = OVERLAY / "Qualcomm/sm8550/GTS9/Samsung-Galaxy-Tab-S9.conf"
 HIFI = OVERLAY / "Qualcomm/sm8550/GTS9/HiFi.conf"
 DTS = ROOT / "kernel/files/sm8550-samsung-gts9wifi.dts"
+DIAGNOSTIC = ROOT / "tools/diagnose-x810-mic.sh"
 
 
 def section(text: str, start: str, end: str) -> str:
@@ -40,6 +41,14 @@ def main() -> None:
     verb = section(hifi_text, "SectionVerb {", 'SectionDevice."Speaker"')
     sound = section(dts_text, "\tsound {", "\n\t};\n};")
     tx_macro = section(dts_text, "&lpass_txmacro {", "\n};")
+
+    # Keep the card-level description aligned with the actual board route. A
+    # stale VA-macro description previously contradicted the CYG1 TX-macro
+    # capture path and made follow-up debugging ambiguous.
+    if "through LPASS TX macro DMIC1/3" not in card_text:
+        raise AssertionError("card UCM description does not identify CYG1 TX DMIC route")
+    if "straight into the LPASS VA macro" in card_text:
+        raise AssertionError("card UCM still claims capture uses the VA macro")
 
     # CYG1's X810 gts9pwifi mixer_paths.xml routes main/sub mic through TX
     # DMIC1/3. Keep UCM, the DAI link, and the LPI DMIC pins on that same path.
@@ -95,7 +104,20 @@ def main() -> None:
     if 'File "/Qualcomm/sm8550/GTS9/HiFi.conf"' not in card_text:
         raise AssertionError("X810 sound-card profile no longer selects the HiFi route")
 
+    diagnostic = DIAGNOSTIC.read_text(encoding="utf-8")
+    if not DIAGNOSTIC.stat().st_mode & 0o111:
+        raise AssertionError("X810 microphone diagnostic is not executable")
+    for evidence in (
+        "arecord -l", "amixer", "MultiMedia3 Mixer TX_CODEC_DMA_TX_3",
+        "TX DMIC MUX0", "TX DMIC MUX1", "pcm2c/sub0/status", "wpctl status",
+    ):
+        if evidence not in diagnostic:
+            raise AssertionError(f"mic diagnostic omits required read-only evidence: {evidence}")
+    if "arecord -D" in diagnostic or "speaker-test" in diagnostic:
+        raise AssertionError("mic diagnostic must not capture audio or play a test tone by default")
+
     print("PASS: X810 stock TX DMIC1/3 -> TX macro -> MultiMedia3 route is consistent")
+    print("PASS: read-only mic diagnostic covers ALSA routing and PipeWire visibility")
     print("NOTE: static contract only; actual microphone capture remains unverified")
 
 
