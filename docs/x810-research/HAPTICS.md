@@ -12,8 +12,12 @@ present, then uses `fdtget` to verify that the compiled DTB still points to
 active-high GPIO18 on the SM8550 TLMM controller. CI also runs the source
 contract test; compilation remains part of the kernel RPM build.
 
-This is a source-side probe fix, not yet a device-confirmed haptics fix. After
-installing the newly built kernel through the usual recovery workflow, confirm
-that the vibrator input device registers and that a short force-feedback test
-actually vibrates the tablet. Do not treat a successful kernel build or DTB
-check as proof of motor operation.
+The latest standalone kernel release
+[`x810-kernel-4b02b0c61f8e6090`](https://github.com/iamSlightlyWind/x810-fedroid/releases/tag/x810-kernel-4b02b0c61f8e6090)
+includes the compiled kernel/DTB and RPM from source commit
+`562374ff64ce7e9ea8ae844768bd548cb88c4099`. Tab Companion build #19 also
+packages its haptics service and UI. These artifact checks do not prove that
+the tablet runs that boot set or that the motor works. After installation,
+confirm that the vibrator input device registers and that a short force-feedback
+test actually vibrates the tablet; a successful build or DTB check alone is
+not proof of motor operation.

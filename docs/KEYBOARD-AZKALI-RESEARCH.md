@@ -77,13 +77,16 @@ The candidate still has **not** been flashed or tested on EF-DX815, so it is
 not a confirmed fix. Keep the restore ZIP accessible in TWRP before choosing
 whether to test the candidate.
 
-Tab Companion's Fedora X810 package now has an optional, authenticated
-“Reset keyboard controller” action. It narrowly verifies the connected
+Tab Companion Fedora release
+[`Tab Companion build #19`](https://github.com/iamSlightlyWind/tab-companion/releases/tag/tab-companion-build-36331825449)
+(`1.4.2.19`) ships an optional, authenticated “Reset keyboard controller”
+action. It narrowly verifies the connected
 EF-DX815, rebinds only I2C device `10-002a`, and reports whether the controller
 reinitialized. It does not access key events, write controller firmware, or
 touch partitions. Its helper logic is unit-tested against a synthetic sysfs
-tree; live driver recovery still requires installing that updated app package
-and exercising it on the tablet.
+tree (three tests pass); this proves helper behavior, not sustained hardware
+reliability. A live driver test still requires installing the app and
+exercising it on the tablet.
 
 ## Remaining validation
 

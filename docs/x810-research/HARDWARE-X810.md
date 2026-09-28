@@ -220,7 +220,8 @@ Raw captures are in git-ignored `probes/android-baseline/`.
   `CONFIG_INPUT_GPIO_VIBRA=y` as a built-in driver. The same-numbered GPIO18 in the LPASS
   pin controller is a separate controller and is not a pinmux conflict.
 - The production DTB and built-in vibrator driver compile against the local
-  Linux 7.2 tree. The live tablet still lacks this DT node because the matching
-  four-image boot set has not been flashed. Haptics therefore remain
-  unverified; validate the evdev `FF_RUMBLE` device and one brief Tab Companion
-  test after installing the matching boot images through TWRP.
+  Linux 7.2 tree and are included in standalone kernel release
+  `x810-kernel-4b02b0c61f8e6090`. This does not prove the tablet runs that set
+  or that the motor responds. Haptics remain unverified; validate the evdev
+  `FF_RUMBLE` device and one brief Tab Companion test after installing the
+  matching boot images through TWRP.

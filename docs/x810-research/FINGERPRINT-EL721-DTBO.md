@@ -59,6 +59,20 @@ withdrawing that regulator/changeset. This is source/API-correctness work, not
 evidence that the regulator voltage or fingerprint authentication has been
 validated on-device.
 
+## Release status (2026-09-28)
+
+The standalone kernel release
+[`x810-kernel-4b02b0c61f8e6090`](https://github.com/iamSlightlyWind/x810-fedroid/releases/tag/x810-kernel-4b02b0c61f8e6090),
+from source commit `562374ff64ce7e9ea8ae844768bd548cb88c4099`, packages
+`egis_el721.ko.zst` and `snvm.ko.zst`; its kernel build includes the board-id
+04 GPIO mapping described above. The latest full Fedora release is still
+`x810-fedora-port-build-36381339176`, from older commit
+`e481356c9c06e97920d52765f5668cea2034ad06`. Therefore the standalone kernel
+asset is newer than the complete install set, and release inspection cannot
+prove either was installed or that the reader binds on the tablet. This kernel
+release does not provide an authentication backend, enrollment flow, or
+secure-world provisioning.
+
 Source contract/fixture check:
 
 ```sh

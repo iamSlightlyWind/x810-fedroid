@@ -478,10 +478,10 @@ nor loaded modules prove that the secure biometric path is ready. There is no
 X810 `libfprint` backend or supported enrollment/verification path in this
 repository, and the GNOME/PAM integration has not been validated for this port.
 
-The source now also maps the CYG1 board-id 04 stock `etspi-sleepPin` to the
-driver's enable/reset GPIO, based on the local Samsung CYG1 driver/DTBO audit.
-The candidate compiles against Linux 7.2, but is not yet in the port kernel
-bundle and has not been exercised on-device; it does not resolve the separate
+The CYG1 board-id 04 stock `etspi-sleepPin` mapping and EL721/K250A modules are
+included in standalone kernel release `x810-kernel-4b02b0c61f8e6090`. The
+latest full Fedora set is older, and the new kernel release has not been
+confirmed installed or exercised on-device. It does not resolve the separate
 TrustZone authentication path. See
 [`FINGERPRINT-EL721-DTBO.md`](x810-research/FINGERPRINT-EL721-DTBO.md).
 
@@ -504,9 +504,10 @@ delete, import, or restore credentials during that audit.
 
 Notes:
 
-- `rootfs/overlay/usr/lib/modules-load.d/gts9wifi-fingerprint.conf` currently
-  autoloads the sensor and secure-element modules only; it does not establish
-  that the SPU, TEE session, or biometric backend is ready.
+- `rootfs/overlay/usr/lib/modules-load.d/gts9wifi-fingerprint.conf` requests
+  autoload of sensor and secure-element modules; it does not establish that
+  the running kernel contains them or that the SPU, TEE session, or biometric
+  backend is ready.
 - The similar X910 Ubuntu port has a substantially more complete EL721 stack,
   but its owner documents a persistent, boot-only secure DMA owner and
   per-device firmware/calibration inputs. That is useful architectural

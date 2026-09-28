@@ -41,9 +41,9 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 | Motion sensors / auto-rotation | ❌ | Rotation is unavailable on the installed system: the SSC QRTR service is still absent. Source changes address sensor-registry setup and ADSP/sensorspd startup ordering, but the service recovery and auto-rotation have not been validated after an update or clean boot. |
 | Battery / charging | 🟡 | Battery telemetry and charging work; the prior 96% cap is fixed. Not all chargers and charge behaviors have been validated. |
 | USB-C / powered USB hub | ✅ | The owner has confirmed that a powered USB hub supplies power to the tablet. Data passthrough and other host, dock, and display combinations are not all tested. |
-| Haptics | 🟡 | Kernel support is prepared; physical vibration validation with the matching updated kernel is pending. |
+| Haptics | 🟡 | Kernel/DTB support is in the latest standalone kernel release; physical vibration validation on that kernel is pending. |
 | Suspend / resume | 🟡 | Double-tap-to-wake ended one 12.7-second suspend test, but suspend/resume is not qualified for dependable daily use and freezes have been reported. Save work; avoid unattended suspend. |
-| Fingerprint reader | ❌ | Fingerprint login is not available. Kernel-module packaging is still experimental; the reader stack, secure-world/provisioning, and Linux authentication path have not been validated end-to-end. |
+| Fingerprint reader | ❌ | Authentication is unavailable. The latest standalone kernel release packages the EL721/K250A modules and CYG1 GPIO mapping, but its installation/runtime is unverified; secure-world and Linux authentication remain unvalidated. |
 | Charging bypass | ❌ | No safe, verified Linux control is available. |
 
 These statuses describe what has been observed on this device, not promises for
