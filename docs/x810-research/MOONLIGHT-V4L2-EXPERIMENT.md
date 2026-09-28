@@ -45,6 +45,7 @@ interoperability bug); the fix landed in
 and is present in the pinned v6.1.0 source. X810 uses `qcom-iris`, not Venus,
 so this is relevant stateful-M2M precedent, not proof of X810 support. See
 [Moonlight v6.1.0 FFmpeg integration](https://github.com/moonlight-stream/moonlight-qt/blob/v6.1.0/app/streaming/video/ffmpeg.cpp),
+[Flathub's pinned FFmpeg source](https://github.com/cgutman/FFmpeg/commit/d17de7e33f1332cc2fb3f5afab9ed4f29699c5a0),
 [Flathub manifest](https://github.com/flathub/com.moonlight_stream.Moonlight/blob/master/com.moonlight_stream.Moonlight.json),
 [Flatpak device permissions](https://docs.flatpak.org/en/latest/sandbox-permissions.html#device-access),
 and the [Moonlight hardware-decoding guide](https://github.com/moonlight-stream/moonlight-docs/wiki/Fixing-Hardware-Decoding-Problems).
@@ -59,14 +60,16 @@ this launcher or decoder availability.
 The distinction matters for Moonlight's codec reporting: `h264_v4l2m2m` is an
 FFmpeg stateful V4L2 wrapper, not a VA-API or FFmpeg hardware-device decoder.
 Moonlight provides an explicit decoder-hint path for this kind of decoder.
-In v6.1.0, Moonlight's `isHardwareAccelerated()` check tests its FFmpeg
-hardware-device configuration or `AV_CODEC_CAP_HARDWARE`; the V4L2 M2M names
-are also present in its separate non-hwaccel capability table. Thus Moonlight's
-generic availability reporting may still classify the V4L2 M2M decoder as
-software, and `Force hardware` selection can reject it. For this experiment,
-keep Moonlight's decoder selection on **Automatic** and use the per-launch
-hint. Use the initialization log and observed V4L2 use—not a generic
-"hardware accelerator" label or decoder list—to establish which path ran.
+The pinned Flathub FFmpeg source (`d17de7e33f1332cc2fb3f5afab9ed4f29699c5a0`)
+sets `AV_CODEC_CAP_HARDWARE` on its V4L2 M2M decoder definitions, and Moonlight
+v6.1.0's `isHardwareAccelerated()` checks that flag. Therefore a successfully
+initialized `h264_v4l2m2m`/`hevc_v4l2m2m` decoder should be reported as hardware
+and should be eligible for **Force hardware**. The earlier claim that Moonlight
+would generically classify these wrappers as software was incorrect. If the
+hardware option is absent or the probe warns, diagnose decoder initialization,
+device access, firmware, and renderer compatibility; the hint only selects the
+decoder and does not fix initialization. Keep **Automatic** for the initial
+live-stream test until those paths are confirmed.
 
 The public Fedora release does not redistribute the proprietary VPU firmware.
 A clean install needs the owner's X810 CYG1 firmware staged by the documented

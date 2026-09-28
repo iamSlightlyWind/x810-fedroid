@@ -433,9 +433,12 @@ on which decode API it speaks:
 Moonlight's opt-in launcher is described in
 [`MOONLIGHT-V4L2-EXPERIMENT.md`](x810-research/MOONLIGHT-V4L2-EXPERIMENT.md).
 Its Flatpak exposes device nodes to the app, and its FFmpeg backend can be
-hinted to use V4L2 M2M. This is separate from VA-API and does not change
-browser support. Until a live Moonlight stream is checked, treat its hardware
-decode as unverified.
+hinted to use V4L2 M2M. The pinned Flathub FFmpeg decoder advertises
+`AV_CODEC_CAP_HARDWARE`, which Moonlight recognizes after successful
+initialization. If it still shows no hardware codec, investigate the failed
+probe/init path; a hint does not prove initialization. This is separate from
+VA-API and does not change browser support. Until a live Moonlight stream is
+checked, treat its hardware decode as unverified.
 
 Measured: the same 1080p VP9 file costs 0.15 s of user CPU in hardware against
 3.20 s in software.

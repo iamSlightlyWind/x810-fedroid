@@ -100,8 +100,11 @@ class MoonlightV4L2LauncherTests(unittest.TestCase):
         experiment = (ROOT / "docs/x810-research/MOONLIGHT-V4L2-EXPERIMENT.md").read_text(encoding="utf-8")
         normalized_experiment = " ".join(experiment.split())
         self.assertIn("does not bind a specific `/dev/videoN` node", normalized_experiment)
-        self.assertIn("decoder selection on **Automatic**", normalized_experiment)
-        self.assertIn("may still classify the V4L2 M2M decoder as software", normalized_experiment)
+        self.assertIn("Keep **Automatic** for the initial live-stream test", normalized_experiment)
+        self.assertIn("sets `AV_CODEC_CAP_HARDWARE` on its V4L2 M2M decoder definitions", normalized_experiment)
+        self.assertIn("should be reported as hardware", normalized_experiment)
+        self.assertIn("earlier claim that Moonlight would generically classify these wrappers as software was incorrect", normalized_experiment)
+        self.assertIn("diagnose decoder initialization", normalized_experiment)
         self.assertIn("H264_DECODER_HINT)", normalized_experiment)
         self.assertIn("Moonlight streaming decode has not been tested on the tablet", normalized_experiment)
 
