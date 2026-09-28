@@ -42,7 +42,7 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 | Battery / charging | 🟡 | Battery telemetry and charging work; the prior 96% cap is fixed. Not all chargers and charge behaviors have been validated. |
 | USB-C / powered USB hub | ✅ | The owner has confirmed that a powered USB hub supplies power to the tablet. Data passthrough and other host, dock, and display combinations are not all tested. |
 | Haptics | 🟡 | Kernel/DTB support is in the latest standalone kernel release; physical vibration validation on that kernel is pending. |
-| Suspend / resume | 🟡 | Double-tap-to-wake ended one 12.7-second suspend test, but suspend/resume is not qualified for dependable daily use and freezes have been reported. Save work; avoid unattended suspend. |
+| Suspend / resume | 🟡 | Resume is not qualified. The support update masks systemd sleep targets and ignores cover-close suspend as a freeze-prevention mitigation; it does not fix the kernel wake path. |
 | Fingerprint reader | ❌ | Authentication is unavailable. The latest standalone kernel release packages the EL721/K250A modules and CYG1 GPIO mapping, but its installation/runtime is unverified; secure-world and Linux authentication remain unvalidated. |
 | Charging bypass | ❌ | No safe, verified Linux control is available. |
 
