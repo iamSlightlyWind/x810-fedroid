@@ -97,6 +97,7 @@ struct el721_data {
 	struct regulator *vdd;
 	struct gpio_desc *ldo_gpio;
 	struct gpio_desc *enable_gpio;
+	struct gpiod_lookup_table *board04_gpio_lookup;
 	struct miscdevice miscdev;
 	/* Serializes power sequencing, ioctl state and device removal. */
 	struct mutex lock;
@@ -113,6 +114,66 @@ struct el721_data {
 };
 
 static int el721_publish_rail(struct device *consumer);
+
+/*
+ * CYG1's SM-X810 board-id 04 DTBO uses Samsung's legacy property spelling
+ * instead of the generic enable-gpios property consumed by this driver.
+ * Keep this exception tightly scoped: the synthetic fallback and other
+ * board revisions continue to use the existing gpiod lookup/property path.
+ */
+static bool el721_has_x810_rev04_sleep_gpio(struct device *dev)
+{
+	u32 board_id[2];
+
+	if (!dev->of_node || !of_root ||
+	    !of_device_is_compatible(dev->of_node, "etspi,el7xx") ||
+	    !device_property_present(dev, "etspi-sleepPin"))
+		return false;
+
+	if (of_property_read_u32_array(of_root, "qcom,board-id", board_id,
+				       ARRAY_SIZE(board_id)))
+		return false;
+
+	return board_id[0] == 0x00010008 && board_id[1] == 4;
+}
+
+static void el721_remove_gpio_lookup(void *data)
+{
+	gpiod_remove_lookup_table(data);
+}
+
+static int el721_add_x810_rev04_gpio_lookup(struct el721_data *el721)
+{
+	struct device *dev = el721->dev;
+	struct gpiod_lookup_table *lookup;
+	int ret;
+
+	if (el721->board04_gpio_lookup)
+		return 0;
+
+	/*
+	 * Mainline 7.2 has no API for reading the vendor-named etspi-sleepPin
+	 * property directly. Translate the exact, board-id-gated stock pin into
+	 * the normal "enable" connection using the GPIO descriptor lookup API.
+	 * The table does not request or drive the line and is removed on detach.
+	 */
+	lookup = devm_kzalloc(dev, sizeof(*lookup) +
+			      2 * sizeof(lookup->table[0]), GFP_KERNEL);
+	if (!lookup)
+		return -ENOMEM;
+
+	lookup->dev_id = dev_name(dev);
+	lookup->table[0] = GPIO_LOOKUP("f100000.pinctrl", 155, "enable",
+				       GPIO_ACTIVE_HIGH);
+
+	gpiod_add_lookup_table(lookup);
+	ret = devm_add_action_or_reset(dev, el721_remove_gpio_lookup, lookup);
+	if (ret)
+		return ret;
+
+	el721->board04_gpio_lookup = lookup;
+	return 0;
+}
 
 static void el721_free(struct kref *ref)
 {
@@ -192,6 +253,12 @@ static int el721_prepare_hardware_locked(struct el721_data *el721)
 	}
 
 	if (!el721->enable_gpio) {
+		if (el721_has_x810_rev04_sleep_gpio(el721->dev)) {
+			ret = el721_add_x810_rev04_gpio_lookup(el721);
+			if (ret)
+				return dev_err_probe(el721->dev, ret,
+						     "failed to map CYG1 sleep GPIO\n");
+		}
 		el721->enable_gpio = devm_gpiod_get(el721->dev, "enable",
 						    GPIOD_ASIS);
 		if (IS_ERR(el721->enable_gpio)) {
@@ -743,6 +810,7 @@ static struct gpiod_lookup_table el721_fallback_gpios = {
 #define EL721_RPMH_MODE_HPM 3
 
 static struct device_node *el721_supply_node;
+static struct device_node *el721_consumer_node;
 static struct platform_device *el721_rail_device;
 static struct of_changeset el721_rail_changeset;
 static bool el721_rail_applied;
@@ -772,10 +840,13 @@ static int el721_publish_rail(struct device *consumer)
 	struct device_node *regulators, *holder, *rail, *supply;
 	int ret;
 
-	if (el721_supply_node) {
-		if (consumer->of_node == el721_supply_node)
+	if (el721_consumer_node || el721_supply_node) {
+		if (consumer->of_node == el721_consumer_node ||
+		    consumer->of_node == el721_supply_node)
 			return 0;
-		return device_add_of_node(consumer, el721_supply_node);
+		if (!consumer->of_node && el721_supply_node)
+			return device_add_of_node(consumer, el721_supply_node);
+		return -EBUSY;
 	}
 
 	regulators = el721_find_pmic_regulators();
@@ -844,11 +915,23 @@ static int el721_publish_rail(struct device *consumer)
 	if (ret)
 		goto out_destroy;
 
-	supply = of_changeset_create_node(&el721_rail_changeset, of_root,
-					  EL721_SUPPLY_NODE);
-	if (!supply) {
-		ret = -ENOMEM;
-		goto out_destroy;
+	if (consumer->of_node) {
+		/*
+		 * A real DT-backed sensor device already owns its of_node;
+		 * device_add_of_node() cannot replace it.  Add the late supply
+		 * reference to that existing node in the same reversible changeset
+		 * as the regulator.  This matches regulator_get(dev, "vdd")'s
+		 * normal firmware lookup without changing the boot-time DTB.
+		 */
+		supply = consumer->of_node;
+	} else {
+		/* The synthetic fallback device has no node of its own. */
+		supply = of_changeset_create_node(&el721_rail_changeset, of_root,
+						  EL721_SUPPLY_NODE);
+		if (!supply) {
+			ret = -ENOMEM;
+			goto out_destroy;
+		}
 	}
 	ret = of_changeset_add_prop_u32(&el721_rail_changeset, supply,
 					"vdd-supply",
@@ -867,14 +950,19 @@ static int el721_publish_rail(struct device *consumer)
 	 * property afterwards.  Publish it so vdd-supply can be resolved.
 	 */
 	rail->phandle = EL721_RAIL_PHANDLE;
-	el721_supply_node = of_node_get(supply);
+	if (consumer->of_node)
+		el721_consumer_node = of_node_get(consumer->of_node);
+	else
+		el721_supply_node = of_node_get(supply);
 	el721_rail_device = of_platform_device_create(holder, NULL, NULL);
 	if (!el721_rail_device)
 		dev_warn(consumer,
 			 "the rail node has no explicit platform device\n");
-	ret = device_add_of_node(consumer, el721_supply_node);
-	if (ret)
-		goto out_unregister;
+	if (el721_supply_node) {
+		ret = device_add_of_node(consumer, el721_supply_node);
+		if (ret)
+			goto out_unregister;
+	}
 	of_node_put(regulators);
 	dev_info(consumer, "published the %s rail on first power request\n",
 		EL721_RAIL_NAME);
@@ -945,21 +1033,26 @@ static int __init el721_init(void)
 
 static void __exit el721_exit(void)
 {
-	if (el721_fallback_device) {
+	/* Unbind consumers before withdrawing their regulator or DT reference. */
+	platform_driver_unregister(&el721_driver);
+	if (el721_fallback_device && el721_supply_node) {
 		if (el721_fallback_device->dev.of_node == el721_supply_node)
 			device_remove_of_node(&el721_fallback_device->dev);
+	}
+	if (el721_fallback_device) {
 		platform_device_unregister(el721_fallback_device);
 		gpiod_remove_lookup_table(&el721_fallback_gpios);
 	}
 	if (el721_rail_device)
 		platform_device_unregister(el721_rail_device);
 	if (el721_rail_applied) {
+		of_node_put(el721_consumer_node);
+		el721_consumer_node = NULL;
 		of_node_put(el721_supply_node);
 		el721_supply_node = NULL;
 		of_changeset_revert(&el721_rail_changeset);
 		of_changeset_destroy(&el721_rail_changeset);
 	}
-	platform_driver_unregister(&el721_driver);
 }
 
 module_init(el721_init);

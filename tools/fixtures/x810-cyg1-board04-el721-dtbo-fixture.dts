@@ -1,0 +1,28 @@
+// Minimal, non-flashable fixture transcribed from the EL721 node in the
+// official SM-X810 CYG1 DTBO table's board-id 04 entry. It omits all unrelated
+// vendor tree content and uses a stub TLMM node so tests can resolve GPIO155.
+/dts-v1/;
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	model = "Samsung GTS9PWIFI PROJECT (board-id,04)";
+	compatible = "samsung,gts9pwifi", "qcom,sm8550";
+	qcom,board-id = <0x10008 0x04>;
+
+	tlmm: pinctrl@f100000 {
+		compatible = "qcom,sm8550-tlmm";
+		reg = <0x0f100000 0x00300000>;
+		gpio-controller;
+		#gpio-cells = <2>;
+	};
+
+	fingerprint {
+		compatible = "etspi,el7xx";
+		etspi-regulator = "VDD_BTP_3P3";
+		etspi-sleepPin = <&tlmm 0x9b 0x00>;
+		etspi-chipid = "EL721";
+		etspi-modelinfo = "X816";
+		etspi-position = "13.30,0.00,9.10,9.10,14.80,14.80,12.00,12.00,5.00";
+	};
+};
