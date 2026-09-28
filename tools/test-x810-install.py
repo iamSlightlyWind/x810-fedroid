@@ -909,10 +909,13 @@ class InstallerTests(unittest.TestCase):
             streams = [call for call in calls if call[0] == "stream"]
             self.assertEqual([call[1] for call in streams[1:]], ["boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img"])
             self.assertEqual({path.split("/")[-2] for path in pushed}, {"android", "fedora"})
-            self.assertEqual(len(pushed), 8)
-            for path, data in pushed.items():
+            image_pushes = {path: data for path, data in pushed.items() if path.endswith(".img")}
+            self.assertEqual(len(image_pushes), 8)
+            self.assertEqual(pushed["/tmp/x810-linuxroot/var/lib/x810-boot-sets/android/name.txt"], b"Android\n")
+            self.assertEqual(pushed["/tmp/x810-linuxroot/var/lib/x810-boot-sets/fedora/name.txt"], b"Fedora\n")
+            self.assertEqual(len(pushed), 10)
+            for path, data in image_pushes.items():
                 self.assertEqual(len(data), 8)
-                self.assertTrue(path.endswith(".img"))
                 name = Path(path).name
                 if "/android/" in path:
                     expected = (backup / "boot" / name).read_bytes()
@@ -982,6 +985,38 @@ class InstallerTests(unittest.TestCase):
             )
         self.assertEqual(details["password_hash"], "$6$short-pass")
         hash_password.assert_called_once_with("42")
+
+    def test_boot_set_label_uses_push_not_flattened_printf_shell(self):
+        class FakeClient:
+            def __init__(self):
+                self.files = {}
+                self.shell_calls = []
+            def shell(self, *args, **kwargs):
+                self.shell_calls.append(args)
+                return subprocess.CompletedProcess([], 0, "", "")
+            def push(self, source, remote_path, **kwargs):
+                self.files[remote_path] = source.read_bytes()
+                return subprocess.CompletedProcess([], 0, "", "")
+            def read_binary(self, remote_command, **kwargs):
+                return self.files[remote_command.removeprefix("cat ")]
+
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(
+                installer.INSTALL_BOOT_IMAGE_SIZES,
+                {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
+            image_dir = Path(temporary) / "images"
+            image_dir.mkdir()
+            images = {}
+            for name in installer.INSTALL_BOOT_IMAGE_SIZES:
+                image = image_dir / f"{name}.img"
+                image.write_bytes((name.encode() + b"_")[:8].ljust(8, b"x"))
+                images[name] = image
+            client = FakeClient()
+            installer.stage_boot_set_files(client, "/tmp/root", "android", "Android", images)
+
+        self.assertEqual(client.files["/tmp/root/var/lib/x810-boot-sets/android/name.txt"], b"Android\n")
+        self.assertIn(("chmod", "0644", "/tmp/root/var/lib/x810-boot-sets/android/name.txt"), client.shell_calls)
+        self.assertFalse(any(args[:2] == ("sh", "-c") for args in client.shell_calls))
+        self.assertFalse(any("printf" in repr(args) for args in client.shell_calls))
 
     def test_account_setup_never_stages_plaintext_password(self):
         calls = []

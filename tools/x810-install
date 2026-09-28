@@ -2381,13 +2381,23 @@ def stage_boot_set_files(client: ADBClient, mountpoint: str, set_id: str,
         if len(readback) != expected_size or hashlib.sha256(readback).hexdigest() != expected_hash:
             raise RuntimeError(f"staged boot-set image {set_id}/{name} failed read-back verification")
     label_path = f"{directory}/name.txt"
-    write_label = client.shell(
-        "sh", "-c",
-        f"printf '%s\\n' {shlex.quote(label)} > {shlex.quote(label_path)} && chmod 0644 {shlex.quote(label_path)}",
-        timeout=30,
-    )
-    if write_label.returncode != 0:
-        raise RuntimeError(write_label.stderr.strip() or write_label.stdout.strip() or f"could not label boot set {set_id}")
+    # Avoid `adb shell sh -c 'printf ...'`: TWRP/platform-tools flatten that
+    # argv in some versions, so the recovery's printf receives no format and
+    # exits with "Needs 1 argument". Stage the tiny fixed label like the other
+    # payloads, then verify it with a read-only cat.
+    with tempfile.TemporaryDirectory(prefix="x810-bootset-label-") as temporary:
+        source = Path(temporary) / "name.txt"
+        source.write_text(label + "\n", encoding="ascii")
+        os.chmod(source, 0o600)
+        write_label = client.push(source, label_path, timeout=30)
+        if write_label.returncode != 0:
+            raise RuntimeError(write_label.stderr.strip() or write_label.stdout.strip() or f"could not stage boot-set label {set_id}")
+        mode = client.shell("chmod", "0644", label_path, timeout=30)
+        if mode.returncode != 0:
+            raise RuntimeError(mode.stderr.strip() or mode.stdout.strip() or f"could not set mode on boot-set label {set_id}")
+        readback = client.read_binary(f"cat {shlex.quote(label_path)}", timeout=30)
+        if readback != (label + "\n").encode("ascii"):
+            raise RuntimeError(f"staged boot-set label {set_id} failed read-back verification")
 
 
 def require_manual_userdata_format(client: ADBClient, checkpoint: dict[str, Any], input_func=input) -> None:
