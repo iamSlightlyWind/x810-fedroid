@@ -82,6 +82,12 @@ if command -v systemctl >/dev/null 2>&1; then
         fi
     fi
     systemctl daemon-reload >/dev/null 2>&1 || :
+    # Apply the X810 no-suspend lid policy immediately on already-running
+    # systems; logind reloads logind.conf on SIGHUP. Sleep-target masks above
+    # take effect after daemon-reload even if logind is not yet running.
+    if systemctl is-active --quiet systemd-logind.service; then
+        systemctl kill --signal=HUP systemd-logind.service >/dev/null 2>&1 || :
+    fi
     # The support RPM owns the pinned SSC-linked iio-sensor-proxy binary and
     # service files. Refresh an already-running proxy after replacement so
     # GNOME reclaims the sensor and receives the corrected startup properties.

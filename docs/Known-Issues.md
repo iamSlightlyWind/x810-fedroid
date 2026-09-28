@@ -20,7 +20,7 @@ reused, and a retired number is simply absent rather than reassigned
 | 11 | libcamera had no sensor helper, so max gain | fixed — helper added, AGC runs |
 | 13 | Charging bypass on 25 W+ chargers | open — Linux driver/API support and verified hardware semantics are missing; not a GNOME-only patch |
 | 14 | Double tap to turn on the screen | fixed — with a GNOME extension UI |
-| 15 | Under-display fingerprint sensor (EgisTec EL721) | open — current kernel lacks the reader modules; secure-world provisioning is separately blocked |
+| 15 | Under-display fingerprint sensor (EgisTec EL721) | open — latest standalone kernel package includes reader modules and CYG1 mapping; installation/runtime and authentication remain unverified |
 | 16 | Hardware video decode (iris / VPU 3.0) | works with owner-supplied X810 CYG1 firmware; GitHub builds omit the proprietary PAS image; application support is partial |
 | 17 | Speaker volume capped (~−19 dB) | fixed — Cirrus speaker-protection DSP firmware now loads |
 | 18 | `/`, `/etc`, `/usr` owned by the image build user | fixed — this had silently disabled *every* `tmpfiles.d` entry |
@@ -33,9 +33,12 @@ reused, and a retired number is simply absent rather than reassigned
 | 25 | SSC QMI service absent; tablet rotation unavailable | open — current boot has `sensorspd` and `iio-sensor-proxy` inactive, the sensor wait unit failed, and QRTR service 400 is absent; source-side recovery changes remain unvalidated |
 | 26 | No GNOME power-profile/governor switcher | live root cause fixed: explicitly load `icc_osm_l3` so CPUFreq policies exist; profile switching verified over D-Bus, persistent RPM/boot validation pending |
 | 27 | Kernel rejects optional module BTF after boot/module builds differ | mitigation added: allow the module to load without its mismatched BTF metadata; exact boot/module matching is still preferred |
+| 28 | Deep suspend can freeze and fail to wake | mitigated in the reproducible overlay: lid close ignores suspend and sleep targets are masked; root cause still needs X810 wake-source tracing |
 
-Haptics are also enabled in the kernel source (stock-active-high GPIO18 plus
-`gpio-vibra`), but still need a kernel update and on-device ff-rumble check.
+Haptics are enabled in the kernel source (stock-active-high GPIO18 plus
+`gpio-vibra`) and included in the latest standalone kernel release; the tablet
+still needs to be verified on that matching boot set with an on-device
+`FF_RUMBLE` check.
 
 Also outstanding, not in the numbered register:
 
@@ -153,31 +156,36 @@ advertise bypass until the electrical and thermal semantics are established.
 
 ### 15 — Under-display fingerprint sensor (EgisTec EL721)
 
-The current remote Fedora boot is **not exposing a fingerprint reader**:
-read-only inspection found no `/dev/esfp0` or `/dev/k250a`, no `egis_el721` or
-`snvm` module files under its `/lib/modules/7.2.0-gts9wifi`, and only the
-`qcomtee` module loaded. The `modules-load.d` file requests the reader modules,
-but cannot load modules absent from this installed kernel. The panel does expose
-`cell_id`, `fod_mode` and `fod_ready` attributes, which does not establish that
-the biometric stack works. Earlier sessions reported TEE status
-`KEYMASTER_NOT_CONFIGURED` / cache `9936`; that cannot be revalidated until a
-kernel containing the reader drivers is installed.
+A previous read-only tablet snapshot found no `/dev/esfp0` or `/dev/k250a`, no
+`egis_el721`/`snvm` modules under the running `7.2.0-gts9wifi`, and only
+`qcomtee` loaded. That observation predates the latest standalone kernel
+release, so it does not establish the state after installing it. Release
+[`x810-kernel-4b02b0c61f8e6090`](https://github.com/iamSlightlyWind/x810-fedroid/releases/tag/x810-kernel-4b02b0c61f8e6090)
+(source commit `562374ff64ce7e9ea8ae844768bd548cb88c4099`) contains both
+modules and the CYG1 board-id 04 GPIO mapping. The latest complete Fedora set,
+[`x810-fedora-port-build-36381339176`](https://github.com/iamSlightlyWind/x810-fedroid/releases/tag/x810-fedora-port-build-36381339176),
+is older (commit `e481356c9c06e97920d52765f5668cea2034ad06`); neither artifact
+proves that the updated kernel is installed. See
+[`FINGERPRINT-EL721-DTBO.md`](x810-research/FINGERPRINT-EL721-DTBO.md) for the
+source/package evidence.
+
+The panel exposes `cell_id`, `fod_mode` and `fod_ready` attributes, which does
+not establish that the biometric stack works. Earlier sessions reported TEE
+status `KEYMASTER_NOT_CONFIGURED` / cache `9936`; it has not been revalidated.
 
 There is no supported X810 `libfprint` backend or validated GNOME/GDM/PAM
 enrollment path in this repository. Do not invoke secure-owner/Keymaster
-provisioning or touch credentials as a diagnostic step; first restore the
-missing kernel modules and re-evaluate the reader with read-only probes.
-
-The source now has a CYG1 board-id 04 `etspi-sleepPin` mapping based on the
-stock Samsung driver and DTBO, but it still needs a rebuilt kernel and
-supervised tablet validation. Details: [`FINGERPRINT-EL721-DTBO.md`](x810-research/FINGERPRINT-EL721-DTBO.md).
+provisioning or touch credentials as a diagnostic step. After the matching
+kernel/boot set is installed, first verify module presence and device binding
+with read-only probes; authentication needs a separate, security-reviewed
+implementation.
 
 Notes:
 
 - The intended module list is in
-  `modules-load.d/gts9wifi-fingerprint.conf`, but the currently installed
-  kernel is missing those module files; the list alone does not create the
-  device nodes. Recheck after a kernel build/install.
+  `modules-load.d/gts9wifi-fingerprint.conf`; it cannot create device nodes if
+  modules are absent from the running kernel. Recheck after installing the
+  latest matching kernel/boot set.
 - Judge the trustlet read-only before porting anything, with a known-resident
   control, and beware that the TA lookup needs **three** parameters, not the two
   the reference documentation suggests.

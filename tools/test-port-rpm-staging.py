@@ -155,6 +155,43 @@ class SupportRpmStagingTests(unittest.TestCase):
         self.assertFalse((ROOT / "rootfs/overlay/etc/locale.conf").exists())
         self.assertTrue((ROOT / "rootfs/overlay/etc/machine-info").is_file())
 
+    def test_unverified_x810_suspend_targets_are_masked_in_image_and_update(self):
+        overlay = ROOT / "rootfs/overlay"
+        for target in (
+            "sleep.target",
+            "suspend.target",
+            "hibernate.target",
+            "hybrid-sleep.target",
+            "suspend-then-hibernate.target",
+        ):
+            mask = overlay / "etc/systemd/system" / target
+            self.assertTrue(mask.is_symlink(), f"missing systemd mask: {mask}")
+            self.assertEqual(mask.readlink(), Path("/dev/null"))
+
+        logind = (
+            overlay / "etc/systemd/logind.conf.d/10-gts9wifi-lid.conf"
+        ).read_text(encoding="utf-8")
+        for key in (
+            "HandleLidSwitch",
+            "HandleLidSwitchExternalPower",
+            "HandleLidSwitchDocked",
+        ):
+            self.assertRegex(logind, rf"(?m)^{key}=ignore$")
+
+        # Fresh installs and support-RPM upgrades both consume the overlay;
+        # the RPM post-transaction hook reloads systemd unit definitions.
+        for builder in (
+            ROOT / "rootfs/build-rootfs.sh",
+            ROOT / "tools/build-port-support-rpm.sh",
+        ):
+            self.assertIn(
+                'cp -a "$repo_dir/rootfs/overlay/."',
+                builder.read_text(encoding="utf-8"),
+            )
+        spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
+        self.assertIn("systemctl daemon-reload", spec)
+        self.assertIn("systemctl kill --signal=HUP systemd-logind.service", spec)
+
     def test_pipewire_audio_override_is_system_wide_and_keeps_libcamera(self):
         config = ROOT / (
             "rootfs/overlay/usr/share/wireplumber/wireplumber.conf.d/"
