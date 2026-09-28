@@ -161,6 +161,7 @@ fi
 if ! grep -Fxq '/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so' "$work/package-files" || \
    ! grep -Fxq '/etc/libcamera/configuration.yaml' "$work/package-files" || \
    ! grep -Fxq '/etc/environment.d/90-x810-libcamera.conf' "$work/package-files" || \
+   ! grep -Fxq '/etc/environment.d/91-x810-gtk-rendering.conf' "$work/package-files" || \
    ! grep -Fxq '/usr/share/licenses/x810-fedora-port/LICENSE' "$work/package-files" || \
    ! grep -Fxq '/usr/share/licenses/x810-fedora-port/libcamera/LGPL-2.1-or-later.txt' "$work/package-files" || \
    ! grep -Fxq '/usr/share/licenses/x810-fedora-port/libcamera/BSD-2-Clause.txt' "$work/package-files"; then

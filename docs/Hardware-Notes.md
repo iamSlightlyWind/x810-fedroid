@@ -380,6 +380,20 @@ initramfs. The repository owner confirmed redistribution rights for this set.
 If any firmware hash differs, the build stops rather than publishing an image
 known to fail GPU startup.
 
+Two separate graphics symptoms need to remain distinct:
+
+* The device-wide GPU/GDM failure was traced to the wrong Adreno firmware set;
+  the exact CYG1 files above are now included in both the initramfs and rootfs.
+  A new aggregate build and device check are still needed to confirm the
+  app-wide artifact is gone on the fresh install.
+* Smaller artifacts in GTK4 controls were reproducibly tied to GSK's `merge`
+  draw optimization in the owner's Vulkan A/B test. The rootfs and
+  updater-installable support RPM now set `GSK_GPU_DISABLE=merge` globally for
+  the user session. GTK documents this as disabling draw merging, not switching
+  renderers; this leaves Vulkan/Turnip hardware acceleration enabled. The
+  owner previously reported normal speed and clean UI with that setting, but
+  the new-install result still needs verification.
+
 There is no proprietary Qualcomm GPU driver to switch away from on this
 device: the kernel driver is mainline and both GL and Vulkan are Mesa.
 

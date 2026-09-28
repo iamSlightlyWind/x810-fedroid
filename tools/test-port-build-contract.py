@@ -226,9 +226,10 @@ def check(rootfs, manifest_path, version, rpm_path=None):
         HI1337_TUNING_FILE,
         "/etc/libcamera/configuration.yaml",
         "/etc/environment.d/90-x810-libcamera.conf",
+        "/etc/environment.d/91-x810-gtk-rendering.conf",
     ):
         if required_camera_file not in files:
-            fail(f"support RPM does not own its HI1337 libcamera integration: {required_camera_file}")
+            fail(f"support RPM omits a required X810 graphics/libcamera overlay: {required_camera_file}")
     if "/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so.sign" in files:
         fail("support RPM must not ship a signature that does not match Fedora's embedded IPA key")
     for vendor_config in ("/etc/locale.conf", "/etc/machine-info"):
@@ -267,11 +268,19 @@ def check(rootfs, manifest_path, version, rpm_path=None):
     payload_digests = {}
     for record in records:
         filename, separator, digest = record.partition("\t")
-        if separator and filename in (PORT_FILE, HI1337_TUNING_FILE):
+        if separator and filename in (
+            PORT_FILE,
+            HI1337_TUNING_FILE,
+            "/etc/environment.d/91-x810-gtk-rendering.conf",
+        ):
             payload_digests[filename] = digest
     for filename, image_path in (
         (PORT_FILE, port_path),
         (HI1337_TUNING_FILE, tuning_image),
+        (
+            "/etc/environment.d/91-x810-gtk-rendering.conf",
+            rootfs / "etc/environment.d/91-x810-gtk-rendering.conf",
+        ),
     ):
         image_digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
         if payload_digests.get(filename) != image_digest:
