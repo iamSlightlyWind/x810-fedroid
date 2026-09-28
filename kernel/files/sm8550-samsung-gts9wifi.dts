@@ -359,8 +359,9 @@
 	/*
 	 * Unlike the SM8550 QRD, the X710 has no WSA884x speaker path and no
 	 * WCD938x. Its four CS35L45 amplifiers consume PRIMARY_MI2S_RX over
-	 * TLMM126..129. Keep the first card deliberately small: one playback
-	 * backend plus the native VA-macro DMIC capture backend.
+	 * TLMM126..129. The CYG1 gts9pwifi mixer paths route the built-in main and
+	 * sub microphones through the TX macro (TX DMIC1 and TX DMIC3), so expose
+	 * the board-specific TX-macro capture backend here.
 	 */
 	sound {
 		compatible = "qcom,sm8550-sndcard", "qcom,sm8450-sndcard";
@@ -386,25 +387,16 @@
 			};
 		};
 
-		va-capture-dai-link {
+		dmic-capture-dai-link {
 			link-name = "Internal DMIC Capture";
 
 			cpu {
-				/*
-				 * The VA macro has its own LPASS DMA lane: its
-				 * capture lands on VA_CODEC_DMA_TX_0, not on the
-				 * TX macro's TX_CODEC_DMA_TX_3 (which is where
-				 * the reference boards take their soundwire mics
-				 * from, and which this tablet does not have).
-				 * Wiring the link to the TX lane leaves the
-				 * backend with no data and arecord fails with
-				 * -EIO.
-				 */
-				sound-dai = <&q6apmbedai VA_CODEC_DMA_TX_0>;
+				/* X810 CYG1's stock built-in mic routes use TX AIF1. */
+				sound-dai = <&q6apmbedai TX_CODEC_DMA_TX_3>;
 			};
 
 			codec {
-				sound-dai = <&lpass_vamacro 0>;
+				sound-dai = <&lpass_txmacro 0>;
 			};
 
 			platform {
@@ -1620,20 +1612,22 @@
 };
 
 &lpass_vamacro {
-	pinctrl-names = "default";
-	pinctrl-0 = <&dmic01_default>, <&dmic23_default>,
-		    <&dmic45_default>, <&dmic67_default>;
 	/*
-	 * Without this the driver logs "qcom,dmic-sample-rate dt entry missing"
-	 * and never derives the DMIC clock divider, so the decimators run with
-	 * no clock and capture returns pure silence.  4.8 MHz is what every
-	 * other mainline board with VA-macro DMICs uses and divides cleanly out
-	 * of the VA macro's 19.2 MHz mclk.
+	 * Keep the VA macro configured because it supplies the TX macro's
+	 * frame-sync-generator clock. This sample-rate property configures its
+	 * optional VA decimators; the X810 capture DAI itself is the TX macro.
 	 */
 	qcom,dmic-sample-rate = <4800000>;
 	/* See vreg_l10b_1p8: the DMIC bias rail Samsung uses for va-vdd-micb. */
 	vdd-micb-supply = <&vreg_l10b_1p8>;
 	status = "okay";
+};
+
+/* The X810 CYG1 mixer paths select built-in DMIC1 and DMIC3 on the TX macro. */
+&lpass_txmacro {
+	pinctrl-names = "default";
+	pinctrl-0 = <&dmic01_default>, <&dmic23_default>,
+		    <&dmic45_default>, <&dmic67_default>;
 };
 
 &remoteproc_adsp {

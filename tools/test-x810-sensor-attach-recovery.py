@@ -55,6 +55,11 @@ printf '%s\n' "$count" > "$X810_PROBE_FILE"
 printf 'PROBE %s\n' "$count" >> "$X810_EVENTS"
 if [ "$X810_SUCCESS_AT" != never ] && [ "$count" -ge "$X810_SUCCESS_AT" ]; then
     echo 'Accelerometer sensor measurement: mock sample'
+    pad=0
+    while [ "$pad" -lt "${X810_OUTPUT_PAD_LINES:-0}" ]; do
+        echo 'extra probe detail to exercise captured multiline output'
+        pad=$((pad + 1))
+    done
     exit 0
 fi
 echo 'SSC QMI Service not found'
@@ -68,7 +73,9 @@ exit 0
 
 
 class RecoveryHarness:
-    def __init__(self, *, initially_active: bool, success_at: int | str) -> None:
+    def __init__(
+        self, *, initially_active: bool, success_at: int | str, output_pad_lines: int = 0
+    ) -> None:
         self.tmp = tempfile.TemporaryDirectory(prefix="x810-sensor-recovery-")
         self.root = Path(self.tmp.name)
         self.bindir = self.root / "bin"
@@ -95,6 +102,7 @@ class RecoveryHarness:
                 "X810_ACTIVE_FILE": str(self.active),
                 "X810_PROBE_FILE": str(self.probes),
                 "X810_SUCCESS_AT": str(success_at),
+                "X810_OUTPUT_PAD_LINES": str(output_pad_lines),
             }
         )
 
@@ -149,6 +157,19 @@ def test_active_attachment_is_probed_before_any_restart() -> None:
         harness.close()
 
 
+def test_large_success_output_does_not_emit_sigpipe_noise() -> None:
+    # SSC can stream many samples during its bounded measurement window. The
+    # helper captures that output; matching it must not pipe it into grep -q,
+    # which exits early and makes the shell's printf report EPIPE.
+    harness = RecoveryHarness(initially_active=True, success_at=1, output_pad_lines=4096)
+    try:
+        result = harness.run_helper()
+        check(result.returncode == 0, result.stderr or "helper failed")
+        check("Broken pipe" not in result.stderr, "large SSC success output caused SIGPIPE noise")
+    finally:
+        harness.close()
+
+
 def test_inactive_attachment_is_started_and_settled() -> None:
     harness = RecoveryHarness(initially_active=False, success_at=1)
     try:
@@ -195,6 +216,7 @@ def test_unavailable_ssc_is_bounded_and_never_loops_restarts() -> None:
 
 def main() -> None:
     test_active_attachment_is_probed_before_any_restart()
+    test_large_success_output_does_not_emit_sigpipe_noise()
     test_inactive_attachment_is_started_and_settled()
     test_stale_active_attachment_gets_one_restart_after_five_probes()
     test_unavailable_ssc_is_bounded_and_never_loops_restarts()

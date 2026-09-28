@@ -102,15 +102,16 @@ while [ "$attempt" -lt 20 ]; do
 	fi
 	attempt=$((attempt + 1))
 	output=$(run_bounded timeout 4 ssccli --sensor accelerometer --timeout 2 2>&1 || true)
-	if printf '%s\n' "$output" |
-	   grep -q 'Accelerometer sensor measurement:'; then
+	case "$output" in
+	*'Accelerometer sensor measurement:'*)
 		if ! run_bounded systemctl restart iio-sensor-proxy.service; then
 			echo "gts9wifi-sensors-resume: timed out restarting iio-sensor-proxy" >&2
 			exit 1
 		fi
 		echo "gts9wifi-sensors-resume: SSC ready after attempt $attempt; restarted SensorProxy for a fresh QMI client"
 		exit 0
-	fi
+		;;
+	esac
 	# Give the original attachment five opportunities to publish its service
 	# before performing one controlled recovery.  Never loop ADSP/sensorspd
 	# restarts: a failed attach can reset the shared ADSP and affect audio too.
