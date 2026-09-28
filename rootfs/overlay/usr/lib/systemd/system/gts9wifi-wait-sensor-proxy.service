@@ -4,6 +4,10 @@ Requires=gts9wifi-panel-coldboot-recover.service
 Wants=hexagonrpcd-adsp-sensorspd.service
 After=gts9wifi-panel-coldboot-recover.service
 After=hexagonrpcd-adsp-sensorspd.service
+# On the X910 reference, GNOME's first SSC client triggers a delayed ADSP
+# handover failure when sensors are claimed too early. Defer the sensor-PD
+# attach and recovery window until the actual desktop consumer exists.
+After=display-manager.service
 ConditionPathExists=/usr/bin/ssccli
 
 [Service]
@@ -13,4 +17,4 @@ ExecStart=/usr/libexec/gts9wifi-sensors-resume
 TimeoutStartSec=210
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical.target

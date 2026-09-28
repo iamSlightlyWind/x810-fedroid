@@ -38,6 +38,20 @@ def main() -> int:
     rpm_builder = (ROOT / "tools/build-port-support-rpm.sh").read_text(encoding="utf-8")
     spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
     workflow = (ROOT / ".github/workflows/x810-fedora.yml").read_text(encoding="utf-8")
+    sensor_proxy_unit = (ROOT / "rootfs/overlay/usr/lib/systemd/system/"
+                         "gts9wifi-wait-sensor-proxy.service").read_text(encoding="utf-8")
+    sensor_pd_dropin = (ROOT / "rootfs/overlay/etc/systemd/system/"
+                        "hexagonrpcd-adsp-sensorspd.service.d/"
+                        "10-gts9wifi-hexagonfs.conf").read_text(encoding="utf-8")
+
+    # The X910 reference delays the sensor-PD claim until the desktop's first
+    # SSC client exists; retain that ordering in both the image and updates.
+    require("After=display-manager.service" in sensor_proxy_unit,
+            "SSC recovery may run before GNOME opens its sensor client")
+    require("WantedBy=graphical.target" in sensor_proxy_unit,
+            "SSC recovery must be started by the desktop target, not multi-user")
+    require("After=display-manager.service" in sensor_pd_dropin,
+            "sensor-PD can still attach before GNOME and miss delayed SSC failure")
 
     for patch in (
         "notify-slow-sensor-discovery.patch",

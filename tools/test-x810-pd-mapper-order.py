@@ -19,7 +19,7 @@ def main() -> None:
 
     assert "[Unit]" in dropin
     assert "After=gts9wifi-adsp-boot.service" in dropin
-    assert "Wants=gts9wifi-adsp-boot.service" in dropin
+    assert "Requires=gts9wifi-adsp-boot.service" in dropin
     assert "[Service]" in dropin
     assert "Restart=on-failure" in dropin
     assert "RestartSec=3" in dropin
