@@ -754,6 +754,9 @@ jobs:
       - name: Check X810 ADSP startup ordering
         run: python3 tools/test-x810-adsp-panel-order.py
 
+      - name: Check X810 pd-mapper ordering after ADSP
+        run: python3 tools/test-x810-pd-mapper-order.py
+
       - name: Check X810 Android logical-partition mapper
         run: python3 tools/test-x810-android-dynparts.py
 
