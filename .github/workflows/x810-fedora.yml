@@ -84,9 +84,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   # The in-OS support package and the full bootable image are separate jobs in
-  # this one release workflow. They run independently, so a userspace fix does
-  # not wait for the kernel/rootfs build. The final cleanup retains only the
-  # latest complete aggregate release and removes component staging releases.
+  # this one workflow. They run independently, so a userspace fix does not wait
+  # for the kernel/rootfs build. The support ZIP is a short-lived Actions
+  # artifact until the final job publishes the one complete GitHub release.
   build_port_update:
     needs: publication_identity
     if: github.ref == 'refs/heads/main'
@@ -116,6 +116,7 @@ jobs:
           python3 tools/test-port-metadata.py
           python3 tools/test-port-update-bundle.py
           python3 tools/test-x810-sensor-proxy-stack.py
+          python3 tools/test-x810-single-release-publication.py
 
       - name: Restore Fedora 44 DNF tool cache
         id: restore_port_dnf
@@ -205,25 +206,14 @@ jobs:
             --build-info _ci/rootfs/usr/share/tab-companion/port-build.json \
             --output _ci/release/update.zip
 
-      - name: Publish the run-keyed port support release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tag="x810-fedora-port-build-${BUILD_RUN_ID}"
-          asset=_ci/release/update.zip
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$tag" "$asset" --repo "$GITHUB_REPOSITORY" \
-              --target "$BUILD_COMMIT" --title "X810 Fedora build #${BUILD_RUN_NUMBER}" \
-              --notes "X810 Fedora release in progress; the completed release includes the updater, Fedora rootfs, and kernel/boot files." \
-              --latest=false
-          fi
-          latest_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
-          if [[ "$latest_tag" != "$tag" ]]; then
-            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --latest=false
-          fi
+      - name: Hand updater ZIP to aggregate publication job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 (Node.js 24)
+        with:
+          name: x810-port-update
+          path: _ci/release/update.zip
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
   plan:
     needs: publication_identity
@@ -920,6 +910,12 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y rpm
           fi
+
+      - name: Download the updater ZIP from this workflow run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1 (Node.js 24)
+        with:
+          name: x810-port-update
+          path: _ci/release
 
       - name: Validate, assemble, and publish the combined release
         env:

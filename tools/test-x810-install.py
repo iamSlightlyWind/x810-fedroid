@@ -45,6 +45,9 @@ class InstallerTests(unittest.TestCase):
             "etc/hostname": "localhost.localdomain\n",
             "etc/shadow": "root:!:1:0:99999:7:::\n",
             "etc/os-release": "ID=fedora\nVERSION_ID=44\n",
+            # systemd's escaped unit names can contain literal backslashes;
+            # those are valid Linux filename bytes, not path separators.
+            r"etc/systemd/system/dev-virtio\x2dports-org.qemu.guest_agent.0.device.wants": "valid escaped unit name\n",
             "usr/share/tab-companion/port.json": port,
             "usr/lib/modules/7.2.0-gts9wifi/kernel/example.ko": "module",
             "etc/passwd": "root:x:0:0:root:/root:/bin/bash\n",
@@ -124,6 +127,27 @@ class InstallerTests(unittest.TestCase):
             release.write_text('ID="fedora"\nID_LIKE="rhel centos"\nEVIL=$(touch /tmp/nope)\n')
             self.assertEqual(installer.linux_ids(release), {"fedora", "rhel", "centos"})
 
+    def test_no_update_requires_a_local_bundle_path(self):
+        stderr = io.StringIO()
+        with patch.object(sys, "argv", [str(SCRIPT), "install", "--no-update"]), \
+             contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as error:
+            installer.main()
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("--no-update requires --bundle", stderr.getvalue())
+
+    def test_no_update_passes_the_local_bundle_to_installer(self):
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        local_bundle = Path("/tmp/x810-local-bundle")
+        with patch.object(sys, "argv", [str(SCRIPT), "install", "--no-update", "--bundle", str(local_bundle)]), \
+             patch.object(sys, "stdin", TTY()), patch.object(sys, "stdout", TTY()), \
+             patch.object(installer, "run_install", return_value=0) as run_install, \
+             patch.object(installer, "latest_release", side_effect=AssertionError("local mode must not query GitHub")):
+            self.assertEqual(installer.main(), 0)
+        run_install.assert_called_once_with(local_bundle, None, False, None)
+
     def test_release_check_distinguishes_compact_manifest_from_clean_installer(self):
         checks = installer.release_checks(None)
         self.assertEqual([check.state for check in checks], ["INFO", "BLOCKED"])
@@ -189,14 +213,132 @@ class InstallerTests(unittest.TestCase):
             payload_map["https://example.test/manifest.json"] = manifest_bytes
             class Response(io.BytesIO):
                 pass
+            requests = []
             def opener(request, timeout=60):
+                requests.append(request.full_url)
                 return Response(payload_map[request.full_url])
             release = {"tag_name": "test-release", "assets": release_assets}
-            root = installer.download_release_install_set(release, source / "downloaded", opener)
+            cache = source / "downloaded"
+            root = installer.download_release_install_set(release, cache, opener)
             bundle = installer.validate_install_bundle(root)
             self.assertEqual(bundle.manifest["source_commit"], "a" * 40)
             self.assertEqual(set(bundle.boot_images), {"boot", "init_boot", "vendor_boot", "dtbo"})
             self.assertEqual(bundle.kernel_rpm.read_bytes(), rpm.read_bytes())
+
+            # Re-running for the same release should hash-check the cached payloads
+            # and fetch only the small manifest, even with no room for another rootfs.
+            requests.clear()
+            low_disk = type("Usage", (), {"free": 128 * 1024**2})()
+            with patch.object(installer.shutil, "disk_usage", return_value=low_disk):
+                installer.download_release_install_set(release, cache, opener)
+            self.assertEqual(requests, ["https://example.test/manifest.json"])
+
+            # A corrupted cached payload is not trusted; it is replaced from the
+            # same release after the missing-byte calculation passes.
+            requests.clear()
+            rootfs_cache = cache / "rootfs/rootfs.tar.gz"
+            rootfs_cache.write_bytes(b"corrupt")
+            enough_for_rootfs = type("Usage", (), {
+                "free": len(payloads["rootfs.tar.gz"]) + 128 * 1024**2,
+            })()
+            with patch.object(installer.shutil, "disk_usage", return_value=enough_for_rootfs):
+                installer.download_release_install_set(release, cache, opener)
+            self.assertEqual(requests, ["https://example.test/manifest.json",
+                                        "https://example.test/rootfs.tar.gz"])
+            self.assertEqual(rootfs_cache.read_bytes(), payloads["rootfs.tar.gz"])
+
+            # Rebuilt aggregate releases may have a new tag while retaining
+            # byte-identical payloads. Reuse the prior release only by the
+            # current manifest's size and SHA-256, not by filename alone.
+            previous_rootfs = source / "releases/old-tag/rootfs/rootfs.tar.gz"
+            previous_rootfs.parent.mkdir(parents=True)
+            previous_rootfs.write_bytes(payloads["rootfs.tar.gz"])
+            next_manifest = dict(release_manifest, release_tag="test-release-2")
+            next_manifest_bytes = json.dumps(next_manifest).encode()
+            next_payload_map = dict(payload_map)
+            next_payload_map["https://example.test/manifest-2.json"] = next_manifest_bytes
+            next_assets = [dict(asset) for asset in release_assets]
+            next_manifest_asset = next(item for item in next_assets if item["name"] == "manifest.json")
+            next_manifest_asset.update({"size": len(next_manifest_bytes),
+                                        "browser_download_url": "https://example.test/manifest-2.json"})
+            next_release = {"tag_name": "test-release-2", "assets": next_assets}
+            requests.clear()
+            next_cache = source / "releases/new-tag"
+            installer.download_release_install_set(
+                next_release, next_cache,
+                lambda request, timeout=60: (requests.append(request.full_url),
+                                              Response(next_payload_map[request.full_url]))[1],
+            )
+            self.assertNotIn("https://example.test/rootfs.tar.gz", requests)
+            self.assertEqual(requests[0], "https://example.test/manifest-2.json")
+            self.assertTrue((next_cache / "rootfs/rootfs.tar.gz").samefile(previous_rootfs))
+
+    def test_release_asset_download_reports_progress_and_only_verifies_complete_digest(self):
+        import io
+        payload = b"download-progress-test"
+        events = []
+        with tempfile.TemporaryDirectory() as temp:
+            asset = {"browser_download_url": "https://example.test/test.bin", "size": len(payload)}
+            record = {"name": "test.bin", "size_bytes": len(payload),
+                      "sha256": hashlib.sha256(payload).hexdigest()}
+
+            def opener(request, timeout=60):
+                self.assertEqual(timeout, 60)
+                return io.BytesIO(payload)
+
+            result = installer._download_checked_release_asset(
+                asset, record, Path(temp) / "test.bin", opener,
+                progress=lambda name, done, total: events.append((name, done, total)),
+            )
+            self.assertEqual(result.read_bytes(), payload)
+            self.assertEqual(events[0], ("test.bin", 0, len(payload)))
+            self.assertEqual(events[-1], ("test.bin", len(payload), len(payload)))
+
+    def test_interrupted_asset_download_leaves_no_partial_file(self):
+        payload = b"verified-prefix-then-interrupted"
+        class InterruptedResponse:
+            def __init__(self): self.reads = 0
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self, _size):
+                self.reads += 1
+                if self.reads == 1:
+                    return payload[:10]
+                raise KeyboardInterrupt
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "rootfs/rootfs.tar.gz"
+            asset = {"browser_download_url": "https://example.test/rootfs.tar.gz", "size": len(payload)}
+            record = {"name": "rootfs.tar.gz", "size_bytes": len(payload),
+                      "sha256": hashlib.sha256(payload).hexdigest()}
+            with self.assertRaises(KeyboardInterrupt):
+                installer._download_checked_release_asset(
+                    asset, record, destination,
+                    opener=lambda _request, timeout=60: InterruptedResponse(),
+                )
+            self.assertFalse(destination.exists())
+            partial = destination.with_name(destination.name + ".part")
+            self.assertEqual(partial.read_bytes(), payload[:10])
+
+    def test_release_asset_download_resumes_range_and_verifies_full_digest(self):
+        import io
+        payload = b"existing-prefix-and-ranged-suffix"
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "rootfs/rootfs.tar.gz"
+            destination.parent.mkdir()
+            partial = destination.with_name(destination.name + ".part")
+            partial.write_bytes(payload[:12])
+            asset = {"browser_download_url": "https://example.test/rootfs.tar.gz", "size": len(payload)}
+            record = {"name": "rootfs.tar.gz", "size_bytes": len(payload),
+                      "sha256": hashlib.sha256(payload).hexdigest()}
+            class RangeResponse(io.BytesIO):
+                status = 206
+                headers = {"Content-Range": f"bytes 12-{len(payload) - 1}/{len(payload)}"}
+            def opener(request, timeout=60):
+                self.assertEqual(request.get_header("Range"), "bytes=12-")
+                return RangeResponse(payload[12:])
+            result = installer._download_checked_release_asset(asset, record, destination, opener)
+            self.assertEqual(result.read_bytes(), payload)
+            self.assertFalse(partial.exists())
 
     def test_release_status_tolerates_malformed_asset_metadata(self):
         checks = installer.release_checks({"assets": [None, {"name": []}], "tag_name": "odd"})
@@ -208,6 +350,11 @@ class InstallerTests(unittest.TestCase):
             root = self.make_valid_bundle(Path(temp) / "bundle")
             bundle = installer.validate_install_bundle(root)
             self.assertEqual(bundle.manifest["device"]["model"], "SM-X810")
+            with tarfile.open(bundle.rootfs_archive, "r:gz") as archive:
+                self.assertIn(
+                    r"etc/systemd/system/dev-virtio\x2dports-org.qemu.guest_agent.0.device.wants",
+                    {member.name for member in archive.getmembers()},
+                )
             self.assertEqual(set(bundle.boot_images), {"boot", "init_boot", "vendor_boot", "dtbo"})
             self.assertEqual(bundle.manifest["kernel"]["release"], "7.2.0-gts9wifi")
 
@@ -399,12 +546,67 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(all("mke2fs" not in str(call) and "wipe" not in str(call) for call in calls))
 
     def test_twrp_utility_preflight_stops_before_operations_if_any_missing(self):
+        calls = []
+        required = ("sgdisk", "blockdev", "dd", "gzip", "tar", "mke2fs", "mount",
+                    "umount", "sync", "chroot", "sh", "test")
         class FakeClient:
             def shell(self, *args, timeout=30):
-                return subprocess.CompletedProcess(args, 0, "MISSING:mke2fs\n", "")
+                calls.append(args)
+                if args == ("command", "-v", "mke2fs"):
+                    return subprocess.CompletedProcess(args, 127, "", "not found")
+                return subprocess.CompletedProcess(args, 0, f"/sbin/{args[-1]}\n", "")
         checks = installer.preflight_twrp_tools(FakeClient())
         self.assertEqual(checks[0].state, "STOP")
         self.assertIn("mke2fs", checks[0].detail)
+        self.assertEqual(calls, [("command", "-v", utility) for utility in required] + [
+            ("command", "-v", "blkid"),
+        ])
+        self.assertTrue(all(args[:2] != ("sh", "-c") for args in calls))
+
+    def test_twrp_utility_preflight_accepts_toybox_blkid_applet(self):
+        calls = []
+        required = ("sgdisk", "blockdev", "dd", "gzip", "tar", "mke2fs", "mount",
+                    "umount", "sync", "chroot", "sh", "test")
+        class FakeClient:
+            def shell(self, *args, timeout=30):
+                calls.append(args)
+                if args == ("command", "-v", "blkid"):
+                    return subprocess.CompletedProcess(args, 127, "", "not found")
+                if args == ("toybox", "blkid", "--help"):
+                    return subprocess.CompletedProcess(args, 0, "usage: blkid [-s TAG] DEV...\n", "")
+                return subprocess.CompletedProcess(args, 0, f"/system/bin/{args[-1]}\n", "")
+        checks = installer.preflight_twrp_tools(FakeClient())
+        self.assertEqual(checks, [installer.Check(
+            "TWRP utilities", "OK", "all required recovery commands are available")
+        ])
+        self.assertEqual(calls, [("command", "-v", utility) for utility in required] + [
+            ("command", "-v", "blkid"), ("command", "-v", "toybox"),
+            ("toybox", "blkid", "--help"),
+        ])
+
+    def test_userdata_filesystem_type_supports_toybox_output(self):
+        class FakeClient:
+            def shell(self, *args, timeout=30):
+                if args[0] == "blkid":
+                    return subprocess.CompletedProcess(args, 127, "", "not found")
+                if args == ("toybox", "blkid", "-s", "TYPE", "/dev/block/by-name/userdata"):
+                    return subprocess.CompletedProcess(args, 0,
+                        '/dev/block/by-name/userdata: TYPE="f2fs"\n', "")
+                raise AssertionError(f"unexpected command: {args}")
+        self.assertEqual(installer.twrp_userdata_filesystem_type(FakeClient()), "f2fs")
+
+    def test_twrp_utility_preflight_accepts_all_individually_resolved_commands(self):
+        calls = []
+        class FakeClient:
+            def shell(self, *args, timeout=30):
+                calls.append(args)
+                return subprocess.CompletedProcess(args, 0, f"/sbin/{args[-1]}\n", "")
+        checks = installer.preflight_twrp_tools(FakeClient())
+        self.assertEqual(checks, [installer.Check(
+            "TWRP utilities", "OK", "all required recovery commands are available")
+        ])
+        self.assertTrue(calls)
+        self.assertTrue(all(len(args) == 3 and args[:2] == ("command", "-v") for args in calls))
 
     def test_fresh_stock_flow_stops_after_gpt_and_saves_credential_free_checkpoint(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
@@ -448,7 +650,7 @@ class InstallerTests(unittest.TestCase):
                  patch.object(installer.shutil, "which", return_value="/usr/bin/adb"), \
                  patch.object(installer, "open_install_bundle", opened), \
                  patch.object(installer, "android_preflight", return_value=("serial", [installer.Check("Android", "OK", "ready")])), \
-                 patch.object(installer, "adb_target", return_value=("serial", "recovery")), \
+                 patch.object(installer, "adb_target", side_effect=[("serial", "device"), ("serial", "device"), ("serial", "recovery")]), \
                  patch.object(installer, "twrp_identity", return_value=({"twrp": "3.7.0"}, [installer.Check("TWRP", "OK", "root")])), \
                  patch.object(installer, "preflight_twrp_tools", return_value=[installer.Check("tools", "OK", "ready")]), \
                  patch.object(installer, "twrp_gpt_layout", return_value=(stock, [installer.Check("GPT", "OK", "stock")])), \
@@ -596,7 +798,7 @@ class InstallerTests(unittest.TestCase):
             with patch.object(installer.platform, "system", return_value="Linux"), \
                  patch.object(installer.shutil, "which", return_value="/usr/bin/adb"), \
                  patch.object(installer, "open_install_bundle", opened), \
-                 patch.object(installer, "android_preflight", return_value=("serial", [installer.Check("Android", "OK", "ready")])), \
+                 patch.object(installer, "android_preflight") as android_preflight, \
                  patch.object(installer, "adb_target", return_value=("serial", "recovery")), \
                  patch.object(installer, "twrp_identity", return_value=({"twrp": "3.7", "device": "gts9pwifi"}, [installer.Check("TWRP", "OK", "root")])), \
                  patch.object(installer, "preflight_twrp_tools", return_value=[installer.Check("TWRP utilities", "OK", "ready")]), \
@@ -609,6 +811,7 @@ class InstallerTests(unittest.TestCase):
                                                input_func=lambda prompt: "" if "TWRP" in prompt else next(inputs))
             boot_backup.assert_not_called(); gpt_backup.assert_not_called()
             gpt_write.assert_not_called(); install_fs.assert_not_called()
+            android_preflight.assert_not_called()
             self.assertEqual(status, 0)
 
     def test_fresh_install_stops_before_release_download_when_android_preflight_fails(self):
@@ -616,6 +819,7 @@ class InstallerTests(unittest.TestCase):
         failed = [installer.Check("Android root", "STOP", "su unavailable")]
         with patch.object(installer.platform, "system", return_value="Linux"), \
              patch.object(installer.shutil, "which", return_value="/usr/bin/adb"), \
+             patch.object(installer, "adb_target", return_value=("serial", "device")), \
              patch.object(installer, "android_preflight", return_value=("serial", failed)), \
              patch.object(installer, "open_install_bundle") as open_bundle, \
              contextlib.redirect_stdout(output):
@@ -1027,6 +1231,9 @@ Partition name: 'linuxroot'
             "ro.product.device": "gts9pwifi",
             "ro.build.display.id": "TWRP",
             "ro.twrp.version": "3.7.1_12-0",
+            "ro.boot.flash.locked": "0",
+            "ro.boot.vbmeta.device_state": "unlocked",
+            "ro.boot.verifiedbootstate": "orange",
             "/dev/block/by-name/boot": str(installer.X810_BOOT_PARTITIONS["boot"]),
             "/dev/block/by-name/init_boot": str(installer.X810_BOOT_PARTITIONS["init_boot"]),
             "/dev/block/by-name/vendor_boot": str(installer.X810_BOOT_PARTITIONS["vendor_boot"]),

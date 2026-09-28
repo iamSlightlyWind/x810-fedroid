@@ -18,10 +18,12 @@ The workflow:
 1. builds the updater ZIP from `rootfs/overlay/` plus its port/build metadata;
 2. reuses the current release's kernel or rootfs component when its input
    fingerprint and checksums still match, otherwise builds that component;
-3. assembles one run-keyed release containing the updater ZIP, matched
+3. passes the updater ZIP between jobs as a short-lived Actions artifact (it is
+   **not** published as a release by itself);
+4. assembles one run-keyed release containing the updater ZIP, matched
    rootfs/kernel assets, the four individual boot images, and one compact
    release manifest; and
-4. after successful assembly, deletes every older/staging release, leaving only
+5. after successful assembly, deletes every older/staging release, leaving only
    the latest complete aggregate.
 
 The release tag begins `x810-fedora-port-build-` because Tab Companion resolves
@@ -41,8 +43,11 @@ the GitHub release filename is simplified. Tab Companion accepts `update.zip`
 for existing X810 installs that still have the prior `artifact_name` value, so
 they can install the new support RPM and receive the updated port record.
 
-If a build fails before the new aggregate is complete, cleanup removes the
-incomplete/staging releases and retains the previous GitHub `latest` release.
+If a build fails before the new aggregate is complete, the updater ZIP remains
+only as a one-day workflow artifact; cleanup removes any incomplete component
+releases and retains the previous GitHub `latest` release. The install script
+and Tab Companion therefore never see a public release that contains only
+`update.zip`.
 The kernel/rootfs packages are copied forward as assets when unchanged; they
 are not rebuilt just to refresh the aggregate.
 

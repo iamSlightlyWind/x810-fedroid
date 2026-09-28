@@ -134,10 +134,18 @@ python3 tools/verify-x810-build-match.py \
   --kernel-metadata k/BUILD-METADATA.txt \
   --kernel-rpm "${kernel_rpms[0]}"
 
-# The support updater ZIP is published by the independent port-update job.
+# The updater job hands its ZIP to this job as a short-lived Actions artifact.
+# Do not create a public update-only GitHub release: the installer and
+# Tab Companion must only ever see the final aggregate after all payloads are
+# ready. This path is populated by download-artifact in the workflow; callers
+# outside Actions may provide PORT_UPDATE_ZIP explicitly.
 mkdir -p update
-gh release -R "$GITHUB_REPOSITORY" download "$REL" --dir update \
-  --pattern update.zip --clobber
+update_zip="${PORT_UPDATE_ZIP:-_ci/release/update.zip}"
+[ -f "$update_zip" ] || {
+  echo "REFUSING: updater artifact is missing: $update_zip" >&2
+  exit 1
+}
+cp -- "$update_zip" update/update.zip
 
 python3 - "$PORT_VERSION" update/update.zip <<'PY'
 import hashlib

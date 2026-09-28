@@ -395,6 +395,9 @@ def twrp_identity(adb: str, serial: str, state: str, runner=None) -> tuple[dict[
         ("device", "ro.product.device"),
         ("model", "ro.boot.em.model"),
         ("bootloader", "ro.bootloader"),
+        ("flash_locked", "ro.boot.flash.locked"),
+        ("vbmeta_state", "ro.boot.vbmeta.device_state"),
+        ("verifiedbootstate", "ro.boot.verifiedbootstate"),
     ):
         values[key] = shell("getprop", prop)
     values["uid"] = shell("id", "-u")
@@ -409,6 +412,20 @@ def twrp_identity(adb: str, serial: str, state: str, runner=None) -> tuple[dict[
         checks.append(Check("TWRP", "OK", values["twrp"]))
     else:
         checks.append(Check("TWRP", "STOP", "ro.twrp.version is empty"))
+    unlock_evidence = []
+    if values["flash_locked"] == "0":
+        unlock_evidence.append("ro.boot.flash.locked=0")
+    if values["vbmeta_state"].lower() == "unlocked":
+        unlock_evidence.append("vbmeta device_state=unlocked")
+    if values["verifiedbootstate"].lower() == "orange":
+        unlock_evidence.append("verifiedbootstate=orange")
+    locked = values["flash_locked"] == "1" or values["vbmeta_state"].lower() == "locked"
+    if locked:
+        checks.append(Check("Bootloader", "STOP", "TWRP boot properties report a locked bootloader"))
+    elif unlock_evidence:
+        checks.append(Check("Bootloader", "OK", ", ".join(unlock_evidence)))
+    else:
+        checks.append(Check("Bootloader", "STOP", "TWRP boot properties do not prove the bootloader is unlocked"))
     if values["device"] not in {"gts9p", "gts9pwifi"}:
         checks.append(Check("Recovery codename", "STOP", f"expected gts9p/gts9pwifi, got {values['device'] or '?'}"))
     else:
@@ -1035,7 +1052,10 @@ def validate_install_bundle(root: Path) -> InstallBundle:
             module_releases = set()
             for member in archive:
                 parts = [part for part in PurePosixPath(member.name).parts if part not in ("", ".")]
-                if ".." in parts or member.name.startswith("/") or "\\" in member.name:
+                # Backslash is an ordinary Linux filename character. Fedora
+                # ships systemd-escaped aliases such as `virtio\\x2dports`;
+                # only POSIX path separators participate in traversal checks.
+                if ".." in parts or member.name.startswith("/"):
                     raise ValueError(f"unsafe path in rootfs archive: {member.name!r}")
                 if not parts:
                     continue
@@ -1100,21 +1120,33 @@ def extract_clean_bundle(archive_path: Path, destination: Path) -> Path:
 @contextmanager
 def open_install_bundle(bundle_path: Path | None):
     """Open a legacy local bundle or assemble install files from latest release."""
+    if bundle_path is None:
+        print("\nChecking GitHub for the latest X810 install release...", flush=True)
+        release = latest_release()
+        if release is None:
+            raise ValueError("no public GitHub release is available; publish the aggregate release before installing")
+        tag = release.get("tag_name")
+        if not isinstance(tag, str) or not tag:
+            raise ValueError("GitHub latest release has no valid tag name")
+        # Use a deterministic per-tag cache so an interrupted/failed attempt
+        # can resume from already verified multi-gigabyte assets. The tag is
+        # hashed instead of being used as a path component.
+        cache_home = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser()
+        tag_key = hashlib.sha256(tag.encode("utf-8")).hexdigest()[:24]
+        cache_path = cache_home / "x810-fedroid" / "releases" / tag_key
+        print(f"Found {tag}; verified downloads are cached at {cache_path}.", flush=True)
+        root = download_release_install_set(release, cache_path)
+        yield validate_install_bundle(root)
+        return
+
     with tempfile.TemporaryDirectory(prefix="x810-clean-install-") as temporary:
-        temp = Path(temporary)
-        if bundle_path is not None:
-            path = bundle_path.expanduser()
-            if path.is_dir():
-                yield validate_install_bundle(path)
-                return
-            if not path.is_file():
-                raise ValueError(f"bundle does not exist: {path}")
-            root = extract_clean_bundle(path, temp / "bundle")
-        else:
-            release = latest_release()
-            if release is None:
-                raise ValueError("no public GitHub release is available; publish the aggregate release before installing")
-            root = download_release_install_set(release, temp / "bundle")
+        path = bundle_path.expanduser()
+        if path.is_dir():
+            yield validate_install_bundle(path)
+            return
+        if not path.is_file():
+            raise ValueError(f"bundle does not exist: {path}")
+        root = extract_clean_bundle(path, Path(temporary) / "bundle")
         yield validate_install_bundle(root)
 
 
@@ -1134,7 +1166,7 @@ def _release_asset_index(release: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def _download_checked_release_asset(
     asset: dict[str, Any], record: dict[str, Any], destination: Path,
-    opener=urllib.request.urlopen,
+    opener=urllib.request.urlopen, progress=None, reuse_from: Path | None = None,
 ) -> Path:
     """Download one release payload and verify manifest size and SHA-256."""
     name = record.get("name")
@@ -1148,31 +1180,203 @@ def _download_checked_release_asset(
         raise ValueError(f"release manifest has invalid download metadata for {name!r}")
     if asset.get("size") != size:
         raise ValueError(f"GitHub release size disagrees with manifest for {name}")
+    if destination.parent.is_symlink():
+        raise ValueError(f"release asset cache directory must not be a symlink: {destination.parent}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "x810-install/1"})
+    partial_path = destination.with_name(destination.name + ".part")
+    if destination.is_symlink():
+        # Never read through or overwrite a user-created symlink in cache.
+        destination.unlink()
+    elif destination.exists():
+        if not destination.is_file():
+            raise ValueError(f"cached asset path is not a regular file: {destination}")
+        if destination.stat().st_size == size and sha256_file(destination) == digest:
+            print(f"Using verified cached {name} ({_format_bytes(size)}).", flush=True)
+            if progress is not None:
+                progress(name, size, size)
+                print(f"  Verified {name} (size and SHA-256).", flush=True)
+            return destination
+        existing_size = destination.stat().st_size
+        if 0 < existing_size < size:
+            # Previous installer versions wrote incomplete downloads directly
+            # to the final filename. Preserve that prefix for a ranged retry;
+            # its integrity is checked against the complete asset digest.
+            if partial_path.is_symlink():
+                partial_path.unlink()
+            if partial_path.exists() and not partial_path.is_file():
+                raise ValueError(f"cached partial asset path is not a regular file: {partial_path}")
+            if not partial_path.exists() or partial_path.stat().st_size < existing_size:
+                os.replace(destination, partial_path)
+            else:
+                destination.unlink()
+            print(f"Preserving incomplete {name} ({_format_bytes(existing_size)}); will resume by SHA-256-verified range.", flush=True)
+        else:
+            print(f"Discarding invalid cached {name}; downloading a verified copy.", flush=True)
+            destination.unlink()
+    if reuse_from is not None:
+        # A new aggregate release can contain byte-identical rootfs/kernel
+        # payloads. Reuse only a local copy that independently matches the
+        # current release manifest, never by filename or release tag alone.
+        if not _cached_asset_matches(reuse_from, size, digest):
+            raise ValueError(f"previous-release cache failed revalidation for {name}")
+        try:
+            os.link(reuse_from, destination)
+        except OSError:
+            shutil.copyfile(reuse_from, destination)
+        if not _cached_asset_matches(destination, size, digest):
+            destination.unlink(missing_ok=True)
+            raise ValueError(f"reused cache failed size/SHA-256 verification for {name}")
+        partial_path.unlink(missing_ok=True)
+        print(f"Reusing verified cached {name} from an earlier release ({_format_bytes(size)}).", flush=True)
+        if progress is not None:
+            progress(name, size, size)
+            print(f"  Verified {name} (size and SHA-256).", flush=True)
+        return destination
+
+    if partial_path.is_symlink():
+        partial_path.unlink()
+    if partial_path.exists():
+        if not partial_path.is_file():
+            raise ValueError(f"cached partial asset path is not a regular file: {partial_path}")
+        if partial_path.stat().st_size >= size:
+            partial_path.unlink()
+    offset = partial_path.stat().st_size if partial_path.exists() else 0
+    headers = {"User-Agent": "x810-install/1"}
+    if offset:
+        headers["Range"] = f"bytes={offset}-"
+    request = urllib.request.Request(url, headers=headers)
     checksum = hashlib.sha256()
-    total = 0
+    total = offset
+    last_progress_bytes = offset
+    last_progress_time = time.monotonic()
+    if progress is not None:
+        progress(name, offset, size)
     try:
-        with opener(request, timeout=60) as response, destination.open("xb") as output:
+        response = opener(request, timeout=60)
+        append = False
+        if offset:
+            status = getattr(response, "status", None)
+            response_headers = getattr(response, "headers", {})
+            content_range = response_headers.get("Content-Range", "") if hasattr(response_headers, "get") else ""
+            match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range.strip())
+            if status == 206 and match and int(match.group(1)) == offset and int(match.group(3)) == size:
+                append = True
+                with partial_path.open("rb") as prefix:
+                    for block in iter(lambda: prefix.read(1024 * 1024), b""):
+                        checksum.update(block)
+            elif status == 200 or status is None:
+                # The server ignored Range and returned the complete object.
+                total = 0
+                last_progress_bytes = 0
+            else:
+                response.close()
+                partial_path.unlink(missing_ok=True)
+                offset = 0
+                total = 0
+                last_progress_bytes = 0
+                request = urllib.request.Request(url, headers={"User-Agent": "x810-install/1"})
+                response = opener(request, timeout=60)
+
+        if offset and not append and total == 0:
+            partial_path.unlink(missing_ok=True)
+        mode = "ab" if append else "wb"
+        flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(partial_path, flags, 0o600)
+        with response, os.fdopen(descriptor, mode) as output:
             while True:
                 block = response.read(1024 * 1024)
                 if not block:
                     break
                 total += len(block)
                 if total > size:
+                    partial_path.unlink(missing_ok=True)
                     raise ValueError(f"download exceeded manifest size for {name}")
                 checksum.update(block)
                 output.write(block)
+                now = time.monotonic()
+                if progress is not None and (
+                    total - last_progress_bytes >= 64 * 1024**2 or now - last_progress_time >= 3
+                ):
+                    progress(name, total, size)
+                    last_progress_bytes = total
+                    last_progress_time = now
+            output.flush()
+            os.fsync(output.fileno())
     except (OSError, urllib.error.URLError, TimeoutError) as error:
-        destination.unlink(missing_ok=True)
-        raise ValueError(f"could not download release asset {name}: {error}") from error
-    except ValueError:
-        destination.unlink(missing_ok=True)
+        raise ValueError(f"could not download release asset {name}: {error}; any partial data is retained for retry") from error
+    except BaseException:
         raise
     if total != size or checksum.hexdigest() != digest:
-        destination.unlink(missing_ok=True)
+        if total == size:
+            partial_path.unlink(missing_ok=True)
         raise ValueError(f"downloaded release asset failed size/SHA-256 verification: {name}")
+    os.replace(partial_path, destination)
+    if progress is not None:
+        if total != last_progress_bytes:
+            progress(name, total, size)
+        print(f"  Verified {name} (size and SHA-256).", flush=True)
     return destination
+
+
+def _cached_asset_matches(path: Path, size: int, digest: str) -> bool:
+    """Return whether a regular cached file matches its release size and SHA-256."""
+    try:
+        if path.parent.is_symlink() or path.is_symlink() or not path.is_file():
+            return False
+        stat = path.stat()
+        return stat.st_size == size and sha256_file(path) == digest
+    except OSError:
+        return False
+
+
+def _find_previous_release_asset(destination: Path, size: int, digest: str) -> Path | None:
+    """Find a prior release's asset only when its bytes match current metadata."""
+    current_release = destination.parent.parent
+    releases_root = current_release.parent
+    if releases_root.name != "releases" or releases_root.is_symlink() or not releases_root.is_dir():
+        return None
+    try:
+        prior_releases = sorted(releases_root.iterdir(), key=lambda path: path.name)
+    except OSError:
+        return None
+    for release_dir in prior_releases:
+        if release_dir == current_release or release_dir.is_symlink() or not release_dir.is_dir():
+            continue
+        group_dir = release_dir / destination.parent.name
+        if group_dir.is_symlink() or not group_dir.is_dir():
+            continue
+        candidate = group_dir / destination.name
+        if _cached_asset_matches(candidate, size, digest):
+            return candidate
+    return None
+
+
+def _format_bytes(count: int) -> str:
+    value = float(count)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    return f"{count} B"
+
+
+def _terminal_download_progress(name: str, downloaded: int, total: int) -> None:
+    """Show ongoing transfer progress without flooding redirected logs."""
+    tty = sys.stdout.isatty()
+    if downloaded == 0:
+        print(f"Downloading {name} ({_format_bytes(total)})...", flush=True)
+        return
+    percent = min(100.0, downloaded * 100.0 / total)
+    line = f"  {name}: {percent:5.1f}%  {_format_bytes(downloaded)} / {_format_bytes(total)}"
+    if tty:
+        print("\r" + line, end="", flush=True)
+    else:
+        print(line, flush=True)
+    if downloaded == total:
+        if tty:
+            print()
 
 
 def _rootfs_module_release(archive_path: Path) -> str:
@@ -1181,7 +1385,9 @@ def _rootfs_module_release(archive_path: Path) -> str:
         with tarfile.open(archive_path, "r:gz") as archive:
             for member in archive:
                 parts = [part for part in PurePosixPath(member.name).parts if part not in ("", ".")]
-                if ".." in parts or member.name.startswith("/") or "\\" in member.name:
+                # Treat archive names as POSIX paths: a backslash is legal in
+                # a Linux filename (systemd uses `\\xNN` escapes in aliases).
+                if ".." in parts or member.name.startswith("/"):
                     raise ValueError(f"unsafe path in rootfs archive: {member.name!r}")
                 if not parts:
                     continue
@@ -1214,7 +1420,10 @@ def _minimum_rootfs_size(archive_path: Path) -> int:
 def download_release_install_set(release: dict[str, Any], destination: Path,
                                  opener=urllib.request.urlopen) -> Path:
     """Download install inputs individually from one release and synthesize a verified local manifest."""
-    destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+    if destination.is_symlink():
+        raise ValueError(f"release cache directory must not be a symlink: {destination}")
+    destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination.chmod(0o700)
     release_assets = _release_asset_index(release)
     manifest_asset = release_assets.get("manifest.json") or release_assets.get("x810-release-manifest.json")
     if manifest_asset is None:
@@ -1222,24 +1431,25 @@ def download_release_install_set(release: dict[str, Any], destination: Path,
     manifest_url = manifest_asset.get("browser_download_url")
     manifest_size = manifest_asset.get("size")
     if (not isinstance(manifest_url, str) or not manifest_url.startswith("https://")
-            or not isinstance(manifest_size, int) or isinstance(manifest_size, bool) or manifest_size <= 0):
+            or not isinstance(manifest_size, int) or isinstance(manifest_size, bool)
+            or manifest_size <= 0 or manifest_size > 16 * 1024**2):
         raise ValueError("release manifest asset has invalid GitHub download metadata")
-    manifest_path = destination / "release-manifest.json"
     request = urllib.request.Request(manifest_url, headers={"User-Agent": "x810-install/1"})
+    print("Fetching release manifest.json...", flush=True)
     try:
-        with opener(request, timeout=60) as response, manifest_path.open("xb") as output:
-            shutil.copyfileobj(response, output, 1024 * 1024)
+        with opener(request, timeout=60) as response:
+            manifest_data = response.read(manifest_size + 1)
     except (OSError, urllib.error.URLError, TimeoutError) as error:
         raise ValueError(f"could not download release manifest: {error}") from error
-    if manifest_path.stat().st_size != manifest_size:
+    if len(manifest_data) != manifest_size:
         raise ValueError("downloaded release manifest does not match the GitHub asset size")
     api_digest = manifest_asset.get("digest")
     if isinstance(api_digest, str) and api_digest.startswith("sha256:"):
-        if sha256_file(manifest_path) != api_digest[len("sha256:"):]:
+        if hashlib.sha256(manifest_data).hexdigest() != api_digest[len("sha256:"):]:
             raise ValueError("downloaded release manifest does not match GitHub's SHA-256 digest")
     try:
-        release_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        release_manifest = json.loads(manifest_data)
+    except (UnicodeError, json.JSONDecodeError) as error:
         raise ValueError(f"could not parse release manifest: {error}") from error
     if (not isinstance(release_manifest, dict)
             or release_manifest.get("schema_version") != 1
@@ -1247,6 +1457,7 @@ def download_release_install_set(release: dict[str, Any], destination: Path,
             or release_manifest.get("device") != {"model": EXPECTED_MODEL, "codename": EXPECTED_DEVICE}
             or release_manifest.get("release_tag") != release.get("tag_name")):
         raise ValueError("release manifest is not for this X810 release/device")
+    print("Release manifest matches this X810; resolving required files and checksums...", flush=True)
 
     records = release_manifest.get("assets")
     components = release_manifest.get("components")
@@ -1281,18 +1492,38 @@ def download_release_install_set(release: dict[str, Any], destination: Path,
             raise ValueError(f"release manifest is missing {partition}.img")
         selected[image_record["name"]] = (image_record, "boot")
 
-    sizes = [record.get("size_bytes") for record, _ in selected.values()]
-    if any(not isinstance(size, int) or isinstance(size, bool) or size <= 0 for size in sizes):
-        raise ValueError("release manifest has invalid asset sizes")
-    total_bytes = sum(sizes)
-    if shutil.disk_usage(destination).free < total_bytes + 128 * 1024**2:
-        raise ValueError(f"not enough free disk space to download install files ({total_bytes:,} bytes plus temporary headroom required)")
+    required_bytes = 0
+    reusable_from: dict[str, Path] = {}
+    for name, (record, group) in selected.items():
+        size = record.get("size_bytes")
+        digest = record.get("sha256")
+        if (not isinstance(size, int) or isinstance(size, bool) or size <= 0
+                or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+            raise ValueError(f"release manifest has invalid size or SHA-256 for {name}")
+        if destination.is_symlink():
+            raise ValueError(f"release cache directory must not be a symlink: {destination}")
+        group_path = destination / group
+        if group_path.is_symlink():
+            raise ValueError(f"release cache subdirectory must not be a symlink: {group_path}")
+        cached_path = destination / group / name
+        if _cached_asset_matches(cached_path, size, digest):
+            continue
+        previous = _find_previous_release_asset(cached_path, size, digest)
+        if previous is not None:
+            reusable_from[name] = previous
+        else:
+            required_bytes += size
+    if shutil.disk_usage(destination).free < required_bytes + 128 * 1024**2:
+        raise ValueError(f"not enough free disk space for missing install files ({required_bytes:,} bytes plus temporary headroom required)")
+    print(f"Checking {len(selected)} required files ({_format_bytes(required_bytes)} to download); progress is shown per file.", flush=True)
     downloaded: dict[str, Path] = {}
     for name, (record, group) in selected.items():
         api_asset = release_assets.get(name)
         if api_asset is None:
             raise ValueError(f"release manifest payload is not attached to this release: {name}")
-        path = _download_checked_release_asset(api_asset, record, destination / group / name, opener)
+        path = _download_checked_release_asset(api_asset, record, destination / group / name, opener,
+                                               progress=_terminal_download_progress,
+                                               reuse_from=reusable_from.get(name))
         downloaded[name] = path
 
     root_component = components.get("rootfs")
@@ -1360,7 +1591,6 @@ def download_release_install_set(release: dict[str, Any], destination: Path,
         "files": inventory,
     }
     (destination / CLEAN_MANIFEST).write_text(json.dumps(generated, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    manifest_path.unlink(missing_ok=True)
     return destination
 
 
@@ -2128,20 +2358,48 @@ def require_manual_userdata_format(client: ADBClient, checkpoint: dict[str, Any]
     result = client.shell("blockdev", "--getsize64", "/dev/block/by-name/userdata")
     if result.returncode != 0 or result.stdout.strip() != str(expected_size):
         raise RuntimeError(f"manual Format Data step did not leave expected userdata size {expected_size:,} bytes")
-    fs = client.shell("blkid", "-o", "value", "-s", "TYPE", "/dev/block/by-name/userdata")
-    if fs.returncode != 0 or fs.stdout.strip() not in {"ext4", "f2fs"}:
+    filesystem = twrp_userdata_filesystem_type(client)
+    if filesystem not in {"ext4", "f2fs"}:
         raise RuntimeError("could not verify userdata filesystem after manual Format Data; no Fedora partition was formatted")
+
+
+def twrp_userdata_filesystem_type(client: ADBClient) -> str | None:
+    """Read userdata's filesystem through util-linux blkid or Android Toybox."""
+    device = "/dev/block/by-name/userdata"
+    direct = client.shell("blkid", "-o", "value", "-s", "TYPE", device)
+    value = direct.stdout.strip()
+    if direct.returncode == 0 and value in {"ext4", "f2fs"}:
+        return value
+
+    # TWRP's Android Toybox has a blkid applet but not util-linux's `-o`
+    # option. Its `-s TYPE` output is `TYPE="ext4"` (optionally prefixed by
+    # the device name and followed by other selected tags).
+    toybox = client.shell("toybox", "blkid", "-s", "TYPE", device)
+    matches = re.findall(r'(?:^|\s)TYPE="([A-Za-z0-9_-]+)"(?:$|\s)', toybox.stdout.strip())
+    if toybox.returncode == 0 and len(matches) == 1:
+        return matches[0]
+    return None
 
 
 def preflight_twrp_tools(client: ADBClient) -> list[Check]:
     """Check all recovery-side commands needed by later guarded stages."""
     required = ("sgdisk", "blockdev", "dd", "gzip", "tar", "mke2fs", "mount",
-                "umount", "blkid", "sync", "chroot", "sh", "test")
-    script = "for x in " + " ".join(required) + "; do command -v \"$x\" >/dev/null 2>&1 || echo MISSING:$x; done"
-    result = client.shell("sh", "-c", script)
-    if result.returncode != 0:
-        return [Check("TWRP utilities", "STOP", result.stderr.strip() or "could not query recovery utility availability")]
-    missing = [line.split(":", 1)[1] for line in result.stdout.splitlines() if line.startswith("MISSING:")]
+                "umount", "sync", "chroot", "sh", "test")
+    # Do not pass a compound `sh -c 'for ...; do ...'` string through adb shell:
+    # older platform-tools/TWRP combinations flatten argv and strip the quoting,
+    # so the recovery shell sees `do` as a new command and rejects the syntax.
+    # Each utility probe is a simple, metacharacter-free shell command.
+    missing = []
+    for utility in required:
+        result = client.shell("command", "-v", utility)
+        if result.returncode != 0 or not result.stdout.strip():
+            missing.append(utility)
+    direct_blkid = client.shell("command", "-v", "blkid")
+    if direct_blkid.returncode != 0 or not direct_blkid.stdout.strip():
+        toybox = client.shell("command", "-v", "toybox")
+        help_result = client.shell("toybox", "blkid", "--help") if toybox.returncode == 0 else None
+        if (help_result is None or "usage: blkid" not in help_result.stdout.lower()):
+            missing.append("blkid (or toybox blkid)")
     return [Check("TWRP utilities", "STOP" if missing else "OK",
                   "missing required command(s): " + ", ".join(missing) if missing else "all required recovery commands are available")]
 
@@ -2188,12 +2446,25 @@ def run_install(bundle_path: Path | None, serial: str | None = None,
         # is not yet at the required Android/ADB stage. Resume runs instead
         # require TWRP already, and likewise check that before downloading.
         preflight_target: str | None = None
+        started_in_twrp = False
         if resume_from is None:
-            preflight_target, android_checks = android_preflight(adb, serial, runner=runner)
-            show_checks(android_checks)
-            if any(check.state == "STOP" for check in android_checks):
-                print("STOP: resolve Android model/unlock/root checks manually; installer made no tablet changes.")
-                return 2
+            preflight_target, initial_state = adb_target(adb, serial, runner, {"device", "recovery"})
+            if initial_state == "device":
+                preflight_target, android_checks = android_preflight(adb, preflight_target, runner=runner)
+                show_checks(android_checks)
+                if any(check.state == "STOP" for check in android_checks):
+                    print("STOP: resolve Android model/unlock/root checks manually; installer made no tablet changes.")
+                    return 2
+            else:
+                # A fresh install may be launched while the user already has
+                # TWRP open. Identify the recovery itself (not merely the ADB
+                # transport state) before downloading the large rootfs.
+                started_in_twrp = True
+                values, recovery_checks = twrp_identity(adb, preflight_target, initial_state, runner=runner)
+                show_checks(recovery_checks)
+                if any(check.state == "STOP" for check in recovery_checks):
+                    print("STOP: connected recovery was not positively identified as unlocked X810 TWRP; no download or tablet changes were made.")
+                    return 2
         else:
             preflight_target, _ = adb_target(adb, serial, runner, {"recovery"})
 
@@ -2204,6 +2475,9 @@ def run_install(bundle_path: Path | None, serial: str | None = None,
                 target, state = adb_target(adb, preflight_target, runner, {"recovery"})
                 resume_checkpoint = validate_resume_checkpoint(resume_from.expanduser(), target, bundle)
                 print("Resume checkpoint matches this device, bundle, and local recovery backups; Android preflight is not repeated.")
+            elif started_in_twrp:
+                target, state = adb_target(adb, preflight_target, runner, {"recovery"})
+                print("TWRP preflight passed. Continuing in the already-open recovery; this script will not reboot the tablet.")
             else:
                 # Confirm Android is still connected after release acquisition;
                 # never continue using a stale pre-download ADB observation.
@@ -2365,7 +2639,7 @@ def run_install(bundle_path: Path | None, serial: str | None = None,
 
 def show_install_path() -> None:
     print("\nFedora on SM-X810 — installation status\n")
-    print("Run `python3 tools/x810-install` for the guided flow or `install --bundle PATH` for an offline bundle.")
+    print("Run `python3 tools/x810-install` for the guided flow or `install --no-update --bundle PATH` to use a local bundle without querying GitHub.")
     print("The installer requires Android unlocked/rooted, manual TWRP entry, one release with a verified manifest and matching install assets, and typed confirmations.")
     print("It backs up GPT metadata and boot/init_boot/vendor_boot/dtbo, then may resize only userdata/linuxroot.")
     print("For a stock layout, it writes GPT, saves a credential-free resume checkpoint, and stops for your manual TWRP reboot.")
@@ -2460,6 +2734,8 @@ def main() -> int:
     sub = parser.add_subparsers(dest="action")
     install = sub.add_parser("install", help="guided X810 Fedora installation (interactive; destructive steps are confirmed)")
     install.add_argument("--bundle", type=Path, help="local extracted bundle directory or clean-install .tar.gz (default: download latest release)")
+    install.add_argument("--no-update", action="store_true",
+                         help="do not query GitHub; install from the local path supplied with --bundle")
     install.add_argument("--serial", help="ADB serial when more than one device is connected")
     install.add_argument("--resume-from", type=Path, help="resume after the installer wrote GPT and you manually rebooted into TWRP; path is the private backup/checkpoint directory")
     install.add_argument("--plan-only", action="store_true", help="validate bundle/device/layout and show the plan without backups or tablet writes")
@@ -2490,6 +2766,8 @@ def main() -> int:
         parser.print_help()
         return 0
     if args.action == "install":
+        if args.no_update and args.bundle is None:
+            parser.error("install --no-update requires --bundle with a local bundle directory or clean-install .tar.gz")
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             print("STOP: guided install requires an interactive terminal for typed confirmations.", file=sys.stderr)
             return 2
