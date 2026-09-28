@@ -31,6 +31,29 @@ def check_charger_arbitration() -> None:
     battery = BATTERY_DRIVER.read_text()
     direct = DIRECT_DRIVER.read_text()
 
+    negotiate = function_body(direct, "static int sm5440_negotiate_pps(")
+    assert "#define SM5440_PPS_STEP_MA\t\tX810_PPS_CURRENT_STEP_MA" in direct
+    assert "ma -= SM5440_PPS_STEP_MA" in negotiate, (
+        "PPS APDO discovery must walk the complete advertised 50 mA current grid"
+    )
+
+    # TCPM rejects a request above an APDO's max current locally, before any PD
+    # exchange. The driver's descending probe must therefore be able to land on
+    # every legal 50 mA APDO ceiling, while retaining its 1.8 A minimum.
+    def highest_probe_at_or_below(apdo_max_ma: int) -> int:
+        candidate = 3000
+        while candidate >= 1800:
+            if candidate <= apdo_max_ma:
+                return candidate
+            candidate -= 50
+        return 0
+
+    for apdo_max_ma, expected in ((1850, 1850), (1900, 1900),
+                                  (1999, 1950), (1750, 0)):
+        assert highest_probe_at_or_below(apdo_max_ma) == expected, (
+            f"PPS APDO current search for {apdo_max_ma} mA must yield {expected}"
+        )
+
     configure = function_body(battery, "static int sm5714_configure_charging(")
     lock = configure.index("mutex_lock(&sm->chg_lock)")
     owner_guard = configure.index("if (READ_ONCE(sm->direct_charging))")
