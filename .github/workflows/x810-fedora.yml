@@ -258,6 +258,7 @@ jobs:
           python3 tools/test-x810-pd-limits.py
           python3 tools/test-x810-npu-memory-policy.py
           python3 tools/test-x810-fingerprint-kernel-contract.py
+          python3 tools/test-x810-camera-diagnostic.py
 
       - name: Compare inputs with successful component releases
         id: plan
