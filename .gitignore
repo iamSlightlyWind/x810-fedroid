@@ -42,6 +42,9 @@ probes/android-baseline/*
 !probes/android-baseline/README.md
 probes/twrp-current/
 x810-gpt-backup-*/
+# Private backups emitted by the installer (boot images, GPT captures,
+# serial/device metadata and install checkpoints); never publish these.
+x810-install-backup-*/
 *.tar.lz4
 *.img
 *.bin

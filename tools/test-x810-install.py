@@ -128,13 +128,13 @@ class InstallerTests(unittest.TestCase):
             release.write_text('ID="fedora"\nID_LIKE="rhel centos"\nEVIL=$(touch /tmp/nope)\n')
             self.assertEqual(installer.linux_ids(release), {"fedora", "rhel", "centos"})
 
-    def test_no_update_does_not_accept_an_explicit_bundle_override(self):
+    def test_unknown_subcommands_are_rejected(self):
         stderr = io.StringIO()
-        with patch.object(sys, "argv", [str(SCRIPT), "install", "--no-update", "--bundle", "/tmp/ignored"]), \
+        with patch.object(sys, "argv", [str(SCRIPT), "doctor"]), \
              contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as error:
             installer.main()
         self.assertEqual(error.exception.code, 2)
-        self.assertIn("selects the cached release automatically", stderr.getvalue())
+        self.assertIn("invalid choice", stderr.getvalue())
 
     def test_no_update_uses_cached_bundle_without_querying_github(self):
         class TTY(io.StringIO):
@@ -146,13 +146,60 @@ class InstallerTests(unittest.TestCase):
             with patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
                             {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
                 cached_bundle = installer.validate_install_bundle(root)
-        with patch.object(sys, "argv", [str(SCRIPT), "install", "--no-update"]), \
+        with patch.object(sys, "argv", [str(SCRIPT), "--no-update"]), \
              patch.object(sys, "stdin", TTY()), patch.object(sys, "stdout", TTY()), \
              patch.object(installer, "find_cached_install_bundle", return_value=cached_bundle), \
              patch.object(installer, "run_install", return_value=0) as run_install, \
              patch.object(installer, "latest_release", side_effect=AssertionError("local mode must not query GitHub")):
             self.assertEqual(installer.main(), 0)
-        run_install.assert_called_once_with(cached_bundle, None, False, None)
+        run_install.assert_called_once_with(cached_bundle, serial=None)
+
+    def test_default_invocation_starts_latest_release_install(self):
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        with patch.object(sys, "argv", [str(SCRIPT)]), \
+             patch.object(sys, "stdin", TTY()), patch.object(sys, "stdout", TTY()), \
+             patch.object(installer, "run_install", return_value=0) as run_install, \
+             patch.object(installer, "find_cached_install_bundle", side_effect=AssertionError("default mode must use the latest feed")):
+            self.assertEqual(installer.main(), 0)
+        run_install.assert_called_once_with(None, serial=None)
+
+    def test_main_starts_single_guided_flow(self):
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+        class CachedBundle:
+            manifest = {"bundle_version": "test-release"}
+        cached_bundle = CachedBundle()
+        with patch.object(sys, "argv", [str(SCRIPT), "--no-update"]), \
+             patch.object(sys, "stdin", TTY()), patch.object(sys, "stdout", TTY()), \
+             patch.object(installer, "find_cached_install_bundle", return_value=cached_bundle), \
+             patch.object(installer, "run_install", return_value=0) as install:
+            self.assertEqual(installer.main(), 0)
+        install.assert_called_once_with(cached_bundle, serial=None)
+
+    def test_serial_is_passed_to_guided_install(self):
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+        with patch.object(sys, "argv", [str(SCRIPT), "--serial", "tablet-serial"]), \
+             patch.object(sys, "stdin", TTY()), patch.object(sys, "stdout", TTY()), \
+             patch.object(installer, "run_install", return_value=0) as run_install:
+            self.assertEqual(installer.main(), 0)
+        run_install.assert_called_once_with(None, serial="tablet-serial")
+
+    def test_restore_dispatches_to_checked_restore_helper(self):
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+        checks = [installer.Check("TWRP", "OK", "verified")]
+        with patch.object(sys, "argv", [str(SCRIPT), "restore-boot-set", "--backup-dir", "/tmp/backup", "--serial", "device"]), \
+             patch.object(sys, "stdin", TTY()), patch.object(sys, "stdout", TTY()), \
+             patch.object(installer, "restore_boot_set_from_backup", return_value=checks) as restore:
+            self.assertEqual(installer.main(), 0)
+        restore.assert_called_once_with("adb", "device", Path("/tmp/backup"))
 
     def test_no_update_stops_if_no_valid_cache_exists(self):
         class TTY(io.StringIO):
@@ -160,7 +207,7 @@ class InstallerTests(unittest.TestCase):
                 return True
 
         stderr = io.StringIO()
-        with patch.object(sys, "argv", [str(SCRIPT), "install", "--no-update"]), \
+        with patch.object(sys, "argv", [str(SCRIPT), "--no-update"]), \
              patch.object(sys, "stdin", TTY()), patch.object(sys, "stdout", TTY()), \
              patch.object(installer, "find_cached_install_bundle", side_effect=ValueError("no complete cached X810 install release found")), \
              patch.object(installer, "run_install") as run_install, \
@@ -486,10 +533,125 @@ class InstallerTests(unittest.TestCase):
         self.assertGreater(pct["free_sectors"], 0)
         with self.assertRaisesRegex(ValueError, "exceed"):
             installer.calculate_install_split("70%", "40%", 32 * 1024**3)
-        with self.assertRaisesRegex(ValueError, "at least 32 GiB"):
+        with self.assertRaisesRegex(ValueError, "32.00 GiB"):
             installer.calculate_install_split("20GiB", "50GiB", 32 * 1024**3)
         with self.assertRaisesRegex(ValueError, "at least"):
             installer.calculate_install_split("80GiB", "35GiB", 40 * 1024**3)
+        decimal = installer.calculate_install_split("200GB", "40GB", 32 * 1024**3)
+        self.assertGreater(decimal["free_sectors"], 0)
+        with self.assertRaisesRegex(ValueError, "exceed"):
+            installer.calculate_install_split("200GB", "48GB", 32 * 1024**3)
+        self.assertEqual(installer.capacity_both(223_950_000_000), "223.95 GB (208.57 GiB)")
+
+    def test_existing_split_prompt_keeps_current_by_default_or_calculates_new_sizes(self):
+        current = installer.calculate_install_split("120GiB", "70GiB", 40 * 1024**3)
+        layout = {"state": "split",
+                  "userdata": {"first": str(current["userdata_first"]), "last": str(current["userdata_last"])},
+                  "linuxroot": {"first": str(current["linuxroot_first"]), "last": str(current["linuxroot_last"])} }
+        self.assertIsNone(installer.prompt_existing_split_plan(layout, 40 * 1024**3,
+                                                               input_func=lambda _: ""))
+        same_answers = iter(["r", "", ""])
+        same_plan = installer.prompt_existing_split_plan(layout, 40 * 1024**3,
+                                                         input_func=lambda _: next(same_answers))
+        self.assertTrue(installer.split_plan_matches_live(layout, same_plan))
+        answers = iter(["r", "100GiB", "80GiB"])
+        resized = installer.prompt_existing_split_plan(layout, 40 * 1024**3,
+                                                       input_func=lambda _: next(answers))
+        self.assertIsNotNone(resized)
+        self.assertFalse(installer.split_plan_matches_live(layout, resized))
+        self.assertEqual(resized["userdata_sectors"] * installer.GPT_CAPTURE_BLOCK,
+                         installer.parse_size_request("100GiB", 300 * 1024**3) // installer.GPT_CAPTURE_BLOCK * installer.GPT_CAPTURE_BLOCK)
+        self.assertGreater(resized["free_sectors"], 0)
+
+    def test_plan_only_existing_split_exposes_resize_choice_without_writing(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
+                {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
+            root = self.make_valid_bundle(Path(temp) / "bundle")
+            bundle = installer.validate_install_bundle(root)
+            current = installer.calculate_install_split("120GiB", "70GiB", 32 * 1024**3)
+            layout = {"state": "split",
+                      "userdata": {"first": str(current["userdata_first"]), "last": str(current["userdata_last"])},
+                      "linuxroot": {"first": str(current["linuxroot_first"]), "last": str(current["linuxroot_last"])} }
+            @contextmanager
+            def opened(_): yield bundle
+            answers = iter(["r", "100GiB", "80GiB"])
+            prompts = []
+            def answer(prompt):
+                prompts.append(prompt)
+                return next(answers)
+            output = io.StringIO()
+            with patch.object(installer.platform, "system", return_value="Linux"), \
+                 patch.object(installer.shutil, "which", return_value="/usr/bin/adb"), \
+                 patch.object(installer, "open_install_bundle", opened), \
+                 patch.object(installer, "adb_target", side_effect=[("serial", "recovery"), ("serial", "recovery")]), \
+                 patch.object(installer, "twrp_identity", return_value=({"twrp": "3.7.0"}, [installer.Check("TWRP", "OK", "root")])), \
+                 patch.object(installer, "preflight_twrp_tools", return_value=[installer.Check("tools", "OK", "ready")]), \
+                 patch.object(installer, "twrp_gpt_layout", return_value=(layout, [installer.Check("GPT", "OK", "split")])), \
+                 patch.object(installer, "verify_twrp_partition_map", return_value=[installer.Check("partition map", "OK", "matches")]), \
+                 patch.object(installer, "install_partition_table") as writer, \
+                 contextlib.redirect_stdout(output):
+                status = installer.run_install(Path("bundle"), plan_only=True,
+                    runner=lambda *a, **k: None, input_func=answer)
+            self.assertEqual(status, 0)
+            writer.assert_not_called()
+            self.assertIn("Current partition sizes:", output.getvalue())
+            self.assertIn("Available for Android + Fedora:", output.getvalue())
+            self.assertIn("Enter GB (preferred", output.getvalue())
+            self.assertTrue(any(prompt.startswith("Android userdata size [") for prompt in prompts), prompts)
+            self.assertIn("New partition plan (replacing current userdata/linuxroot split)", output.getvalue())
+            self.assertIn("Left unpartitioned:", output.getvalue())
+            self.assertIn("PLAN ONLY: no backups or tablet writes performed.", output.getvalue())
+
+    def test_partition_device_map_detects_stale_twrp_geometry_before_any_write(self):
+        plan = installer.calculate_install_split("180GB", "48GB", 32 * 1024**3)
+        layout = {"state": "split",
+                  "userdata": {"first": str(plan["userdata_first"]), "last": str(plan["userdata_last"])},
+                  "linuxroot": {"first": str(plan["linuxroot_first"]), "last": str(plan["linuxroot_last"])} }
+        calls = []
+        class FakeClient:
+            def shell(self, *args, timeout=30):
+                calls.append(args)
+                if args[-1].endswith("userdata"):
+                    return subprocess.CompletedProcess(args, 0,
+                        str(plan["userdata_sectors"] * installer.GPT_CAPTURE_BLOCK), "")
+                return subprocess.CompletedProcess(args, 0, str(96_187_936_768), "")
+        checks = installer.verify_twrp_partition_map(FakeClient(), layout)
+        self.assertEqual(checks[0].state, "STOP")
+        self.assertIn("GPT says", checks[0].detail)
+        self.assertIn("stale partition map", checks[0].detail)
+        self.assertEqual(len(calls), 2)
+
+    def test_stale_partition_map_stops_fresh_install_before_backup_or_user_prompts(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
+                {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
+            root = self.make_valid_bundle(Path(temp) / "bundle")
+            bundle = installer.validate_install_bundle(root)
+            current = installer.calculate_install_split("180GB", "48GB", 32 * 1024**3)
+            layout = {"state": "split",
+                      "userdata": {"first": str(current["userdata_first"]), "last": str(current["userdata_last"])},
+                      "linuxroot": {"first": str(current["linuxroot_first"]), "last": str(current["linuxroot_last"])} }
+            @contextmanager
+            def opened(_): yield bundle
+            output = io.StringIO()
+            stopped = [installer.Check("Partition device map", "STOP", "stale GPT map")]
+            with patch.object(installer.platform, "system", return_value="Linux"), \
+                 patch.object(installer.shutil, "which", return_value="/usr/bin/adb"), \
+                 patch.object(installer, "open_install_bundle", opened), \
+                 patch.object(installer, "adb_target", side_effect=[("serial", "recovery"), ("serial", "recovery")]), \
+                 patch.object(installer, "twrp_identity", return_value=({"twrp": "3.7.0"}, [installer.Check("TWRP", "OK", "root")])), \
+                 patch.object(installer, "preflight_twrp_tools", return_value=[installer.Check("tools", "OK", "ready")]), \
+                 patch.object(installer, "twrp_gpt_layout", return_value=(layout, [installer.Check("GPT", "OK", "split")])), \
+                 patch.object(installer, "verify_twrp_partition_map", return_value=stopped), \
+                 patch.object(installer, "save_current_boot_set") as boot_backup, \
+                 patch.object(installer, "prompt_install_details") as user_prompts, \
+                 patch.object(installer, "format_and_install_rootfs") as install_root, \
+                 contextlib.redirect_stdout(output):
+                status = installer.run_install(Path("bundle"), runner=lambda *a, **k: None)
+            self.assertEqual(status, 2)
+            boot_backup.assert_not_called()
+            user_prompts.assert_not_called()
+            install_root.assert_not_called()
+            self.assertIn("no backups, formatting, or partition writes were started", output.getvalue())
 
     def test_stock_gpt_writer_changes_only_entries_34_and_35_and_uses_distinct_guid(self):
         plan = installer.calculate_install_split("80GiB", "60GiB", 32 * 1024**3)
@@ -505,8 +667,10 @@ class InstallerTests(unittest.TestCase):
             runner = staticmethod(lambda argv, timeout=15: subprocess.CompletedProcess(argv, 0, "", ""))
             def shell(self, *args, timeout=30):
                 calls.append(args)
-                if args[:3] == ("sh", "-c", "grep -qE ' /data ' /proc/mounts"):
-                    return subprocess.CompletedProcess(args, 1, "", "not mounted")
+                if args[:2] == ("readlink", "-f"):
+                    return subprocess.CompletedProcess(args, 0, f"/dev/block/sda34\n", "")
+                if args == ("cat", "/proc/mounts"):
+                    return subprocess.CompletedProcess(args, 0, "", "")
                 return subprocess.CompletedProcess(args, 0, "", "")
         with patch.object(installer, "twrp_gpt_layout", side_effect=[
             (stock, [installer.Check("GPT", "OK", "stock")]),
@@ -520,6 +684,47 @@ class InstallerTests(unittest.TestCase):
         guid = next(arg.split(":", 1)[1] for arg in write if arg.startswith("--partition-guid=34:"))
         self.assertNotEqual(guid, installer.X810_USERDATA_TYPE_GUID)
         self.assertEqual(write[-1], "/dev/block/sda")
+        self.assertFalse(any("recovery" in str(call) or "vbmeta" in str(call) or "reboot" in str(call) for call in calls))
+
+    def test_existing_split_gpt_writer_rechecks_old_layout_unmounts_and_deletes_both_entries(self):
+        old_plan = installer.calculate_install_split("120GiB", "70GiB", 40 * 1024**3)
+        new_plan = installer.calculate_install_split("100GiB", "80GiB", 40 * 1024**3)
+        def layout(plan):
+            return {"state": "split",
+                    "userdata": {"name": "userdata", "type_guid": installer.X810_USERDATA_TYPE_GUID,
+                                 "unique_guid": "11111111-1111-1111-1111-111111111111",
+                                 "first": str(plan["userdata_first"]), "last": str(plan["userdata_last"])},
+                    "linuxroot": {"name": "linuxroot", "type_guid": installer.X810_LINUX_TYPE_GUID,
+                                  "unique_guid": "22222222-2222-2222-2222-222222222222",
+                                  "first": str(plan["linuxroot_first"]), "last": str(plan["linuxroot_last"])}}
+        original, updated = layout(old_plan), layout(new_plan)
+        calls = []
+        class Client:
+            adb, serial = "adb", "serial"
+            runner = staticmethod(lambda argv, timeout=15: subprocess.CompletedProcess(argv, 0, "", ""))
+            def shell(self, *args, timeout=30):
+                calls.append(args)
+                if args[:2] == ("readlink", "-f"):
+                    return subprocess.CompletedProcess(args, 0,
+                        "/dev/block/sda34\n" if args[-1].endswith("userdata") else "/dev/block/sda35\n", "")
+                if args == ("cat", "/proc/mounts"):
+                    return subprocess.CompletedProcess(args, 0,
+                        "/dev/block/sda34 /data ext4 rw 0 0\n/dev/block/sda35 /mnt/linuxroot ext4 rw 0 0\n", "")
+                return subprocess.CompletedProcess(args, 0, "", "")
+        with patch.object(installer, "twrp_gpt_layout", side_effect=[
+                (original, [installer.Check("GPT", "OK", "old split")]),
+                (updated, [installer.Check("GPT", "OK", "new split")]),
+        ]):
+            checks = installer.install_partition_table(Client(), original, new_plan,
+                                                       installer.INSTALL_GPT_CONFIRMATION)
+        self.assertFalse(any(check.state == "STOP" for check in checks), checks)
+        self.assertIn(("umount", "/data"), calls)
+        self.assertIn(("umount", "/mnt/linuxroot"), calls)
+        write = next(call for call in calls if call and call[0] == "sgdisk")
+        self.assertIn("--delete=34", write)
+        self.assertIn("--delete=35", write)
+        self.assertLess(calls.index(("umount", "/data")), calls.index(write))
+        self.assertLess(calls.index(("umount", "/mnt/linuxroot")), calls.index(write))
         self.assertFalse(any("recovery" in str(call) or "vbmeta" in str(call) or "reboot" in str(call) for call in calls))
 
     def make_checkpoint_backup(self, backup_dir, bundle, split_plan, sizes=None):
@@ -567,6 +772,141 @@ class InstallerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing/corrupt"):
                 installer.validate_resume_checkpoint(backup, "serial", bundle)
 
+    def test_pending_checkpoint_auto_resume_selects_exact_current_gpt_layout(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
+                {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
+            root = self.make_valid_bundle(Path(temp) / "bundle")
+            bundle = installer.validate_install_bundle(root)
+            old_split = installer.calculate_install_split("120GiB", "70GiB", 32 * 1024**3)
+            current_split = installer.calculate_install_split("160GB", "48GB", 32 * 1024**3)
+            old = Path(temp) / "x810-install-backup-20260928-120152-000000"
+            current = Path(temp) / "x810-install-backup-20260928-121810-000000"
+            self.make_checkpoint_backup(old, bundle, old_split)
+            self.make_checkpoint_backup(current, bundle, current_split)
+            # Force the directory timestamps in favor of the obsolete plan; the
+            # exact GPT geometry, not simply newest timestamp, must win.
+            os.utime(old / "install-checkpoint.json", ns=(3_000_000_000, 3_000_000_000))
+            layout = {
+                "state": "split",
+                "userdata": {"first": str(current_split["userdata_first"]), "last": str(current_split["userdata_last"])},
+                "linuxroot": {"first": str(current_split["linuxroot_first"]), "last": str(current_split["linuxroot_last"])},
+            }
+            self.assertEqual(installer.find_pending_install_checkpoint(bundle, "serial", layout, Path(temp)), current)
+
+    def test_completed_checkpoint_is_not_auto_resumed(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
+                {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
+            root = self.make_valid_bundle(Path(temp) / "bundle")
+            bundle = installer.validate_install_bundle(root)
+            split = installer.calculate_install_split("80GiB", "60GiB", 32 * 1024**3)
+            backup = Path(temp) / "x810-install-backup-complete"
+            self.make_checkpoint_backup(backup, bundle, split)
+            installer.mark_install_checkpoint_complete(backup)
+            layout = {
+                "state": "split",
+                "userdata": {"first": str(split["userdata_first"]), "last": str(split["userdata_last"])},
+                "linuxroot": {"first": str(split["linuxroot_first"]), "last": str(split["linuxroot_last"])},
+            }
+            self.assertIsNone(installer.find_pending_install_checkpoint(bundle, "serial", layout, Path(temp)))
+
+    def test_single_command_automatically_resumes_pending_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
+                {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
+            root = self.make_valid_bundle(Path(temp) / "bundle")
+            bundle = installer.validate_install_bundle(root)
+            split = installer.calculate_install_split("160GB", "48GB", 32 * 1024**3)
+            backup = Path(temp) / "x810-install-backup-pending"
+            self.make_checkpoint_backup(backup, bundle, split)
+            layout = {
+                "state": "split",
+                "userdata": {"first": str(split["userdata_first"]), "last": str(split["userdata_last"])},
+                "linuxroot": {"first": str(split["linuxroot_first"]), "last": str(split["linuxroot_last"])},
+            }
+            output = io.StringIO()
+            with patch.object(installer, "install_state_root", return_value=Path(temp)), \
+                 patch.object(installer.platform, "system", return_value="Linux"), \
+                 patch.object(installer.shutil, "which", return_value="/usr/bin/adb"), \
+                 patch.object(installer, "open_install_bundle") as open_bundle, \
+                 patch.object(installer, "adb_target", side_effect=[("serial", "recovery"), ("serial", "recovery")]), \
+                 patch.object(installer, "twrp_identity", return_value=({"twrp": "3.7.0"}, [installer.Check("TWRP", "OK", "root")])), \
+                 patch.object(installer, "preflight_twrp_tools", return_value=[installer.Check("tools", "OK", "ready")]), \
+                 patch.object(installer, "twrp_gpt_layout", return_value=(layout, [installer.Check("GPT", "OK", "split")])), \
+                 patch.object(installer, "verify_twrp_partition_map", return_value=[installer.Check("map", "OK", "matches")]), \
+                 patch.object(installer, "ensure_current_boot_set_matches_backup"), \
+                 patch.object(installer, "require_manual_userdata_format"), \
+                 patch.object(installer, "prompt_install_details", return_value={"username": "alice", "full_name": "Alice", "hostname": "tablet", "password_hash": "$6$hash"}), \
+                 patch.object(installer, "format_and_install_rootfs") as install_root, \
+                 contextlib.redirect_stdout(output):
+                @contextmanager
+                def opened(_):
+                    yield bundle
+                open_bundle.side_effect = opened
+                answers = iter(["", "INSTALL FEDORA ON SM-X810 AND ERASE LINUXROOT",
+                                "FORMAT LINUXROOT AND FLASH FOUR BOOT IMAGES"])
+                status = installer.run_install(None, runner=lambda *a, **k: None,
+                                               input_func=lambda _prompt: next(answers))
+            self.assertEqual(status, 0)
+            install_root.assert_called_once()
+            self.assertIn(f"Found unfinished install checkpoint {backup}", output.getvalue())
+            self.assertIn("Choose whether to preserve these sizes or define new Android/Fedora sizes.", output.getvalue())
+            self.assertTrue(json.loads((backup / "install-checkpoint.json").read_text())["install_complete"])
+
+    def test_pending_checkpoint_can_repartition_when_user_selects_resize(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
+                {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
+            root = self.make_valid_bundle(Path(temp) / "bundle")
+            bundle = installer.validate_install_bundle(root)
+            original = installer.calculate_install_split("160GB", "48GB", 32 * 1024**3)
+            revised = installer.calculate_install_split("150GB", "50GB", 32 * 1024**3)
+            backup = Path(temp) / "x810-install-backup-pending"
+            self.make_checkpoint_backup(backup, bundle, original)
+            current_layout = {
+                "state": "split",
+                "userdata": {"first": str(original["userdata_first"]), "last": str(original["userdata_last"])},
+                "linuxroot": {"first": str(original["linuxroot_first"]), "last": str(original["linuxroot_last"])},
+            }
+            revised_layout = {
+                "state": "split",
+                "userdata": {"first": str(revised["userdata_first"]), "last": str(revised["userdata_last"])},
+                "linuxroot": {"first": str(revised["linuxroot_first"]), "last": str(revised["linuxroot_last"])},
+            }
+            @contextmanager
+            def opened(_):
+                yield bundle
+            answers = iter(["r", "150GB", "50GB", installer.INSTALL_RESPLIT_CONFIRMATION,
+                            installer.INSTALL_GPT_CONFIRMATION,
+                            "FORMAT LINUXROOT AND FLASH FOUR BOOT IMAGES"])
+            output = io.StringIO()
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(installer, "install_state_root", return_value=Path(temp)))
+                stack.enter_context(patch.object(installer.platform, "system", return_value="Linux"))
+                stack.enter_context(patch.object(installer.shutil, "which", return_value="/usr/bin/adb"))
+                stack.enter_context(patch.object(installer, "open_install_bundle", opened))
+                stack.enter_context(patch.object(installer, "adb_target", side_effect=[("serial", "recovery"), ("serial", "recovery")]))
+                stack.enter_context(patch.object(installer, "twrp_identity", return_value=({"twrp": "3.7.0"}, [installer.Check("TWRP", "OK", "root")])))
+                stack.enter_context(patch.object(installer, "preflight_twrp_tools", return_value=[installer.Check("tools", "OK", "ready")]))
+                stack.enter_context(patch.object(installer, "twrp_gpt_layout", return_value=(current_layout, [installer.Check("GPT", "OK", "split")])))
+                stack.enter_context(patch.object(installer, "verify_twrp_partition_map", return_value=[installer.Check("map", "OK", "matches")]))
+                stack.enter_context(patch.object(installer, "ensure_current_boot_set_matches_backup"))
+                writer = stack.enter_context(patch.object(installer, "install_partition_table", return_value=[installer.Check("GPT", "OK", "verified")]))
+                refresh = stack.enter_context(patch.object(installer, "refresh_twrp_after_manual_reboot",
+                                                            return_value=("serial", {"twrp": "3.7.0"}, object(), revised_layout)))
+                stack.enter_context(patch.object(installer, "require_manual_userdata_format"))
+                stack.enter_context(patch.object(installer, "prompt_install_details", return_value={"username": "alice", "full_name": "Alice", "hostname": "tablet", "password_hash": "$6$hash"}))
+                install_root = stack.enter_context(patch.object(installer, "format_and_install_rootfs"))
+                with contextlib.redirect_stdout(output):
+                    status = installer.run_install(None, runner=lambda *a, **k: None,
+                                                   input_func=lambda _prompt: next(answers))
+            self.assertEqual(status, 0)
+            self.assertEqual(writer.call_args.args[2], revised)
+            self.assertEqual(writer.call_args.args[3], installer.INSTALL_GPT_CONFIRMATION)
+            refresh.assert_called_once()
+            install_root.assert_called_once()
+            checkpoint = json.loads((backup / "install-checkpoint.json").read_text())
+            self.assertEqual(checkpoint["split"]["userdata_last"], revised["userdata_last"])
+            self.assertTrue(checkpoint["install_complete"])
+            self.assertIn("Changing GPT boundaries requires manual TWRP Format Data", output.getvalue())
+
     def test_manual_userdata_format_is_human_confirmed_and_never_commanded(self):
         split = installer.calculate_install_split("80GiB", "60GiB", 32 * 1024**3)
         checkpoint = {"split": split}
@@ -591,7 +931,7 @@ class InstallerTests(unittest.TestCase):
     def test_twrp_utility_preflight_stops_before_operations_if_any_missing(self):
         calls = []
         required = ("sgdisk", "blockdev", "dd", "gzip", "tar", "mke2fs", "mount",
-                    "umount", "sync", "chroot", "sh", "test")
+                    "umount", "sync", "chroot", "readlink", "sh", "test")
         class FakeClient:
             def shell(self, *args, timeout=30):
                 calls.append(args)
@@ -609,7 +949,7 @@ class InstallerTests(unittest.TestCase):
     def test_twrp_utility_preflight_accepts_toybox_blkid_applet(self):
         calls = []
         required = ("sgdisk", "blockdev", "dd", "gzip", "tar", "mke2fs", "mount",
-                    "umount", "sync", "chroot", "sh", "test")
+                    "umount", "sync", "chroot", "readlink", "sh", "test")
         class FakeClient:
             def shell(self, *args, timeout=30):
                 calls.append(args)
@@ -651,7 +991,7 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(calls)
         self.assertTrue(all(len(args) == 3 and args[:2] == ("command", "-v") for args in calls))
 
-    def test_fresh_stock_flow_stops_after_gpt_and_saves_credential_free_checkpoint(self):
+    def test_fresh_stock_flow_continues_after_manual_twrp_reboot(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
                                                               {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
             root = self.make_valid_bundle(Path(temp) / "bundle")
@@ -662,7 +1002,8 @@ class InstallerTests(unittest.TestCase):
                      "last": str(installer.X810_USERDATA_END)}, "disk_last": installer.X810_USERDATA_END}
             backup_dir = Path(temp) / "new-install-backup"
             inputs = iter(["", "80GiB", "60GiB", installer.INSTALL_CONFIRMATION,
-                           installer.INSTALL_GPT_CONFIRMATION])
+                           installer.INSTALL_GPT_CONFIRMATION,
+                           "FORMAT LINUXROOT AND FLASH FOUR BOOT IMAGES"])
             events = []
             def backup_boot(_client, out):
                 out.joinpath("boot").mkdir()
@@ -702,16 +1043,88 @@ class InstallerTests(unittest.TestCase):
                  patch.object(installer, "save_gpt_backup", side_effect=backup_gpt), \
                  patch.object(installer, "install_partition_table", side_effect=write_gpt), \
                  patch.object(installer, "format_and_install_rootfs") as format_root, \
+                 patch.object(installer, "refresh_twrp_after_manual_reboot",
+                              return_value=("serial", {"twrp": "3.7.0"}, object(), {
+                                  "state": "split",
+                                  "userdata": {"first": str(installer.X810_USERDATA_START),
+                                               "last": str(installer.calculate_install_split("80GiB", "60GiB", 32 * 1024**3)["userdata_last"])},
+                                  "linuxroot": {"first": str(installer.calculate_install_split("80GiB", "60GiB", 32 * 1024**3)["linuxroot_first"]),
+                                                "last": str(installer.calculate_install_split("80GiB", "60GiB", 32 * 1024**3)["linuxroot_last"])},
+                              })), \
+                 patch.object(installer, "ensure_current_boot_set_matches_backup"), \
+                 patch.object(installer, "require_manual_userdata_format"), \
                  patch.object(installer, "prompt_install_details", return_value={"username": "alice", "full_name": "Alice", "hostname": "tablet", "password_hash": "$6$secret"}):
                 status = installer.run_install(Path("bundle"), runner=lambda *a, **k: None,
                                                input_func=lambda _prompt: next(inputs))
-            self.assertEqual(status, 3)
+            self.assertEqual(status, 0)
             self.assertEqual(events, ["gpt-write"])
-            format_root.assert_not_called()
+            format_root.assert_called_once()
             checkpoint = json.loads((backup_dir / "install-checkpoint.json").read_text())
             self.assertEqual(checkpoint["serial"], "serial")
             self.assertEqual(checkpoint["bundle_manifest_sha256"], hashlib.sha256((root / installer.CLEAN_MANIFEST).read_bytes()).hexdigest())
             self.assertNotIn("secret", json.dumps(checkpoint))
+            self.assertTrue(checkpoint["install_complete"])
+
+    def test_existing_split_resize_continues_after_manual_twrp_reboot(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
+                {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
+            root = self.make_valid_bundle(Path(temp) / "bundle")
+            bundle = installer.validate_install_bundle(root)
+            old_plan = installer.calculate_install_split("120GiB", "70GiB", 32 * 1024**3)
+            new_plan = installer.calculate_install_split("100GiB", "80GiB", 32 * 1024**3)
+            layout = {"state": "split",
+                      "userdata": {"name": "userdata", "first": str(old_plan["userdata_first"]), "last": str(old_plan["userdata_last"])},
+                      "linuxroot": {"name": "linuxroot", "first": str(old_plan["linuxroot_first"]), "last": str(old_plan["linuxroot_last"])} }
+            @contextmanager
+            def opened(_): yield bundle
+            backup_dir = Path(temp) / "repartition-backup"
+            answers = iter(["r", "100GiB", "80GiB", installer.INSTALL_RESPLIT_CONFIRMATION,
+                            installer.INSTALL_GPT_CONFIRMATION,
+                            "FORMAT LINUXROOT AND FLASH FOUR BOOT IMAGES"])
+            output = io.StringIO()
+            checkpoint_doc = {
+                "twrp_version": "3.7.0", "userdata_needs_manual_format": True,
+                "split": {key: new_plan[key] for key in (
+                    "userdata_first", "userdata_last", "linuxroot_first", "linuxroot_last",
+                    "userdata_sectors", "linuxroot_sectors", "free_sectors")},
+            }
+            updated_layout = {
+                "state": "split",
+                "userdata": {"first": str(new_plan["userdata_first"]), "last": str(new_plan["userdata_last"])},
+                "linuxroot": {"first": str(new_plan["linuxroot_first"]), "last": str(new_plan["linuxroot_last"])},
+            }
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(installer.platform, "system", return_value="Linux"))
+                stack.enter_context(patch.object(installer.shutil, "which", return_value="/usr/bin/adb"))
+                stack.enter_context(patch.object(installer, "open_install_bundle", opened))
+                stack.enter_context(patch.object(installer, "adb_target", side_effect=[("serial", "recovery"), ("serial", "recovery")]))
+                stack.enter_context(patch.object(installer, "twrp_identity", return_value=({"twrp": "3.7.0"}, [installer.Check("TWRP", "OK", "root")])))
+                stack.enter_context(patch.object(installer, "preflight_twrp_tools", return_value=[installer.Check("tools", "OK", "ready")]))
+                stack.enter_context(patch.object(installer, "twrp_gpt_layout", return_value=(layout, [installer.Check("GPT", "OK", "split")])))
+                stack.enter_context(patch.object(installer, "verify_twrp_partition_map", return_value=[installer.Check("partition map", "OK", "matches")]))
+                stack.enter_context(patch.object(installer, "default_install_backup_path", return_value=backup_dir))
+                stack.enter_context(patch.object(installer, "save_current_boot_set", return_value=[installer.Check("boot backup", "OK", "saved")]))
+                stack.enter_context(patch.object(installer, "save_gpt_backup", return_value=[installer.Check("GPT backup", "OK", "saved")]))
+                checkpoint = stack.enter_context(patch.object(installer, "write_install_checkpoint", return_value=backup_dir / "install-checkpoint.json"))
+                stack.enter_context(patch.object(installer, "validate_resume_checkpoint", return_value=checkpoint_doc))
+                writer = stack.enter_context(patch.object(installer, "install_partition_table", return_value=[installer.Check("GPT write", "OK", "verified")]))
+                refresh = stack.enter_context(patch.object(installer, "refresh_twrp_after_manual_reboot",
+                                                           return_value=("serial", {"twrp": "3.7.0"}, object(), updated_layout)))
+                stack.enter_context(patch.object(installer, "ensure_current_boot_set_matches_backup"))
+                stack.enter_context(patch.object(installer, "require_manual_userdata_format"))
+                stack.enter_context(patch.object(installer, "mark_install_checkpoint_complete"))
+                stack.enter_context(patch.object(installer, "prompt_install_details", return_value={"username": "alice", "full_name": "Alice", "hostname": "tablet", "password_hash": "$6$hash"}))
+                install_root = stack.enter_context(patch.object(installer, "format_and_install_rootfs"))
+                with contextlib.redirect_stdout(output):
+                    status = installer.run_install(bundle, runner=lambda *a, **k: None,
+                                                   input_func=lambda _prompt: next(answers))
+            self.assertEqual(status, 0)
+            self.assertEqual(writer.call_args.args[1], layout)
+            self.assertEqual(writer.call_args.args[2], new_plan)
+            self.assertEqual(writer.call_args.args[3], installer.INSTALL_GPT_CONFIRMATION)
+            self.assertEqual(checkpoint.call_args.args[4], new_plan)
+            install_root.assert_called_once()
+            refresh.assert_called_once()
 
     def test_resume_flow_requires_exact_split_and_manual_format_then_writes_rootfs(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
@@ -726,7 +1139,7 @@ class InstallerTests(unittest.TestCase):
             layout = {"state": "split",
                       "userdata": {"first": str(split["userdata_first"]), "last": str(split["userdata_last"])},
                       "linuxroot": {"first": str(split["linuxroot_first"]), "last": str(split["linuxroot_last"])}}
-            inputs = iter(["INSTALL FEDORA ON SM-X810 AND ERASE LINUXROOT",
+            inputs = iter(["", "INSTALL FEDORA ON SM-X810 AND ERASE LINUXROOT",
                            "FORMAT LINUXROOT AND FLASH FOUR BOOT IMAGES"])
             with patch.object(installer.platform, "system", return_value="Linux"), \
                  patch.object(installer.shutil, "which", return_value="/usr/bin/adb"), \
@@ -735,7 +1148,8 @@ class InstallerTests(unittest.TestCase):
                  patch.object(installer, "twrp_identity", return_value=({"twrp": "3.7.0"}, [installer.Check("TWRP", "OK", "root")])), \
                  patch.object(installer, "preflight_twrp_tools", return_value=[installer.Check("tools", "OK", "ready")]), \
                  patch.object(installer, "twrp_gpt_layout", return_value=(layout, [installer.Check("GPT", "OK", "split")])), \
-                 patch.object(installer, "verify_current_boot_set_matches_backup") as verify_boots, \
+                 patch.object(installer, "verify_twrp_partition_map", return_value=[installer.Check("partition map", "OK", "matches")]), \
+                 patch.object(installer, "ensure_current_boot_set_matches_backup") as verify_boots, \
                  patch.object(installer, "prompt_install_details", return_value={"username": "alice", "full_name": "Alice", "hostname": "tablet", "password_hash": "$6$hash"}), \
                  patch.object(installer, "require_manual_userdata_format") as manual_data, \
                  patch.object(installer, "format_and_install_rootfs") as install_root:
@@ -757,6 +1171,7 @@ class InstallerTests(unittest.TestCase):
                  patch.object(installer, "twrp_identity", return_value=({"twrp": "3.7.0"}, [installer.Check("TWRP", "OK", "root")])), \
                  patch.object(installer, "preflight_twrp_tools", return_value=[installer.Check("tools", "OK", "ready")]), \
                  patch.object(installer, "twrp_gpt_layout", return_value=(wrong, [installer.Check("GPT", "OK", "split")])), \
+                 patch.object(installer, "verify_twrp_partition_map", return_value=[installer.Check("partition map", "OK", "matches")]), \
                  patch.object(installer, "format_and_install_rootfs") as refused:
                 status = installer.run_install(Path("bundle"), resume_from=backup,
                                                runner=lambda *a, **k: None,
@@ -787,7 +1202,7 @@ class InstallerTests(unittest.TestCase):
                 calls.append(argv)
                 return subprocess.CompletedProcess(argv, 0, "8\n", "")
             def binary_reader(_adb, _serial, remote, timeout=45):
-                name = next(item for item in sizes if f"by-name/{item}" in remote)
+                name = next(item for item in sizes if f"by-name/{item}" in remote or f"restore-{item}.img" in remote)
                 return blobs[name]
             def stream_runner(_adb, _serial, source, remote, timeout=1800):
                 calls.append(["stream", source.name, remote])
@@ -803,8 +1218,9 @@ class InstallerTests(unittest.TestCase):
                 checks = installer.restore_boot_set_from_backup("adb", "serial", backup, runner,
                     binary_reader, stream_runner, input_func=lambda _: "RESTORE FOUR SM-X810 BOOT IMAGES")
             self.assertEqual([check.state for check in checks], ["OK"] * 4)
-            writes = [call for call in calls if call[0] == "stream"]
-            self.assertEqual([call[2].split("by-name/")[-1].split()[0] for call in writes], list(sizes))
+            writes = [call for call in calls if "shell" in call and "dd" in call]
+            self.assertEqual([next(arg.split("/by-name/")[-1] for arg in call if arg.startswith("of=/dev/block/by-name/"))
+                              for call in writes], list(sizes))
             self.assertFalse(any("recovery" in str(call) or "vbmeta" in str(call) or "reboot" in str(call) for call in calls))
             (backup / "boot-backup-manifest.sha256").write_text("0" * 64 + "  boot-backup-manifest.json\n")
             calls.clear()
@@ -886,7 +1302,13 @@ class InstallerTests(unittest.TestCase):
                 def shell(self, *args, timeout=30):
                     calls.append(("shell", args))
                     if args[:2] == ("blockdev", "--getsize64"):
-                        return subprocess.CompletedProcess(args, 0, str(64 * 1024**3), "")
+                        if args[-1].endswith("/linuxroot"):
+                            size = 64 * 1024**3
+                        else:
+                            size = installer.INSTALL_BOOT_IMAGE_SIZES[Path(args[-1]).name]
+                        return subprocess.CompletedProcess(args, 0, str(size), "")
+                    if args[:1] == ("rm",):
+                        pushed.pop(args[-1], None)
                     return subprocess.CompletedProcess(args, 0, "", "")
                 def push(self, source, remote_path, timeout=60):
                     calls.append(("push", source.name, remote_path))
@@ -907,7 +1329,10 @@ class InstallerTests(unittest.TestCase):
                                                      backup)
             provision.assert_called_once()
             streams = [call for call in calls if call[0] == "stream"]
-            self.assertEqual([call[1] for call in streams[1:]], ["boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img"])
+            self.assertEqual([call[1] for call in streams], ["rootfs.tar.gz"])
+            flash_writes = [call[1] for call in calls if call[0] == "shell" and call[1][:1] == ("dd",)]
+            self.assertEqual([next(arg.split("/by-name/")[-1] for arg in call if arg.startswith("of=/dev/block/by-name/"))
+                              for call in flash_writes], ["boot", "init_boot", "vendor_boot", "dtbo"])
             self.assertEqual({path.split("/")[-2] for path in pushed}, {"android", "fedora"})
             image_pushes = {path: data for path, data in pushed.items() if path.endswith(".img")}
             self.assertEqual(len(image_pushes), 8)
@@ -974,6 +1399,75 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(client.streams, ["rootfs.tar.gz"])
             provision.assert_not_called()
 
+    def test_boot_partition_readback_failure_is_detailed_and_stops_at_first_partition(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(installer.INSTALL_BOOT_IMAGE_SIZES,
+                {name: 8 for name in ("boot", "init_boot", "vendor_boot", "dtbo")}):
+            root = self.make_valid_bundle(Path(temp) / "bundle")
+            bundle = installer.validate_install_bundle(root)
+            backup = Path(temp) / "backup"
+            split = installer.calculate_install_split("80GiB", "60GiB", 32 * 1024**3)
+            self.make_checkpoint_backup(backup, bundle, split)
+
+            class CorruptBootReadbackClient:
+                streams = []
+                pushed = {}
+                def shell(self, *args, timeout=30):
+                    if args[:2] == ("blockdev", "--getsize64"):
+                        if args[-1].endswith("/linuxroot"):
+                            size = 64 * 1024**3
+                        else:
+                            size = installer.INSTALL_BOOT_IMAGE_SIZES[Path(args[-1]).name]
+                        return subprocess.CompletedProcess(args, 0, str(size), "")
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                def stream(self, source, remote, timeout=1800):
+                    self.streams.append(source.name)
+                    return subprocess.CompletedProcess([], 0, "", "")
+                def push(self, source, remote_path, timeout=60):
+                    self.pushed[remote_path] = source.read_bytes()
+                    return subprocess.CompletedProcess([], 0, "", "")
+                def read_binary(self, remote, timeout=180):
+                    if "by-name/boot" in remote:
+                        return b"corrupt!"
+                    path = next(path for path in self.pushed if path in remote)
+                    return self.pushed[path]
+
+            client = CorruptBootReadbackClient()
+            with patch.object(installer, "provision_rootfs_account"):
+                with self.assertRaisesRegex(RuntimeError, r"boot read-back mismatch \(expected 8 bytes / [0-9a-f]{64}; read 8 bytes / [0-9a-f]{64}\)"):
+                    installer.format_and_install_rootfs(
+                        client, bundle, 64 * 1024**3,
+                        {"username": "tester", "hostname": "test", "full_name": "Test", "password_hash": "$6$hash"},
+                        backup)
+            self.assertEqual(client.streams, ["rootfs.tar.gz"])
+
+    def test_resume_offers_explicit_restore_after_boot_set_mismatch(self):
+        backup = Path("/tmp/fake-install-backup")
+        client = object()
+        with patch.object(installer, "verify_current_boot_set_matches_backup",
+                          side_effect=[RuntimeError("live boot differs"), None]) as verify, \
+             patch.object(installer, "restore_boot_set_from_backup",
+                          return_value=[installer.Check("Restore boot", "OK", "verified")]) as restore, \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            installer.ensure_current_boot_set_matches_backup(
+                client, "adb", "serial", backup, runner=lambda *a, **k: None,
+                binary_reader=lambda *a, **k: b"", stream_runner=lambda *a, **k: None,
+                input_func=lambda prompt: "RESTORE FOUR SM-X810 BOOT IMAGES")
+        self.assertEqual(verify.call_count, 2)
+        restore.assert_called_once()
+        self.assertIn("differs from its saved original", output.getvalue())
+
+    def test_resume_boot_restore_decline_stops_without_claiming_verified_state(self):
+        with patch.object(installer, "verify_current_boot_set_matches_backup",
+                          side_effect=RuntimeError("live boot differs")), \
+             patch.object(installer, "restore_boot_set_from_backup",
+                          return_value=[installer.Check("Restore confirmation", "STOP", "not confirmed")]):
+            with self.assertRaisesRegex(RuntimeError, "restore was declined or failed"):
+                installer.ensure_current_boot_set_matches_backup(
+                    object(), "adb", "serial", Path("/tmp/fake-install-backup"),
+                    runner=lambda *a, **k: None, binary_reader=lambda *a, **k: b"",
+                    stream_runner=lambda *a, **k: None,
+                    input_func=lambda prompt: "")
+
     def test_install_password_has_no_minimum_length_requirement(self):
         text_answers = iter(["Alice Example", "alice", "tablet"])
         password_answers = iter(["42", "42"])
@@ -1035,9 +1529,26 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("/usr/sbin/useradd", script)
         self.assertIn("--groups wheel,video,input", script)
         self.assertIn("--lock root", script)
+        self.assertIn('"$uid" -ge 1000', script)
+        self.assertIn("X810_VERIFY: hostname mismatch", script)
+        self.assertIn("X810_VERIFY: root password is not locked", script)
         self.assertIn("$6$test-hash", passwd_hash)
         self.assertNotIn("plain-password", repr(calls))
+        self.assertFalse(any(call[0] == "shell" and call[1][:2] == ("sh", "-c") for call in calls))
         self.assertFalse(any("reboot" in str(call) for call in calls))
+
+    def test_account_setup_surfaces_specific_safe_verification_failure(self):
+        class VerifyFailureClient:
+            def push(self, source, remote_path, timeout=60):
+                return subprocess.CompletedProcess([], 0, "", "")
+            def shell(self, *args, timeout=30):
+                if args[:2] == ("sh", "/tmp/x810-install-provision.sh"):
+                    return subprocess.CompletedProcess([], 31, "", "X810_VERIFY: hostname mismatch")
+                return subprocess.CompletedProcess([], 0, "", "")
+
+        with self.assertRaisesRegex(RuntimeError, "X810_VERIFY: hostname mismatch"):
+            installer.provision_rootfs_account(VerifyFailureClient(), "/tmp/x810-root", "alice",
+                                               "Alice Example", "tablet", "$6$test-hash")
 
     def test_account_setup_rejects_colon_in_gecos_name(self):
         class NoCallClient:

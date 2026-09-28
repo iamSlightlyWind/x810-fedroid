@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Linux-host installer and guarded read-only tools for Fedora on SM-X810.
+"""Single-flow Linux-host installer for Fedora on SM-X810.
 
 The guided installer validates direct assets from one aggregate release, requires an
 unlocked/rooted Android preflight followed by manual TWRP entry, backs up GPT
 metadata and the current boot set, and presents destructive actions for
-explicit confirmation. It never writes vbmeta/recovery or reboots the tablet.
+explicit confirmation. If resizing needs a recovery reboot, it checkpoints and
+waits for the user to reboot TWRP, then continues in the same process. It never
+writes vbmeta/recovery or reboots the tablet.
 """
 
 from __future__ import annotations
@@ -67,6 +69,7 @@ GPT_CAPTURE_BLOCK = 4096
 CLEAN_MANIFEST = "x810-clean-install-manifest.json"
 INSTALL_CONFIRMATION = "INSTALL FEDORA AND ERASE ANDROID DATA"
 INSTALL_GPT_CONFIRMATION = "RESIZE ANDROID USERDATA"
+INSTALL_RESPLIT_CONFIRMATION = "REPARTITION SM-X810 AND ERASE ANDROID USERDATA"
 INSTALL_MIN_ANDROID_BYTES = 32 * (1024 ** 3)
 INSTALL_BOOT_IMAGE_SIZES = {name: X810_BOOT_PARTITIONS[name] for name in ("boot", "init_boot", "vendor_boot", "dtbo")}
 
@@ -748,11 +751,11 @@ def calculate_split(android_percent: int, first_sector: int = X810_USERDATA_STAR
 
 
 def print_live_split_plan(plan: dict[str, int], android_percent: int) -> None:
-    def gib(sectors: int) -> str:
-        return f"{sectors * GPT_CAPTURE_BLOCK / (1024 ** 3):.2f} GiB"
+    def both(sectors: int) -> str:
+        return capacity_both(sectors * GPT_CAPTURE_BLOCK)
     print(f"X810 split preview ({android_percent}% Android / {100 - android_percent}% Fedora):")
-    print(f"  userdata  {plan['userdata_first']:,}..{plan['userdata_last']:,}  {gib(plan['userdata_sectors'])}")
-    print(f"  linuxroot {plan['linuxroot_first']:,}..{plan['linuxroot_last']:,}  {gib(plan['linuxroot_sectors'])}")
+    print(f"  userdata  {plan['userdata_first']:,}..{plan['userdata_last']:,}  {both(plan['userdata_sectors'])}")
+    print(f"  linuxroot {plan['linuxroot_first']:,}..{plan['linuxroot_last']:,}  {both(plan['linuxroot_sectors'])}")
     print("  Only GPT entries 34 and 35 would change; formatting userdata later erases Android data.")
 
 
@@ -785,7 +788,7 @@ def run_split(serial: str | None, android_percent: int, write: bool = False,
     if layout["state"] == "split":
         userdata_sectors = int(layout["userdata"]["last"]) - int(layout["userdata"]["first"]) + 1
         linuxroot_sectors = int(layout["linuxroot"]["last"]) - int(layout["linuxroot"]["first"]) + 1
-        print(f"Already split: userdata {userdata_sectors * GPT_CAPTURE_BLOCK / (1024**3):.2f} GiB, linuxroot {linuxroot_sectors * GPT_CAPTURE_BLOCK / (1024**3):.2f} GiB.")
+        print(f"Already split: userdata {capacity_both(userdata_sectors * GPT_CAPTURE_BLOCK)}, linuxroot {capacity_both(linuxroot_sectors * GPT_CAPTURE_BLOCK)}.")
         checks.append(Check("Partition table", "OK", "expected X810 userdata/linuxroot split already exists; no write made"))
         return checks, 0
 
@@ -1666,6 +1669,55 @@ class ADBClient:
         return self.run("push", str(source), remote_path, timeout=timeout)
 
 
+def flash_partition_image(client: ADBClient, name: str, source: Path,
+                          expected_hash: str, action: str) -> None:
+    """Stage an image with adb push, then copy it device-side and verify raw read-back."""
+    if name not in INSTALL_BOOT_IMAGE_SIZES or action not in {"FLASH", "RESTORE"}:
+        raise ValueError("refusing an unapproved boot partition/action")
+    expected_size = INSTALL_BOOT_IMAGE_SIZES[name]
+    if not source.is_file() or source.stat().st_size != expected_size:
+        raise RuntimeError(f"{name} source image has the wrong size")
+    local_hash = sha256_file(source)
+    if local_hash != expected_hash:
+        raise RuntimeError(f"{name} source image failed its local SHA-256 check")
+    partition = f"/dev/block/by-name/{name}"
+    size = client.shell("blockdev", "--getsize64", partition)
+    if size.returncode != 0 or size.stdout.strip() != str(expected_size):
+        raise RuntimeError(f"{name} partition size mismatch: expected {expected_size:,} bytes; got {size.stdout.strip() or 'unreadable'}")
+
+    staged_path = f"/tmp/x810-{action.lower()}-{name}.img"
+    print(f"[{action}] {name} ({expected_size // (1024 * 1024)} MiB) -> {partition}", flush=True)
+    pushed = client.push(source, staged_path, timeout=600)
+    if pushed.returncode != 0:
+        raise RuntimeError(f"{name} staging via adb push failed: {pushed.stderr.strip() or pushed.stdout.strip()}")
+    staged = client.read_binary(f"cat {shlex.quote(staged_path)}", timeout=300)
+    staged_hash = hashlib.sha256(staged).hexdigest()
+    if len(staged) != expected_size or staged_hash != expected_hash:
+        raise RuntimeError(
+            f"{name} staged-file mismatch (expected {expected_size:,} bytes / {expected_hash}; "
+            f"read {len(staged):,} bytes / {staged_hash}); partition was not written"
+        )
+
+    # Do the raw UFS write on the tablet itself. This avoids piping a large
+    # image through `adb exec-in dd`, which returned success on this recovery
+    # but produced non-repeatable partition hashes.
+    written = client.shell("dd", f"if={staged_path}", f"of={partition}", "bs=4M", timeout=300)
+    if written.returncode != 0:
+        raise RuntimeError(f"{name} device-side dd failed: {written.stderr.strip() or written.stdout.strip()}")
+    sync = client.shell("sync")
+    if sync.returncode != 0:
+        raise RuntimeError(f"sync after writing {name} failed")
+    actual = client.read_binary(f"dd if={partition} bs=4M 2>/dev/null", timeout=300)
+    actual_hash = hashlib.sha256(actual).hexdigest()
+    if len(actual) != expected_size or actual_hash != expected_hash:
+        raise RuntimeError(
+            f"{name} read-back mismatch (expected {expected_size:,} bytes / {expected_hash}; "
+            f"read {len(actual):,} bytes / {actual_hash})"
+        )
+    client.shell("rm", "-f", staged_path)
+    print(f"[OK] {name} SHA-256 read-back verified", flush=True)
+
+
 def stream_adb_file(adb: str, serial: str, source: Path, remote_command: str,
                     timeout: int = 1800) -> subprocess.CompletedProcess[str]:
     """Send a local image/archive on stdin to TWRP's `adb exec-in` command."""
@@ -1753,7 +1805,7 @@ def android_preflight(adb: str, serial: str | None, runner=command) -> tuple[str
 
 
 def parse_size_request(text: str, total_bytes: int) -> int:
-    """Parse a size such as 80GiB or a percent of the available userdata range."""
+    """Parse a size such as 80GB/80GiB or a percent of the available range."""
     value = text.strip().replace(" ", "")
     if not value:
         raise ValueError("size is empty")
@@ -1766,7 +1818,7 @@ def parse_size_request(text: str, total_bytes: int) -> int:
         else:
             match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)(GiB|GB|MiB|MB)", value, re.IGNORECASE)
             if not match:
-                raise ValueError("use an explicit size like 80GiB or a percent like 50%")
+                raise ValueError("use a size like 80GB (preferred), 80GiB, or a percent like 50%")
             number = Decimal(match.group(1))
             unit = match.group(2).lower()
             scale = {"gib": 1024 ** 3, "gb": 10 ** 9, "mib": 1024 ** 2, "mb": 10 ** 6}[unit]
@@ -1775,8 +1827,18 @@ def parse_size_request(text: str, total_bytes: int) -> int:
         raise ValueError("size is not a valid number") from error
     result = int(amount)
     if result <= 0 or result > total_bytes:
-        raise ValueError(f"size must be > 0 and no more than {total_bytes / (1024**3):.2f} GiB")
+        raise ValueError(f"size must be > 0 and no more than {capacity_both(total_bytes)}")
     return result
+
+
+def capacity_both(size_bytes: int) -> str:
+    """Display decimal GB first, plus binary GiB for clarity."""
+    return f"{size_bytes / 1_000_000_000:.2f} GB ({size_bytes / (1024 ** 3):.2f} GiB)"
+
+
+def decimal_gb_request(size_bytes: int) -> str:
+    """Exact decimal-GB string for a current sector-aligned size/default."""
+    return f"{Decimal(size_bytes) / Decimal(1_000_000_000):.12f}GB"
 
 
 def calculate_install_split(android_request: str, fedora_request: str,
@@ -1790,9 +1852,9 @@ def calculate_install_split(android_request: str, fedora_request: str,
     linux_sectors = fedora_bytes // GPT_CAPTURE_BLOCK
     linux_sectors = linux_sectors // X810_SPLIT_ALIGNMENT_SECTORS * X810_SPLIT_ALIGNMENT_SECTORS
     if android_sectors * GPT_CAPTURE_BLOCK < INSTALL_MIN_ANDROID_BYTES:
-        raise ValueError("Android userdata must be at least 32 GiB")
+        raise ValueError(f"Android userdata must be at least {capacity_both(INSTALL_MIN_ANDROID_BYTES)}")
     if linux_sectors * GPT_CAPTURE_BLOCK < minimum_fedora_bytes:
-        raise ValueError(f"Fedora linuxroot must be at least {minimum_fedora_bytes / (1024**3):.2f} GiB for this bundle")
+        raise ValueError(f"Fedora linuxroot must be at least {capacity_both(minimum_fedora_bytes)} for this bundle")
     if android_sectors + linux_sectors > total_sectors:
         raise ValueError("Android and Fedora allocations exceed available X810 userdata space")
     if android_sectors <= 0 or linux_sectors <= 0:
@@ -1814,6 +1876,95 @@ def calculate_install_split(android_request: str, fedora_request: str,
         "total_sectors": total_sectors,
         "minimum_fedora_bytes": minimum_fedora_bytes,
     }
+
+
+def live_split_sizes(layout: dict[str, Any]) -> tuple[int, int, int]:
+    """Return current Android, Fedora, and trailing-free byte counts."""
+    userdata = layout["userdata"]
+    linuxroot = layout["linuxroot"]
+    android_sectors = int(userdata["last"]) - int(userdata["first"]) + 1
+    linux_sectors = int(linuxroot["last"]) - int(linuxroot["first"]) + 1
+    free_sectors = X810_USERDATA_END - int(linuxroot["last"])
+    return (android_sectors * GPT_CAPTURE_BLOCK,
+            linux_sectors * GPT_CAPTURE_BLOCK,
+            free_sectors * GPT_CAPTURE_BLOCK)
+
+
+def split_plan_matches_live(layout: dict[str, Any], plan: dict[str, int]) -> bool:
+    if layout.get("state") != "split":
+        return False
+    return (
+        int(layout["userdata"]["first"]) == plan["userdata_first"]
+        and int(layout["userdata"]["last"]) == plan["userdata_last"]
+        and int(layout["linuxroot"]["first"]) == plan["linuxroot_first"]
+        and int(layout["linuxroot"]["last"]) == plan["linuxroot_last"]
+    )
+
+
+def verify_twrp_partition_map(client: ADBClient, layout: dict[str, Any]) -> list[Check]:
+    """Ensure Linux's active by-name device sizes agree with on-disk GPT."""
+    if layout.get("state") != "split":
+        return [Check("Partition device map", "OK", "no Linuxroot exists in the stock GPT")]
+    checks: list[Check] = []
+    for name in ("userdata", "linuxroot"):
+        record = layout.get(name)
+        if not isinstance(record, dict):
+            return [Check("Partition device map", "STOP", f"GPT has no {name} entry")]
+        sectors = int(record["last"]) - int(record["first"]) + 1
+        expected = sectors * GPT_CAPTURE_BLOCK
+        result = client.shell("blockdev", "--getsize64", f"/dev/block/by-name/{name}")
+        try:
+            actual = int(result.stdout.strip()) if result.returncode == 0 else 0
+        except ValueError:
+            actual = 0
+        if actual != expected:
+            return [Check(
+                "Partition device map", "STOP",
+                f"{name}: GPT says {capacity_both(expected)} ({expected:,} bytes), but this TWRP session exposes "
+                f"{capacity_both(actual)} ({actual:,} bytes); "
+                "its kernel likely has a stale partition map. No install writes were made. "
+                "Manually reboot into TWRP to refresh it; the installer will continue from its saved checkpoint.",
+            )]
+        checks.append(Check("Partition device map", "OK", f"{name}: {actual:,} bytes match GPT"))
+    return checks
+
+
+def prompt_existing_split_plan(layout: dict[str, Any], minimum_fedora_bytes: int,
+                               input_func=input) -> dict[str, int] | None:
+    """Offer current split or a newly sized split; None means keep as-is."""
+    android_bytes, fedora_bytes, free_bytes = live_split_sizes(layout)
+    gb = lambda value: value / 1_000_000_000
+    gib = lambda value: value / (1024 ** 3)
+    print("\nCurrent partition sizes:")
+    print(f"  Android userdata: {gb(android_bytes):.2f} GB ({gib(android_bytes):.2f} GiB)")
+    print(f"  Fedora linuxroot: {gb(fedora_bytes):.2f} GB ({gib(fedora_bytes):.2f} GiB)")
+    print(f"  Unallocated: {gb(free_bytes):.2f} GB ({gib(free_bytes):.2f} GiB)")
+    print("Choose whether to preserve these sizes or define new Android/Fedora sizes.")
+    print("Resizing changes the userdata boundary and requires manual TWRP Format Data after the GPT write.")
+    while True:
+        answer = input_func("Partitioning [K]eep current sizes (default) / [R]esize: ").strip().lower()
+        if answer in {"", "k", "keep"}:
+            return None
+        if answer in {"r", "resize"}:
+            break
+        print("Enter K to keep the current layout, or R to set new partition sizes.")
+
+    total = (X810_USERDATA_END - X810_USERDATA_START + 1) * GPT_CAPTURE_BLOCK
+    minimum_gb = gb(minimum_fedora_bytes)
+    minimum_gib = gib(minimum_fedora_bytes)
+    print(f"Available for Android + Fedora: {gb(total):.2f} GB ({gib(total):.2f} GiB). Enter GB (preferred, e.g. 100GB), GiB, or a percentage of this total.")
+    print("Any unused remainder stays unpartitioned after linuxroot.")
+    while True:
+        try:
+            android_request = input_func(f"Android userdata size [{gb(android_bytes):.2f}GB]: ").strip()
+            fedora_request = input_func(f"Fedora linuxroot size [{gb(fedora_bytes):.2f}GB, minimum {minimum_gb:.2f}GB ({minimum_gib:.2f}GiB)]: ").strip()
+            if not android_request:
+                android_request = decimal_gb_request(android_bytes)
+            if not fedora_request:
+                fedora_request = decimal_gb_request(fedora_bytes)
+            return calculate_install_split(android_request, fedora_request, minimum_fedora_bytes)
+        except ValueError as error:
+            print(f"Invalid partition plan: {error}; remaining capacity stays unpartitioned.")
 
 
 def prompt_install_details(total_bytes: int, minimum_fedora_bytes: int,
@@ -1875,7 +2026,12 @@ def hash_password(password: str) -> str:
 
 def default_install_backup_path() -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1_000_000) % 1_000_000:06d}"
-    return Path.cwd() / f"x810-install-backup-{stamp}"
+    return install_state_root() / f"x810-install-backup-{stamp}"
+
+
+def install_state_root() -> Path:
+    """Keep checkpoints beside the repo, independent of the caller's cwd."""
+    return Path(__file__).resolve().parent.parent
 
 
 def save_current_boot_set(client: ADBClient, output: Path) -> list[Check]:
@@ -1914,36 +2070,36 @@ def save_current_boot_set(client: ADBClient, output: Path) -> list[Check]:
 
 def install_partition_table(client: ADBClient, layout: dict[str, Any],
                             plan: dict[str, int], confirmation: str) -> list[Check]:
-    """Write and read back only GPT entries 34/35, after a stock-layout check."""
+    """Write and read back only GPT entries 34/35 from a measured layout."""
     checks: list[Check] = []
     if confirmation != INSTALL_GPT_CONFIRMATION:
         return [Check("GPT confirmation", "STOP", "partition table was not changed")]
     fresh, fresh_checks = twrp_gpt_layout(client.adb, client.serial, runner=client.runner)
     checks.extend(fresh_checks)
-    if fresh is None or fresh.get("state") != "stock" or any(item.state == "STOP" for item in fresh_checks):
-        checks.append(Check("Pre-write GPT recheck", "STOP", "GPT no longer matches the supported measured stock layout"))
+    if layout.get("state") not in {"stock", "split"}:
+        checks.append(Check("GPT state", "STOP", "only measured stock or recognized X810 split layouts may be resized"))
         return checks
-    if layout.get("state") != "stock":
-        checks.append(Check("GPT state", "STOP", "this writer is only for the measured stock layout"))
+    if fresh is None or any(item.state == "STOP" for item in fresh_checks) or not same_install_layout(layout, fresh):
+        checks.append(Check("Pre-write GPT recheck", "STOP", "GPT changed since the measured layout; refusing stale sector writes"))
         return checks
-    # TWRP may auto-mount userdata. Unmount only that volume before changing
-    # its end sector; all unrelated mounts/partitions remain untouched.
-    mounted = client.shell("sh", "-c", "grep -qE ' /data ' /proc/mounts")
-    if mounted.returncode == 0:
-        unmount = client.shell("umount", "/data", timeout=30)
-        if unmount.returncode != 0:
-            checks.append(Check("Unmount userdata", "STOP", unmount.stderr.strip() or "could not unmount /data"))
-            return checks
+    unmount_checks = unmount_install_partitions(client, layout)
+    checks.extend(unmount_checks)
+    if any(item.state == "STOP" for item in unmount_checks):
+        return checks
     unique_guid = str(uuid.uuid4()).upper()
     args = [
         "sgdisk", "--delete=34",
+    ]
+    if layout["state"] == "split":
+        args.append("--delete=35")
+    args.extend((
         f"--new=34:{plan['userdata_first']}:{plan['userdata_last']}",
         f"--typecode=34:{X810_USERDATA_TYPE_GUID}",
         f"--partition-guid=34:{unique_guid}", "--change-name=34:userdata",
         f"--new=35:{plan['linuxroot_first']}:{plan['linuxroot_last']}",
         f"--typecode=35:{X810_LINUX_TYPE_GUID}", "--change-name=35:linuxroot",
         "/dev/block/sda",
-    ]
+    ))
     result = client.shell(*args, timeout=90)
     if result.returncode != 0:
         checks.append(Check("GPT write", "STOP", result.stderr.strip() or result.stdout.strip() or "sgdisk failed"))
@@ -1969,6 +2125,62 @@ def install_partition_table(client: ADBClient, layout: dict[str, Any],
     return checks
 
 
+def same_install_layout(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+    """Compare the exact approved userdata/linuxroot GPT geometry before a write."""
+    if expected.get("state") != actual.get("state") or expected.get("state") not in {"stock", "split"}:
+        return False
+    partition_names = ("userdata",) if expected["state"] == "stock" else ("userdata", "linuxroot")
+    for name in partition_names:
+        left, right = expected.get(name), actual.get(name)
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return False
+        for key in ("first", "last", "type_guid", "unique_guid", "name"):
+            if key in left and str(left[key]).lower() != str(right.get(key, "")).lower():
+                return False
+    return True
+
+
+def unmount_install_partitions(client: ADBClient, layout: dict[str, Any]) -> list[Check]:
+    """Unmount userdata/Linuxroot mounts before changing their GPT entries."""
+    mounts = client.shell("cat", "/proc/mounts")
+    if mounts.returncode != 0:
+        return [Check("Mount state", "STOP", "could not read /proc/mounts; refusing to change GPT")]
+
+    partition_names = ("userdata", "linuxroot") if layout.get("state") == "split" else ("userdata",)
+    aliases: dict[str, set[str]] = {}
+    for name in partition_names:
+        by_name = f"/dev/block/by-name/{name}"
+        resolved = client.shell("readlink", "-f", by_name, timeout=15)
+        canonical = resolved.stdout.strip()
+        if resolved.returncode != 0 or not canonical.startswith("/dev/block/"):
+            return [Check("Partition mounts", "STOP", f"cannot resolve {by_name}; refusing to change GPT")]
+        aliases[name] = {by_name, canonical}
+
+    def unescape_mount_field(value: str) -> str:
+        return (value.replace("\\040", " ").replace("\\011", "\t")
+                .replace("\\012", "\n").replace("\\134", "\\"))
+
+    mountpoints: set[str] = set()
+    for line in mounts.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        source, mountpoint = map(unescape_mount_field, fields[:2])
+        if "userdata" in aliases and (mountpoint == "/data" or mountpoint.startswith("/data/")):
+            mountpoints.add(mountpoint)
+        if ("linuxroot" in aliases and
+                (source in aliases["linuxroot"] or mountpoint == "/linuxroot")):
+            mountpoints.add(mountpoint)
+
+    for mountpoint in sorted(mountpoints, key=lambda item: (item.count("/"), len(item)), reverse=True):
+        result = client.shell("umount", mountpoint, timeout=30)
+        if result.returncode != 0:
+            return [Check("Unmount partition", "STOP",
+                          result.stderr.strip() or result.stdout.strip() or f"could not unmount {mountpoint}")]
+    return [Check("Partition mounts", "OK",
+                  "userdata/linuxroot mount points checked and unmounted" if mountpoints else "userdata/linuxroot are not mounted")]
+
+
 def write_install_checkpoint(backup_dir: Path, serial: str, bundle: InstallBundle,
                              twrp_version: str, split_plan: dict[str, int]) -> Path:
     validate_local_preinstall_backups(backup_dir)
@@ -1987,7 +2199,7 @@ def write_install_checkpoint(backup_dir: Path, serial: str, bundle: InstallBundl
         "boot_manifest_sha256": sha256_file(boot_manifest),
     }
     path = backup_dir / "install-checkpoint.json"
-    temporary = backup_dir / ".install-checkpoint.json.tmp"
+    temporary = backup_dir / f".install-checkpoint.json.{os.getpid()}.tmp"
     with temporary.open("x", encoding="utf-8") as stream:
         stream.write(json.dumps(checkpoint, indent=2) + "\n")
         stream.flush()
@@ -2107,6 +2319,75 @@ def validate_resume_checkpoint(backup_dir: Path, serial: str, bundle: InstallBun
     return checkpoint
 
 
+def checkpoint_matches_layout(checkpoint: dict[str, Any], layout: dict[str, Any]) -> bool:
+    """Return whether an on-disk GPT layout is exactly the checkpointed split."""
+    split = checkpoint.get("split", {})
+    return layout.get("state") == "split" and all(
+        int(layout[name][field]) == int(split[f"{name}_{field}"])
+        for name in ("userdata", "linuxroot") for field in ("first", "last")
+    )
+
+
+def find_pending_install_checkpoint(bundle: InstallBundle, serial: str,
+                                    layout: dict[str, Any], root: Path | None = None) -> Path | None:
+    """Find and validate the newest unfinished checkpoint matching this tablet/GPT/release."""
+    root = (root or install_state_root()).expanduser()
+    manifest_hash = sha256_file(bundle.root / CLEAN_MANIFEST)
+    candidates: list[tuple[int, Path, dict[str, Any]]] = []
+    try:
+        directories = list(root.glob("x810-install-backup-*/"))
+    except OSError as error:
+        raise RuntimeError(f"could not inspect local installer checkpoints: {error}") from error
+    for directory in directories:
+        if directory.is_symlink() or not directory.is_dir():
+            continue
+        path = directory / "install-checkpoint.json"
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if (raw.get("device_model") != EXPECTED_MODEL or raw.get("serial") != serial
+                    or raw.get("install_complete") is True):
+                continue
+            try:
+                if not checkpoint_matches_layout(raw, layout):
+                    continue
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (raw.get("bundle_version") != bundle.manifest.get("bundle_version")
+                    or raw.get("bundle_manifest_sha256") != manifest_hash):
+                raise RuntimeError(
+                    f"unfinished checkpoint {directory} matches the current GPT but belongs to release "
+                    f"{raw.get('bundle_version', '?')}, not selected release {bundle.manifest.get('bundle_version', '?')}; "
+                    "refusing to start a new install on this partition layout"
+                )
+            candidates.append((path.stat().st_mtime_ns, directory, raw))
+        except (OSError, json.JSONDecodeError, AttributeError):
+            continue
+
+    for modified, directory, raw in sorted(candidates, key=lambda item: (item[0], item[1].name), reverse=True):
+        try:
+            checkpoint = validate_resume_checkpoint(directory, serial, bundle)
+        except (OSError, ValueError, RuntimeError) as error:
+            raise RuntimeError(f"unfinished checkpoint {directory} is damaged or incomplete ({error}); refusing to start over") from error
+        return directory
+    return None
+
+
+def mark_install_checkpoint_complete(backup_dir: Path) -> None:
+    """Atomically mark the install checkpoint complete so a later run won't resume it."""
+    path = backup_dir / "install-checkpoint.json"
+    checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    checkpoint["install_complete"] = True
+    temporary = backup_dir / f".install-checkpoint.json.{os.getpid()}.tmp"
+    with temporary.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(checkpoint, indent=2) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
 def verify_current_boot_set_matches_backup(client: ADBClient, backup_dir: Path) -> None:
     """Ensure the four boot targets have not changed since the pre-GPT backup."""
     try:
@@ -2134,8 +2415,13 @@ def verify_current_boot_set_matches_backup(client: ADBClient, backup_dir: Path) 
             raise RuntimeError(f"live {name} partition size does not match measured SM-X810 geometry")
         remote = f"dd if=/dev/block/by-name/{name} bs=4M 2>/dev/null"
         current = client.read_binary(remote, timeout=300)
-        if len(current) != INSTALL_BOOT_IMAGE_SIZES[name] or hashlib.sha256(current).hexdigest() != record["sha256"]:
-            raise RuntimeError(f"live {name} differs from the checkpoint backup; refusing to resume/restore")
+        actual_hash = hashlib.sha256(current).hexdigest()
+        if len(current) != INSTALL_BOOT_IMAGE_SIZES[name] or actual_hash != record["sha256"]:
+            raise RuntimeError(
+                f"live {name} differs from the checkpoint backup "
+                f"(expected {INSTALL_BOOT_IMAGE_SIZES[name]:,} bytes / {record['sha256']}; "
+                f"read {len(current):,} bytes / {actual_hash}); refusing to resume/restore"
+            )
 
 
 def restore_boot_set_from_backup(adb: str, serial: str, backup_dir: Path, runner=command,
@@ -2191,17 +2477,10 @@ def restore_boot_set_from_backup(adb: str, serial: str, backup_dir: Path, runner
             return [Check("Restore confirmation", "STOP", "confirmation did not match; no images written")]
         restored: list[Check] = []
         for name in ("boot", "init_boot", "vendor_boot", "dtbo"):
-            result = client.stream(paths[name], f"dd of=/dev/block/by-name/{name} bs=4M", timeout=300)
-            if result.returncode != 0:
-                restored.append(Check(f"Restore {name}", "STOP", result.stderr.strip() or result.stdout.strip() or "write failed"))
-                return restored
-            actual = client.read_binary(f"dd if=/dev/block/by-name/{name} bs=4M 2>/dev/null", timeout=300)
-            expected_hash = images[name]["sha256"]
-            if len(actual) != INSTALL_BOOT_IMAGE_SIZES[name] or hashlib.sha256(actual).hexdigest() != expected_hash:
-                restored.append(Check(f"Restore {name}", "STOP", "read-back mismatch; remain in TWRP, do not reboot"))
-                return restored
-            if client.shell("sync").returncode != 0:
-                restored.append(Check(f"Restore {name}", "STOP", "sync failed; remain in TWRP"))
+            try:
+                flash_partition_image(client, name, paths[name], images[name]["sha256"], "RESTORE")
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+                restored.append(Check(f"Restore {name}", "STOP", f"{error}; remain in TWRP, do not reboot"))
                 return restored
             restored.append(Check(f"Restore {name}", "OK", "SHA-256 read-back verified"))
         return restored
@@ -2212,7 +2491,7 @@ def restore_boot_set_from_backup(adb: str, serial: str, backup_dir: Path, runner
 def provision_rootfs_account(client: ADBClient, mountpoint: str,
                              username: str, full_name: str, hostname: str,
                              password_hash: str) -> None:
-    """Provision the new UID-1000 account inside the extracted ARM64 rootfs."""
+    """Provision and verify the requested account inside the extracted ARM64 rootfs."""
     if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", username):
         raise ValueError("invalid username")
     if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", hostname):
@@ -2235,6 +2514,43 @@ chroot "$ROOT" /usr/sbin/useradd --create-home --groups wheel,video,input --shel
 chroot "$ROOT" /usr/sbin/chpasswd --encrypted < "$PASSFILE"
 chroot "$ROOT" /usr/sbin/usermod --lock root
 printf '%s\\n' "$HOST" > "$ROOT/etc/hostname"
+
+# Verify locally inside this script. Do not use `adb shell sh -c`: adb's
+# remote argument joining differs between versions and TWRP shells, and can
+# silently turn a compound verification into a malformed command. Fedora's
+# ordinary-user UID is normally 1000, but validate the account class rather
+# than depending on that implementation detail.
+account_ok=0
+while IFS=: read -r name passwd uid gid gecos home shell; do
+    if [ "$name" = "$NEW" ] && [ "$uid" -ge 1000 ] 2>/dev/null; then
+        account_ok=1
+        break
+    fi
+done < "$ROOT/etc/passwd"
+if [ "$account_ok" -ne 1 ] || [ ! -d "$ROOT/home/$NEW" ]; then
+    echo 'X810_VERIFY: requested user account/home missing or invalid' >&2
+    exit 31
+fi
+
+host_ok=0
+configured_host=
+IFS= read -r configured_host < "$ROOT/etc/hostname" || [ -n "${{configured_host:-}}" ]
+if [ "${{configured_host:-}}" = "$HOST" ]; then host_ok=1; fi
+if [ "$host_ok" -ne 1 ]; then
+    echo 'X810_VERIFY: hostname mismatch' >&2
+    exit 32
+fi
+
+root_locked=0
+while IFS=: read -r name hash rest; do
+    [ "$name" = root ] || continue
+    case "$hash" in '!'*|'*'*) root_locked=1 ;; esac
+    break
+done < "$ROOT/etc/shadow"
+if [ "$root_locked" -ne 1 ]; then
+    echo 'X810_VERIFY: root password is not locked' >&2
+    exit 33
+fi
 """
     with tempfile.TemporaryDirectory(prefix="x810-provision-") as temporary:
         script = Path(temporary) / "provision.sh"
@@ -2251,15 +2567,29 @@ printf '%s\\n' "$HOST" > "$ROOT/etc/hostname"
             result = client.shell("sh", "/tmp/x810-install-provision.sh", timeout=120)
             if result.returncode != 0:
                 raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "offline account provisioning failed")
-            # Verify identity and that root is locked; never read/print the hash.
-            verify = client.shell("sh", "-c",
-                                  f"grep -q '^{shlex.quote(username)}:.*:1000:' {shlex.quote(root + '/etc/passwd')} "
-                                  f"&& grep -q '^root:[!*]' {shlex.quote(root + '/etc/shadow')} "
-                                  f"&& grep -qx {shlex.quote(hostname)} {shlex.quote(root + '/etc/hostname')}")
-            if verify.returncode != 0:
-                raise RuntimeError("account/hostname/root-lock verification failed")
         finally:
             client.shell("rm", "-f", "/tmp/x810-install-provision.sh", "/tmp/x810-install-password")
+
+
+def ensure_current_boot_set_matches_backup(client: ADBClient, adb: str, serial: str,
+                                           backup_dir: Path, runner=command,
+                                           binary_reader=adb_binary, stream_runner=None,
+                                           input_func=input) -> None:
+    """Offer an explicit, verified restore if an interrupted flash changed boot partitions."""
+    try:
+        verify_current_boot_set_matches_backup(client, backup_dir)
+        return
+    except RuntimeError as mismatch:
+        print(f"\nThe live boot set differs from its saved original: {mismatch}")
+        print("You can restore the four saved originals now; no reboot will be issued.")
+    checks = restore_boot_set_from_backup(
+        adb, serial, backup_dir, runner=runner, binary_reader=binary_reader,
+        stream_runner=stream_runner, input_func=input_func,
+    )
+    show_checks(checks)
+    if any(item.state == "STOP" for item in checks):
+        raise RuntimeError("original boot-set restore was declined or failed; remain in TWRP and do not reboot")
+    verify_current_boot_set_matches_backup(client, backup_dir)
 
 
 def format_and_install_rootfs(client: ADBClient, bundle: InstallBundle,
@@ -2276,7 +2606,10 @@ def format_and_install_rootfs(client: ADBClient, bundle: InstallBundle,
     except ValueError:
         actual_root_size = 0
     if actual_root_size != expected_root_bytes:
-        raise RuntimeError(f"linuxroot size mismatch after layout refresh: expected {expected_root_bytes:,}, got {actual_root_size:,}")
+        raise RuntimeError(
+            f"linuxroot size mismatch after layout refresh: expected {capacity_both(expected_root_bytes)} "
+            f"({expected_root_bytes:,} bytes), got {capacity_both(actual_root_size)} ({actual_root_size:,} bytes)"
+        )
     minimum = int(bundle.manifest["rootfs"]["minimum_size_bytes"])
     if actual_root_size < minimum:
         raise RuntimeError(f"linuxroot is smaller than bundle minimum {minimum:,} bytes")
@@ -2338,20 +2671,17 @@ done < "$tmpdir/filecaps"
     finally:
         client.shell("umount", mountpoint, timeout=60)
 
-    # Only the four explicit Linux/Android boot-set images are written. Every
-    # write is immediately compared byte-for-byte by its SHA-256 to the bundle.
+    # Only the four explicit Linux/Android boot-set images are written. Use
+    # adb push for a staged copy, then run dd in TWRP (device-side) and verify
+    # the complete raw partition before touching the next image.
     for name in ("boot", "init_boot", "vendor_boot", "dtbo"):
         image = bundle.boot_images[name]
-        remote = f"dd of=/dev/block/by-name/{name} bs=4M"
-        streamed = client.stream(image, remote, timeout=300)
-        if streamed.returncode != 0:
-            raise RuntimeError(f"{name} write failed: {streamed.stderr.strip() or streamed.stdout.strip()}")
-        readback = client.read_binary(f"dd if=/dev/block/by-name/{name} bs=4M 2>/dev/null", timeout=300)
-        if len(readback) != image.stat().st_size or hashlib.sha256(readback).hexdigest() != sha256_file(image):
-            raise RuntimeError(f"{name} readback mismatch; do not reboot; original set is backed up at {backup_dir / 'boot'}")
-        sync = client.shell("sync")
-        if sync.returncode != 0:
-            raise RuntimeError(f"sync after {name} failed")
+        try:
+            flash_partition_image(client, name, image, sha256_file(image), "FLASH")
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+            raise RuntimeError(
+                f"{error}; do not reboot; original set is backed up at {backup_dir / 'boot'}"
+            ) from error
 
 
 def stage_boot_set_files(client: ADBClient, mountpoint: str, set_id: str,
@@ -2403,10 +2733,10 @@ def stage_boot_set_files(client: ADBClient, mountpoint: str, set_id: str,
 def require_manual_userdata_format(client: ADBClient, checkpoint: dict[str, Any], input_func=input) -> None:
     split = checkpoint["split"]
     expected_size = (int(split["userdata_last"]) - int(split["userdata_first"]) + 1) * GPT_CAPTURE_BLOCK
-    print("\nMANUAL STEP REQUIRED: In TWRP use Wipe > Format Data and type `yes`.")
+    print("\nMANUAL STEP REQUIRED: In TWRP use Wipe > Format Data and type `yes` if you have not already done so after this GPT resize.")
     print("This erases Android userdata only; do not wipe System, Recovery, or any other partition.")
-    print("The installer does not invoke a TWRP format command; it will verify the resulting partition geometry/filesystem.")
-    if input_func("After TWRP Format Data completes, type exactly `I FORMATTED ANDROID USERDATA IN TWRP`: ").strip() != "I FORMATTED ANDROID USERDATA IN TWRP":
+    print("If you already completed this manual step after the GPT resize, do not format again. The installer never invokes Format Data; it verifies the geometry/filesystem.")
+    if input_func("After confirming Format Data is complete, type exactly `I FORMATTED ANDROID USERDATA IN TWRP`: ").strip() != "I FORMATTED ANDROID USERDATA IN TWRP":
         raise RuntimeError("manual userdata-format confirmation did not match; Fedora rootfs was not formatted")
     result = client.shell("blockdev", "--getsize64", "/dev/block/by-name/userdata")
     if result.returncode != 0 or result.stdout.strip() != str(expected_size):
@@ -2437,7 +2767,7 @@ def twrp_userdata_filesystem_type(client: ADBClient) -> str | None:
 def preflight_twrp_tools(client: ADBClient) -> list[Check]:
     """Check all recovery-side commands needed by later guarded stages."""
     required = ("sgdisk", "blockdev", "dd", "gzip", "tar", "mke2fs", "mount",
-                "umount", "sync", "chroot", "sh", "test")
+                "umount", "sync", "chroot", "readlink", "sh", "test")
     # Do not pass a compound `sh -c 'for ...; do ...'` string through adb shell:
     # older platform-tools/TWRP combinations flatten argv and strip the quoting,
     # so the recovery shell sees `do` as a new command and rejects the syntax.
@@ -2458,26 +2788,29 @@ def preflight_twrp_tools(client: ADBClient) -> list[Check]:
 
 
 def describe_install_plan(layout: dict[str, Any], split: dict[str, int] | None,
-                          bundle: InstallBundle) -> tuple[str, int, int]:
-    if layout["state"] == "stock":
+                          bundle: InstallBundle, repartition_existing: bool = False) -> tuple[str, int, int]:
+    if layout["state"] == "stock" or repartition_existing:
         assert split is not None
         android = split["userdata_sectors"] * GPT_CAPTURE_BLOCK
         linux = split["linuxroot_sectors"] * GPT_CAPTURE_BLOCK
         free = split["free_sectors"] * GPT_CAPTURE_BLOCK
-        print("\nPartition plan (only userdata and linuxroot GPT entries):")
-        print(f"  Android userdata: {android / (1024**3):.2f} GiB")
-        print(f"  Fedora linuxroot: {linux / (1024**3):.2f} GiB")
-        print(f"  Left unpartitioned: {free / (1024**3):.2f} GiB")
-        print("  Resizing/formatting userdata erases Android user data; Android system partitions stay untouched.")
-        confirmation = INSTALL_CONFIRMATION
+        title = "New partition plan (replacing current userdata/linuxroot split)" if repartition_existing else "Partition plan (only userdata and linuxroot GPT entries)"
+        print(f"\n{title}:")
+        print(f"  Android userdata: {capacity_both(android)}")
+        print(f"  Fedora linuxroot: {capacity_both(linux)}")
+        print(f"  Left unpartitioned: {capacity_both(free)}")
+        if repartition_existing:
+            print("  Changing GPT boundaries requires manual TWRP Format Data and erases Android user data.")
+            print("  The existing Fedora linuxroot will also be formatted during the later install stage.")
+        else:
+            print("  Resizing/formatting userdata erases Android user data; Android system partitions stay untouched.")
+        confirmation = INSTALL_RESPLIT_CONFIRMATION if repartition_existing else INSTALL_CONFIRMATION
         return confirmation, android, linux
-    android = (int(layout["userdata"]["last"]) - int(layout["userdata"]["first"]) + 1) * GPT_CAPTURE_BLOCK
-    linux = (int(layout["linuxroot"]["last"]) - int(layout["linuxroot"]["first"]) + 1) * GPT_CAPTURE_BLOCK
-    free = (X810_USERDATA_END - int(layout["linuxroot"]["last"])) * GPT_CAPTURE_BLOCK
+    android, linux, free = live_split_sizes(layout)
     print("\nExisting split (the installer will not repartition):")
-    print(f"  Android userdata: {android / (1024**3):.2f} GiB (preserved)")
-    print(f"  Fedora linuxroot: {linux / (1024**3):.2f} GiB (will be formatted)")
-    print(f"  Unallocated: {free / (1024**3):.2f} GiB (preserved)")
+    print(f"  Android userdata: {capacity_both(android)} (preserved)")
+    print(f"  Fedora linuxroot: {capacity_both(linux)} (will be formatted)")
+    print(f"  Unallocated: {capacity_both(free)} (preserved)")
     return "INSTALL FEDORA ON SM-X810 AND ERASE LINUXROOT", android, linux
 
 
@@ -2524,9 +2857,11 @@ def run_install(bundle_path: Path | InstallBundle | None, serial: str | None = N
         with open_install_bundle(bundle_path) as bundle:
             print(f"Verified X810 install set {bundle.manifest['bundle_version']} for {EXPECTED_MODEL}.")
             resume_checkpoint = None
+            checkpoint_auto_resumed = False
             if resume_from is not None:
                 target, state = adb_target(adb, preflight_target, runner, {"recovery"})
                 resume_checkpoint = validate_resume_checkpoint(resume_from.expanduser(), target, bundle)
+                checkpoint_auto_resumed = True
                 print("Resume checkpoint matches this device, bundle, and local recovery backups; Android preflight is not repeated.")
             elif started_in_twrp:
                 target, state = adb_target(adb, preflight_target, runner, {"recovery"})
@@ -2558,41 +2893,79 @@ def run_install(bundle_path: Path | InstallBundle | None, serial: str | None = N
             if layout is None or any(check.state == "STOP" for check in layout_checks):
                 print("STOP: unexpected GPT/layout; no tablet changes were made.")
                 return 2
+            if resume_checkpoint is None:
+                pending = find_pending_install_checkpoint(bundle, target, layout)
+                if pending is not None:
+                    resume_from = pending
+                    resume_checkpoint = validate_resume_checkpoint(pending, target, bundle)
+                    checkpoint_auto_resumed = True
+                    print(f"Found unfinished install checkpoint {pending}; reusing its backups and offering the current split/resize choice.")
+            partition_map_checks = verify_twrp_partition_map(client, layout)
+            show_checks(partition_map_checks)
+            if any(check.state == "STOP" for check in partition_map_checks):
+                stale_map = any("stale partition map" in check.detail for check in partition_map_checks)
+                if resume_checkpoint is not None and stale_map:
+                    target, values, client, layout = refresh_twrp_after_manual_reboot(
+                        adb, target, resume_checkpoint["twrp_version"], resume_checkpoint,
+                        runner, binary_reader, stream_runner, input_func)
+                else:
+                    print("STOP: TWRP's live partition nodes do not match GPT; no backups, formatting, or partition writes were started.")
+                    return 2
+            if resume_checkpoint and not checkpoint_matches_layout(resume_checkpoint, layout):
+                raise RuntimeError("current GPT layout does not exactly match the saved post-split checkpoint")
 
             split_plan = None
+            repartition_existing = False
             if resume_checkpoint:
                 expected = resume_checkpoint["split"]
-                if layout["state"] != "split" or any(
-                        int(layout[key][field]) != int(expected[f"{key}_{field}"])
-                        for key in ("userdata", "linuxroot") for field in ("first", "last")):
-                    raise RuntimeError("current GPT layout does not exactly match the saved post-split checkpoint")
-                new_split = True
-                linux_bytes = int(expected["linuxroot_sectors"]) * GPT_CAPTURE_BLOCK
+                if checkpoint_auto_resumed:
+                    split_plan = prompt_existing_split_plan(
+                        layout, int(bundle.manifest["rootfs"]["minimum_size_bytes"]), input_func)
+                    if split_plan is not None:
+                        repartition_existing = not split_plan_matches_live(layout, split_plan)
+                    if repartition_existing:
+                        linux_bytes = split_plan["linuxroot_sectors"] * GPT_CAPTURE_BLOCK
+                    else:
+                        if split_plan is not None:
+                            print("Requested sizes match the current GPT; keeping the existing boundaries.")
+                        split_plan = None
+                        linux_bytes = int(expected["linuxroot_sectors"]) * GPT_CAPTURE_BLOCK
+                else:
+                    linux_bytes = int(expected["linuxroot_sectors"]) * GPT_CAPTURE_BLOCK
             elif layout["state"] == "stock":
-                new_split = False
                 maximum = (X810_USERDATA_END - X810_USERDATA_START + 1) * GPT_CAPTURE_BLOCK
+                minimum_linux = int(bundle.manifest["rootfs"]["minimum_size_bytes"])
                 while True:
                     try:
-                        android_request = input_func(f"Android userdata size (GiB or %, max {maximum / (1024**3):.2f} GiB): ").strip()
-                        fedora_request = input_func(f"Fedora linuxroot size (GiB or %, min {bundle.manifest['rootfs']['minimum_size_bytes'] / (1024**3):.2f} GiB): ").strip()
+                        android_request = input_func(f"Android userdata size (GB preferred, or GiB/%; max {capacity_both(maximum)}): ").strip()
+                        fedora_request = input_func(f"Fedora linuxroot size (GB preferred, or GiB/%; minimum {capacity_both(minimum_linux)}): ").strip()
                         split_plan = calculate_install_split(android_request, fedora_request,
-                                                             int(bundle.manifest["rootfs"]["minimum_size_bytes"]))
+                                                             minimum_linux)
                         break
                     except ValueError as error:
                         print(f"Invalid partition plan: {error}; remaining capacity stays unpartitioned.")
+                linux_bytes = split_plan["linuxroot_sectors"] * GPT_CAPTURE_BLOCK
             else:
-                new_split = False
-                linux_bytes = (int(layout["linuxroot"]["last"]) - int(layout["linuxroot"]["first"]) + 1) * GPT_CAPTURE_BLOCK
+                split_plan = prompt_existing_split_plan(
+                    layout, int(bundle.manifest["rootfs"]["minimum_size_bytes"]), input_func)
+                if split_plan is not None:
+                    repartition_existing = not split_plan_matches_live(layout, split_plan)
+                    linux_bytes = split_plan["linuxroot_sectors"] * GPT_CAPTURE_BLOCK
+                    if not repartition_existing:
+                        print("Requested sizes match the existing GPT; partition boundaries will be kept unchanged.")
+                else:
+                    linux_bytes = live_split_sizes(layout)[1]
                 if linux_bytes < int(bundle.manifest["rootfs"]["minimum_size_bytes"]):
-                    print("STOP: existing linuxroot is smaller than this bundle's declared minimum; no tablet changes were made.")
+                    print("STOP: selected/existing linuxroot is smaller than this bundle's declared minimum; no tablet changes were made.")
                     return 2
-            if resume_checkpoint:
+            if resume_checkpoint and not repartition_existing:
                 confirmation, _, described_linux_bytes = describe_install_plan(layout, None, bundle)
                 if described_linux_bytes != linux_bytes:
                     raise RuntimeError("resume linuxroot size differs from checkpoint")
             else:
-                confirmation, _, linux_bytes = describe_install_plan(layout, split_plan, bundle)
-            if not resume_checkpoint and layout["state"] == "stock" and linux_bytes < int(bundle.manifest["rootfs"]["minimum_size_bytes"]):
+                confirmation, _, linux_bytes = describe_install_plan(
+                    layout, split_plan, bundle, repartition_existing=repartition_existing)
+            if not resume_checkpoint and linux_bytes < int(bundle.manifest["rootfs"]["minimum_size_bytes"]):
                 print("STOP: selected linuxroot is too small; no tablet changes were made.")
                 return 2
             print("\nMatched artifacts:")
@@ -2604,6 +2977,17 @@ def run_install(bundle_path: Path | InstallBundle | None, serial: str | None = N
                 print("PLAN ONLY: no backups or tablet writes performed.")
                 return 0
 
+            # On restart, always let the user choose Keep or Repartition
+            # first. If they keep the existing GPT, repair an interrupted boot
+            # write from the saved original set before collecting credentials.
+            # If they repartition, perform that repair only after the manual
+            # TWRP reboot, alongside the usual post-GPT verification.
+            if resume_checkpoint and not repartition_existing:
+                ensure_current_boot_set_matches_backup(
+                    client, adb, target, resume_from, runner=runner,
+                    binary_reader=binary_reader, stream_runner=stream_runner,
+                    input_func=input_func)
+
             details: dict[str, str] = {}
             try:
                 details = prompt_install_details(
@@ -2614,11 +2998,6 @@ def run_install(bundle_path: Path | InstallBundle | None, serial: str | None = N
                 return 1
             if resume_checkpoint:
                 backup_dir = resume_from.expanduser().resolve(strict=True)
-                try:
-                    verify_current_boot_set_matches_backup(client, backup_dir)
-                except (OSError, RuntimeError, ValueError) as error:
-                    print(f"STOP: current boot set no longer matches pre-GPT backup: {error}")
-                    return 2
                 print(f"Using and preserving the original pre-GPT backup at {backup_dir}.")
             else:
                 backup_dir = default_install_backup_path()
@@ -2645,7 +3024,7 @@ def run_install(bundle_path: Path | InstallBundle | None, serial: str | None = N
                 print("Confirmation did not match; no tablet writes were made.")
                 return 1
 
-            if layout["state"] == "stock":
+            if layout["state"] == "stock" or repartition_existing:
                 if input_func(f"Type exactly `{INSTALL_GPT_CONFIRMATION}` to write only GPT entries 34/35: ").strip() != INSTALL_GPT_CONFIRMATION:
                     print("GPT confirmation did not match; no tablet writes were made.")
                     return 1
@@ -2656,16 +3035,20 @@ def run_install(bundle_path: Path | InstallBundle | None, serial: str | None = N
                 if any(item.state == "STOP" for item in checks):
                     print(f"STOP: GPT write/readback failed; remain in TWRP and preserve backup/checkpoint at {backup_dir}")
                     return 2
-                print("\nGPT entries 34/35 were written and read back. This run stops here by design.")
-                print("Do not let this program reboot the tablet. Manually reboot into TWRP, wait for ADB recovery, then run:")
-                bundle_argument = shlex.quote(str(bundle_path.expanduser())) if bundle_path is not None else "<same published bundle>"
-                print(f"  python3 tools/x810-install install --bundle {bundle_argument} --resume-from {shlex.quote(str(backup_dir))}")
-                print("The next stage requires manual TWRP Format Data for Android userdata; it never issues a format-data command.")
-                return 3
+                print("\nGPT entries 34/35 were written and read back successfully.")
+                resume_from = backup_dir
+                resume_checkpoint = validate_resume_checkpoint(backup_dir, target, bundle)
+                checkpoint_auto_resumed = False
+                target, values, client, layout = refresh_twrp_after_manual_reboot(
+                    adb, target, resume_checkpoint["twrp_version"], resume_checkpoint,
+                    runner, binary_reader, stream_runner, input_func)
+                ensure_current_boot_set_matches_backup(
+                    client, adb, target, backup_dir, runner=runner,
+                    binary_reader=binary_reader, stream_runner=stream_runner,
+                    input_func=input_func)
 
-            # Existing split is never repartitioned or data-formatted. For a
-            # fresh stock split, only --resume-from reaches this stage after
-            # the human has manually rebooted to TWRP and formatted userdata.
+            # After a changed split, Format Data is a manual TWRP operation;
+            # the script waits for it and verifies the result before writing.
             if resume_checkpoint and resume_checkpoint.get("userdata_needs_manual_format"):
                 require_manual_userdata_format(client, resume_checkpoint, input_func)
             if input_func("Type `FORMAT LINUXROOT AND FLASH FOUR BOOT IMAGES` to begin Fedora writes: ").strip() != "FORMAT LINUXROOT AND FLASH FOUR BOOT IMAGES":
@@ -2675,12 +3058,12 @@ def run_install(bundle_path: Path | InstallBundle | None, serial: str | None = N
                 format_and_install_rootfs(client, bundle, linux_bytes, details, backup_dir)
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
                 print(f"STOP: install stage failed: {error}")
-                print("Remain in TWRP. To restore the backed-up four-image set (not vbmeta/recovery):")
-                print(f"  python3 tools/x810-install restore-boot-set --backup-dir {backup_dir} --serial {target}")
-                print("The restore command validates X810/TWRP identity, manifest SHA-256, exact partition sizes, and read-back; it does not reboot.")
+                print(f"Remain in TWRP and preserve the verified original images in {backup_dir / 'boot'}; do not reboot until the failure is reviewed.")
                 return 2
             print("\nFedora rootfs and four boot images were written and boot-image read-back verified.")
             print(f"Backups: {backup_dir}")
+            if resume_checkpoint:
+                mark_install_checkpoint_complete(backup_dir)
             print("No reboot was performed. Review the backup, then manually choose when to boot the tablet.")
             return 0
     except (OSError, RuntimeError, ValueError, urllib.error.URLError,
@@ -2690,13 +3073,46 @@ def run_install(bundle_path: Path | InstallBundle | None, serial: str | None = N
         return 2
 
 
+def refresh_twrp_after_manual_reboot(adb: str, serial: str, expected_twrp: str,
+                                    checkpoint: dict[str, Any], runner=command,
+                                    binary_reader=adb_binary, stream_runner=None,
+                                    input_func=input) -> tuple[str, dict[str, str], ADBClient, dict[str, Any]]:
+    """Wait for the user's manual TWRP reboot, then prove GPT and kernel map agree."""
+    print("\nThe GPT was written, but TWRP's current kernel may still expose the old partition sizes.")
+    print("Manually reboot the tablet back into TWRP now; this installer will not reboot it.")
+    input_func("After TWRP is fully loaded and ADB is available, press Enter to continue: ")
+    target, state = adb_target(adb, serial, runner, {"recovery"})
+    values, identity_checks = twrp_identity(adb, target, state, runner=runner)
+    show_checks(identity_checks)
+    if any(check.state == "STOP" for check in identity_checks):
+        raise RuntimeError("TWRP identity/root checks failed after the manual reboot")
+    if values.get("twrp") != expected_twrp:
+        raise RuntimeError("TWRP version changed since the checkpoint; refusing to continue")
+    client = ADBClient(adb, target, runner, binary_reader, stream_runner)
+    tool_checks = preflight_twrp_tools(client)
+    show_checks(tool_checks)
+    if any(check.state == "STOP" for check in tool_checks):
+        raise RuntimeError("TWRP is missing a required installer utility after reboot")
+    layout, layout_checks = twrp_gpt_layout(adb, target, runner=runner)
+    show_checks(layout_checks)
+    if layout is None or any(check.state == "STOP" for check in layout_checks):
+        raise RuntimeError("could not re-validate the X810 GPT after the manual TWRP reboot")
+    if not checkpoint_matches_layout(checkpoint, layout):
+        raise RuntimeError("GPT layout after reboot does not match the saved install checkpoint")
+    partition_checks = verify_twrp_partition_map(client, layout)
+    show_checks(partition_checks)
+    if any(check.state == "STOP" for check in partition_checks):
+        raise RuntimeError("TWRP still exposes a stale partition map; reboot into TWRP again, then rerun this installer")
+    return target, values, client, layout
+
+
 def show_install_path() -> None:
     print("\nFedora on SM-X810 — installation status\n")
-    print("Run `python3 tools/x810-install` to fetch the latest release, `install --no-update` to use the newest complete cached release offline, or `install --bundle PATH` for a specific local bundle.")
+    print("Run `python3 tools/x810-install` to fetch the latest release, or add `--no-update` to use the newest complete cached release offline.")
     print("The installer requires Android unlocked/rooted, manual TWRP entry, one release with a verified manifest and matching install assets, and typed confirmations.")
     print("It backs up GPT metadata and boot/init_boot/vendor_boot/dtbo, then may resize only userdata/linuxroot.")
-    print("For a stock layout, it writes GPT, saves a credential-free resume checkpoint, and stops for your manual TWRP reboot.")
-    print("On `--resume-from`, you manually format Android userdata in TWRP; the installer then verifies it, formats linuxroot, provisions an account, writes four boot images, and checks readback.")
+    print("If it writes new GPT boundaries, it saves a credential-free checkpoint and waits while you manually reboot into TWRP; it then continues in the same run.")
+    print("It prompts you to manually format Android userdata in TWRP only when required, verifies it, formats linuxroot, provisions an account, writes four boot images, and checks readback.")
     print("It never writes vbmeta, recovery, firmware, or any other partition. The local backup is not a userdata backup.")
     print("WARNING: the stock-layout resize/format sequence is host/mock-tested but still needs live SM-X810 recovery validation.")
     print("Never use rootfs/mk-internal-storage.sh for dual boot; it formats all")
@@ -2782,107 +3198,49 @@ def menu() -> int:
             print("Enter 1, 2, 3, 4, 5, 6, or 7, or q to quit.")
 
 
+def run_install_cli(*args, **kwargs) -> int:
+    """Run the one guided flow; manual tablet actions happen in this same process."""
+    return run_install(*args, **kwargs)
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="action")
-    install = sub.add_parser("install", help="guided X810 Fedora installation (interactive; destructive steps are confirmed)")
-    install.add_argument("--bundle", type=Path, help="local extracted bundle directory or clean-install .tar.gz (default: download latest release)")
-    install.add_argument("--no-update", action="store_true",
-                         help="use the newest complete SHA-256-verified release already in the local cache; never query GitHub")
-    install.add_argument("--serial", help="ADB serial when more than one device is connected")
-    install.add_argument("--resume-from", type=Path, help="resume after the installer wrote GPT and you manually rebooted into TWRP; path is the private backup/checkpoint directory")
-    install.add_argument("--plan-only", action="store_true", help="validate bundle/device/layout and show the plan without backups or tablet writes")
-    doctor = sub.add_parser("doctor", help="read-only Linux/ADB/device preflight")
-    doctor.add_argument("--serial", help="ADB serial when more than one device is connected")
-    backup = sub.add_parser("backup-gpt", help="save and validate X810 GPT metadata to a new PC directory (TWRP only)")
-    backup.add_argument("--serial", help="ADB serial when more than one device is connected")
-    backup.add_argument("--out", type=Path, default=default_gpt_backup_path(), help="new output directory on this PC")
-    plan = sub.add_parser("plan-split", help="preview an Android/Fedora split from a stock X810 GPT capture")
-    plan.add_argument("capture_dir", type=Path, help="directory containing sda-first-1m.bin and sda-last-1m.bin")
-    plan.add_argument("--android-percent", type=int, default=50, help="percentage of userdata retained for Android (5..95)")
-    split = sub.add_parser("split", help="plan or explicitly apply the X810 userdata/linuxroot GPT split in TWRP")
-    split.add_argument("--serial", help="ADB serial when more than one device is connected")
-    split.add_argument("--android-percent", type=int, default=50, help="percentage of userdata retained for Android (5..95)")
-    split.add_argument("--write", action="store_true", help="write GPT entries 34 and 35; requires --confirm")
-    split.add_argument("--confirm", default="", help=f"must exactly equal {SPLIT_CONFIRMATION}; accepts Android userdata loss")
-    split.add_argument("--backup-dir", type=Path, help="new private PC directory for a fresh GPT capture (default: timestamped directory)")
-    sub.add_parser("guide", help="show the current install sequence and blockers")
-    sub.add_parser("release", help="check the latest release's update-feed and clean-install status")
-    sub.add_parser("menu", help="open the menu of installer and read-only tools")
-    restore = sub.add_parser("restore-boot-set", help="restore the checksummed four-image backup in TWRP only; never writes recovery/vbmeta and never reboots")
-    restore.add_argument("--backup-dir", type=Path, required=True, help="install backup directory containing boot-backup-manifest.json and its SHA-256 sidecar")
-    restore.add_argument("--serial", help="ADB serial when more than one device is connected")
+    parser = argparse.ArgumentParser(
+        description="Run the complete guided X810 Fedora installation. Manual TWRP actions are prompted in-flow."
+    )
+    parser.add_argument("command", nargs="?", choices=("install", "restore-boot-set"),
+                        default="install",
+                        help="install Fedora (default), or restore the four backed-up boot images")
+    parser.add_argument("--no-update", action="store_true",
+                        help="use the newest complete SHA-256-verified release already in the local cache; never query GitHub")
+    parser.add_argument("--serial", help="select this ADB serial when more than one target is connected")
+    parser.add_argument("--backup-dir", type=Path,
+                        help="installer backup directory (required by restore-boot-set)")
     args = parser.parse_args()
-    if args.action is None:
-        if sys.stdin.isatty() and sys.stdout.isatty():
-            return run_install(None)
-        parser.print_help()
-        return 0
-    if args.action == "install":
-        if args.no_update and args.bundle is not None:
-            parser.error("install --no-update selects the cached release automatically; omit --bundle")
-        if not (sys.stdin.isatty() and sys.stdout.isatty()):
-            print("STOP: guided install requires an interactive terminal for typed confirmations.", file=sys.stderr)
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("STOP: this command requires an interactive terminal for typed confirmations.", file=sys.stderr)
+        return 2
+    if args.command == "restore-boot-set":
+        if args.no_update or args.backup_dir is None:
+            parser.error("restore-boot-set requires --backup-dir and does not accept --no-update")
+        try:
+            checks = restore_boot_set_from_backup("adb", args.serial, args.backup_dir)
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"RESTORE STOPPED: {error}", file=sys.stderr)
             return 2
-        bundle_path: Path | InstallBundle | None = args.bundle
-        if args.no_update:
-            try:
-                bundle_path = find_cached_install_bundle()
-            except (OSError, ValueError) as error:
-                print(f"INSTALL STOPPED: --no-update found no valid cached install set ({error}).", file=sys.stderr)
-                return 2
-            print(f"Using verified cached release {bundle_path.manifest['bundle_version']}; no GitHub request will be made.", flush=True)
-        return run_install(bundle_path, args.serial, args.plan_only, args.resume_from)
-    if args.action == "restore-boot-set":
-        if not (sys.stdin.isatty() and sys.stdout.isatty()):
-            print("STOP: boot restore requires an interactive terminal for typed confirmation.", file=sys.stderr)
+        for check in checks:
+            print(f"[{check.state:7}] {check.label:22} {check.detail}")
+        return 1 if any(check.state == "STOP" for check in checks) else 0
+    if args.backup_dir is not None:
+        parser.error("--backup-dir is only valid with restore-boot-set")
+    bundle_path: Path | InstallBundle | None = None
+    if args.no_update:
+        try:
+            bundle_path = find_cached_install_bundle()
+        except (OSError, ValueError) as error:
+            print(f"INSTALL STOPPED: --no-update found no valid cached install set ({error}).", file=sys.stderr)
             return 2
-        adb = shutil.which("adb")
-        if platform.system() != "Linux" or not adb:
-            print(f"STOP: a Linux PC and adb are required ({package_hint('adb')}).", file=sys.stderr)
-            return 2
-        checks = restore_boot_set_from_backup(adb, args.serial, args.backup_dir)
-        show_checks(checks)
-        print("Restore attempt finished; no reboot was performed.")
-        return 2 if any(check.state == "STOP" for check in checks) else 0
-    if args.action == "doctor":
-        checks, status = run_doctor(args.serial)
-        show_checks(checks)
-        print("No tablet state was changed.")
-        return status
-    if args.action == "backup-gpt":
-        checks, status = run_gpt_backup(args.serial, args.out.expanduser())
-        show_checks(checks)
-        if status == 0:
-            print("GPT metadata saved and validated. No partition payloads were copied; no tablet state was changed.")
-        return status
-    if args.action == "plan-split":
-        if not 5 <= args.android_percent <= 95:
-            parser.error("--android-percent must be between 5 and 95")
-        return run_split_plan(args.capture_dir.expanduser(), args.android_percent)
-    if args.action == "split":
-        if args.write and not (sys.stdin.isatty() and sys.stdout.isatty()):
-            print("STOP: GPT write mode requires an interactive terminal.", file=sys.stderr)
-            return 2
-        checks, status = run_split(
-            args.serial, args.android_percent, write=args.write,
-            confirm=args.confirm, backup_dir=args.backup_dir,
-        )
-        show_checks(checks)
-        if not args.write:
-            print("Plan only; no partition table was written.")
-        elif status == 0:
-            print("GPT split written and verified. No format or reboot was performed.")
-        return status
-    if args.action == "guide":
-        show_install_path()
-        return 0
-    if args.action == "release":
-        return show_release()
-    if args.action == "menu":
-        return menu()
-    parser.print_help()
-    return 0
+        print(f"Using verified cached release {bundle_path.manifest['bundle_version']}; no GitHub request will be made.", flush=True)
+    return run_install_cli(bundle_path, serial=args.serial)
 
 
 if __name__ == "__main__":

@@ -11,10 +11,9 @@ python3 tools/x810-install
 In a terminal, that starts the guided installer. It downloads the rootfs,
 matching kernel RPM, and four boot images individually from the latest
 aggregate release, then verifies them using `manifest.json`.
-There is no separate multi-gigabyte clean-install archive. To launch the
-optional text menu instead, run `python3 tools/x810-install menu`. The
-`--bundle` option remains for older self-contained bundles or extracted bundle
-directories.
+There is no separate multi-gigabyte clean-install archive. To install entirely
+offline after caching a complete release, add `--no-update`. If several ADB
+targets are connected, select the tablet with `--serial SERIAL`.
 
 Before downloading the large rootfs, a fresh install checks that exactly one
 usable Android ADB target is connected and that model, bootloader-unlocked, and
@@ -61,18 +60,10 @@ assuming TWRP has refreshed its partition map:
 3. It prints the planned sizes. On stock GPT, the first typed confirmation
    authorizes erasing Android userdata; a second typed confirmation authorizes
    changing only GPT entries 34 and 35. It reads back and verifies the new
-   extents, saves a credential-free checkpoint, and **stops without rebooting**.
-4. Manually reboot into TWRP so recovery rereads GPT. Resume with the same
-   release and the backup path printed by the script:
-
-   ```sh
-   python3 tools/x810-install install \
-     --resume-from ./x810-install-backup-TIMESTAMP
-   ```
-
-   The installer downloads the latest release again and compares it with the
-   saved checkpoint. If a newer release appeared in between, it stops rather
-   than mixing files; restart with a fresh install run if that happens.
+   extents, saves a credential-free checkpoint, then waits in the same process
+   while you manually reboot into TWRP. The installer never reboots the tablet.
+   If the PC-side process is interrupted, rerun the same command with the same
+   verified release cached; it detects and validates the pending checkpoint.
 
 5. On a fresh stock split, manually use TWRP **Wipe → Format Data** and type
    `yes` when the resumed wizard asks. This erases Android apps, settings, and
@@ -135,12 +126,11 @@ backup; do not reboot into a partially written boot set.
 
 The guided flow, release-asset verifier, split arithmetic, mocked GPT path,
 account provisioning, and boot-image write/restore paths have host-side tests.
-The installer has **not** been validated end-to-end on a physical SM-X810 from
-stock Android. In particular, the exact TWRP GPT refresh, Android data
-reinitialization, rootfs extraction, first boot, and recovery sequence still
-need a physical validation run. Treat it as experimental, not a proven
-consumer installer. Do not use the developer-only `split --write` command as
-a substitute for the guided flow.
+The repository owner reports a successful fresh installation on a physical
+SM-X810, including Fedora's first GNOME/GDM boot. The installer has not yet
+been independently validated across repeated installs or failure recovery.
+Keep the verified PC-side backups until Fedora and Android have both been
+boot-tested.
 
 The installer downloads and verifies individual files from the single
 aggregate release. To build or publish, push relevant changes to `main` or
@@ -185,19 +175,30 @@ cryptographic signature. Rootfs builds pin Fedora compose repositories and sourc
 record package/source provenance, and normalize archive metadata; this does
 not claim bit-for-bit reproducibility across all compiler/toolchain behavior.
 
-The Fedora rootfs build currently obtains firmware from its declared,
-checksum-pinned inputs. Review those sources and their distribution terms
-before publishing a release; do not add personal CYG1 firmware or device-unique
-data to the repository or bundle.
+The rootfs and boot-image builds also need the six exact X810 CYG1 Adreno
+firmware blobs. Fedora's generic SM8550 files share the same names but are
+rejected by the tablet's secure GPU loader. Do not add the proprietary blobs
+or device-unique data to git or the public bundle. For a local build, stage
+them from an owner-supplied extraction with:
+
+```sh
+python3 tools/x810-gpu-firmware.py stage \
+  --source /path/to/X810-CYG1/vendor-extract/firmware \
+  --dest local-assets/x810-gpu-firmware
+```
+
+GitHub Actions expects an `X810_GPU_FIRMWARE_URL` secret pointing to an
+archive of those files (and `X810_GPU_FIRMWARE_TOKEN` if it is private). Each
+blob is SHA-256 checked, and the final `vendor_boot.img` is checked to contain
+the exact signed set before publication. A missing or mismatched set fails
+the build rather than emitting a release that falls back to a TTY.
 
 ## Useful read-only commands
 
 ```sh
-python3 tools/x810-install doctor
-python3 tools/x810-install install --bundle ./bundle.tar.gz --plan-only
-python3 tools/x810-install backup-gpt --out ./x810-gpt-backup
-python3 tools/x810-install plan-split ./x810-gpt-backup/gpt --android-percent 50
-python3 tools/x810-install release
+python3 tools/x810-install --help
+python3 tools/x810-install --no-update
+python3 tools/x810-install restore-boot-set --help
 ```
 
 `backup-gpt` records GPT metadata only; it is not a partition-data backup.
