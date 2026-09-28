@@ -63,19 +63,16 @@ unpromoted `candidates/0002-ignore-brief-connection-glitches.patch`; it counts
 ignored pulses in read-only diagnostics. It is a safe host-build candidate, not
 a verified fix for this X810's longer unplug/replug delay.
 
-## X810 fix candidate
+## X810 recovery changes
 
-`kernel-overlay/pogo-recovery/patches/` adds an explicit controller recovery
-sysfs action and an NRST reset when reconnect is detected. The separate,
-unpromoted `candidates/` patch instead holds NRST asserted while VDDO is off,
-releases NRST after reconnect, then allows 150 ms to settle. The patched Linux
-7.2 kernel object was built successfully. A complete boot-only
-test ZIP and a separate known-good boot restore ZIP are staged under
-`out/keyboard-candidate/`; both write only `boot`, check SM-X810 identity and
-geometry, and verify read-back. Their hashes are in that folder's `SHA256SUMS`.
-The owner-confirmed 0003+0004+0005 recovery build is a separate patch set; no
-claim is made that the hold-NRST behavior in this candidate was tested. Keep
-the restore ZIP accessible in TWRP before testing any different kernel.
+The recovery implementation adds a privileged controller reset action, NRST
+recovery on a failed I²C read, and hold-NRST handling through disconnect. The
+owner confirmed that this cumulative recovery build worked on the tablet
+yesterday. The 0002 GPIO62-glitch guard remains a separate, unconfirmed
+experiment and is not enabled. The fresh-install Fedora kernel did not include
+any pogo driver or DT node; this turn integrates the confirmed recovery code
+with the X810 SE15/GPIO10 DT and EF-DX815 model, host-builds it, and publishes
+the source. It still requires manual kernel/DTB flashing and user verification.
 
 Tab Companion Fedora release
 [`Tab Companion build #19`](https://github.com/iamSlightlyWind/tab-companion/releases/tag/tab-companion-build-36331825449)
@@ -128,9 +125,9 @@ the `Image.gz` passed gzip validation, the reconstructed boot image passed
 AVB verification, and both the candidate and known-good restore ZIPs passed
 archive, size, SHA-256, and boot-only updater contract checks. Artifacts and
 instructions are in `out/keyboard-i2c-recovery-build/artifacts/`. The owner
-later reported that the cumulative 0003+0004+0005 recovery build worked on the
-tablet; this earlier 0003-only artifact is not the exact build covered by that
-report.
+later reported that the newer held-NRST + 0003+0004+0005 recovery package
+worked on the tablet; this earlier 0003-only artifact is not the exact build
+covered by that report.
 
 ## Diagnostic-only follow-up
 
@@ -173,7 +170,7 @@ replacing that log with a generic message and `invalid_key_events` counter.
 the Fedora parser rejects code 0 or a code above Linux `KEY_MAX`, it returns
 `-EPROTO`, letting 0003 use the already-gated reset/defer path. This matches
 the invalid-event-then-`-ENXIO` observation. The owner later confirmed the
-cumulative 0003+0004+0005 build worked on-device. It cannot help when GPIO75
+held-NRST + 0003+0004+0005 build worked on-device. It cannot help when GPIO75
 never interrupts or the STM32 is silent.
 
 Host artifacts are separated and boot-only:
@@ -181,5 +178,6 @@ Host artifacts are separated and boot-only:
 - `out/keyboard-invalid-frame-build/artifacts/` is 0003+0004+0005.
 Both packages have AVB-verified 100663296-byte boot images, pass the single-boot
 ZIP contract tests, and include byte-identical known-good boot restore ZIPs.
-The owner-confirmed report applies to the 0003+0004+0005 package only. The build
-source is isolated; no tablet write, push, flash, or reboot occurred here.
+The owner-confirmed report applies to the held-NRST + 0003+0004+0005 package;
+the 0003+0004-only package is not covered. The build source is isolated; no
+tablet write, push, flash, or reboot occurred here.

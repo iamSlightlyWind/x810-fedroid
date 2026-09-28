@@ -53,6 +53,16 @@
 		enable-gpios = <&tlmm 18 GPIO_ACTIVE_HIGH>;
 	};
 
+	/* X810 CYG1 pogo STM32 logic rail; controlled by the keyboard driver. */
+	pogo_vddo: pogo-vddo-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "pogo_vddo";
+		gpio = <&tlmm 10 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pogo_vddo_en>;
+	};
+
 	chosen {
 		stdout-path = "serial0:115200n8";
 		/*
@@ -780,6 +790,41 @@
 	 */
 	gpio-reserved-ranges = <36 4>;
 
+	/* Accessory reset, power, and event pins from the CYG1 X810 overlay. */
+	pogo_vddo_en: pogo-vddo-en-state {
+		pins = "gpio10";
+		function = "gpio";
+		drive-strength = <2>;
+		output-low;
+		bias-disable;
+	};
+
+	pogo_control: pogo-control-state {
+		boot-pins {
+			pins = "gpio12";
+			function = "gpio";
+			drive-strength = <2>;
+			output-low;
+			bias-disable;
+		};
+
+		reset-pins {
+			pins = "gpio13";
+			function = "gpio";
+			drive-strength = <2>;
+			output-high;
+			bias-disable;
+		};
+	};
+
+	pogo_irqs: pogo-irqs-state {
+		pins = "gpio62", "gpio75";
+		function = "gpio";
+		drive-strength = <2>;
+		input-enable;
+		bias-disable;
+	};
+
 	/* CCI1 master 1 is Samsung's AON CCI pair on GPIO208/209. */
 	cci1_1_default: cci1-1-default-state {
 		pins = "gpio208", "gpio209";
@@ -1328,6 +1373,25 @@
 
 &uart7 {
 	status = "okay";
+};
+
+/* CYG1 identifies STM32@0x2a on QUPv3 SE15 (SDA 72/SCL 106). */
+&i2c15 {
+	clock-frequency = <100000>;
+	status = "okay";
+
+	pogo_keyboard: keyboard@2a {
+		compatible = "samsung,gts9pwifi-stm32-pogo";
+		reg = <0x2a>;
+		vddo-supply = <&pogo_vddo>;
+		boot-gpios = <&tlmm 12 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&tlmm 13 GPIO_ACTIVE_LOW>;
+		connected-gpios = <&tlmm 62 GPIO_ACTIVE_HIGH>;
+		data-ready-gpios = <&tlmm 75 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pogo_control>, <&pogo_irqs>;
+		wakeup-source;
+	};
 };
 
 /*

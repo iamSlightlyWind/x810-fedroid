@@ -1,5 +1,22 @@
 # Explicit STM32 pogo keyboard recovery
 
+## Fedora X810 integration
+
+The Fedora kernel source now includes the recovery patch set the owner
+confirmed working, adapted in `kernel/files/samsung_stm32_pogo.c`, with an
+X810-compatible DT node for SE15,
+GPIO10 VDDO, GPIO12 BOOT0, GPIO13 NRST, GPIO62 connection, and GPIO75 DATA.
+CYG1 identifies the EF-DX815 as model `0xfb`. Unlike the X910 path, X810's
+CYG1 overlay does not request a MAX77816 keyboard booster, so the driver treats
+that phandle as optional only for the X810 compatible. The 0002 GPIO62-glitch
+experiment is not enabled.
+
+These changes enter the standard Fedora kernel build through
+`kernel/prepare.sh`; they require a new kernel/DTB boot image and manual flash.
+They cannot make an already-running build recognize the keyboard through a
+userspace update or a Tab Companion reset. The kernel object and DTB have been
+host-built/validated; the new build has not yet been flashed to the tablet.
+
 The X810 EF-DX815 uses the same STM32 pogo controller path as Samsung's Tab S9
 Ultra port. Rebinding the I²C driver fixes the intermittent keyboard because
 probe enters STM32 system-boot mode using BOOT0/NRST, reads the immutable ID and

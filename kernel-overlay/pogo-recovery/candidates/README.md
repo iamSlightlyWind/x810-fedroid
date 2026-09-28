@@ -1,16 +1,15 @@
 # Pogo recovery patch status
 
-The owner confirmed on 2026-09-27 that the cumulative `0003` + `0004` +
-`0005` recovery build restored keyboard operation in their tablet test. Treat
-that recovery set as **user-tested/working**; the older host-only wording below
-predates that report. The tested recovery build is the one recorded under
-`out/keyboard-invalid-frame-build/artifacts/` (0003 deferred I²C-read recovery,
-0004 safe diagnostics, 0005 recover from invalid key frames).
+The owner confirmed on 2026-09-27 that the recovery build in
+`out/keyboard-invalid-frame-build/artifacts/` restored keyboard operation in
+their tablet test. Treat that set as **user-tested/working**; the older
+host-only wording below predates the report. The package includes the held-NRST
+disconnect handling from `0001` in its base driver, plus `0003` deferred
+I²C-read recovery, `0004` safe diagnostics, and `0005` invalid-frame recovery.
 
-This confirmation does not cover every patch in this directory: `0001` (hold
-NRST throughout physical detach) and `0002` (ignore transient GPIO62 lows)
-remain separate experiments and are not part of the confirmed 0003+0004+0005
-set. It also does not make the X910 driver/DTS compatible with the current
+This confirmation does not cover every patch in this directory: `0002` (ignore
+transient GPIO62 lows) remains a separate untested experiment. It also does
+not make the X910 driver/DTS compatible with the current
 X810 Fedora kernel, which presently lacks the X810 pogo DT node and driver.
 The recovery patches must be integrated with the X810 SE15/GPIO10 driver path
 before they can fix keyboard recognition in a fresh Fedora kernel build.
@@ -33,8 +32,9 @@ The reconnect hunk retries after the normal 250 ms debounce if the connection
 GPIO falls again between VDDO restoration and NRST release, so it does not
 leave the data IRQ disabled after a raced disconnect. This is a correctness
 guard, not a timing workaround.
-This separate experiment is not part of the user-confirmed 0003+0004+0005
-recovery set and is not applied by normal `apply.sh`.
+The confirmed invalid-frame boot package includes this held-NRST change in its
+base driver. This stand-alone patch remains useful for reproducing the hunk in
+a clean mainline source tree; it is not applied by normal `apply.sh`.
 
 ## Incremental connection-glitch guard
 
@@ -139,9 +139,8 @@ Host-only patch application, arm64 object build, and full `Image.gz` link
 passed. A partition-sized boot image was AVB-verified and packaged with the
 boot-only TWRP updater; both it and the separate known-good restore ZIP pass
 host archive/hash/size tests. Artifacts and manual test order are in
-`out/keyboard-i2c-recovery-build/artifacts/`. The owner later confirmed that
-the cumulative 0003+0004+0005 build worked in a tablet test; this individual
-0003-only artifact was built earlier and is not the user-confirmed package.
+`out/keyboard-i2c-recovery-build/artifacts/`. The owner later confirmed the
+newer invalid-frame package, which contains this recovery path.
 
 ## No-key-values runtime diagnostics
 
@@ -188,8 +187,9 @@ worked in a tablet test. It cannot address silence without a GPIO75 interrupt.
 
 Host full-boot TWRP packages:
 - `out/keyboard-combined-build/artifacts/`: 0003+0004.
-- `out/keyboard-invalid-frame-build/artifacts/`: 0003+0004+0005.
-The owner confirmed the 0003+0004+0005 package worked in their tablet test;
-the 0003+0004-only package is not covered by that report. Both contain only a
-boot writer and exact known-good restore ZIP, with AVB, readback geometry, and
-ZIP contract validation recorded in their manifests.
+- `out/keyboard-invalid-frame-build/artifacts/`: held-NRST 0001 base plus
+  0003+0004+0005.
+The owner confirmed the latter package worked in their tablet test; the
+0003+0004-only package is not covered by that report. Both contain only a boot
+writer and exact known-good restore ZIP, with AVB, readback geometry, and ZIP
+contract validation recorded in their manifests.

@@ -70,6 +70,20 @@ config TOUCHSCREEN_WACOM_WEZ01\
 grep -q 'wacom-wez01.o' drivers/input/touchscreen/Makefile || \
     echo 'obj-$(CONFIG_TOUCHSCREEN_WACOM_WEZ01) += wacom-wez01.o' >> drivers/input/touchscreen/Makefile
 
+# Samsung STM32 pogo keyboard. CYG1 X810 uses SE15 + GPIO10 VDDO and does
+# not describe the X910 MAX77816 booster; the driver supports this optional
+# no-booster configuration and the EF-DX815 model ID (0xfb).
+cp "$here/files/samsung_stm32_pogo.c" drivers/input/keyboard/
+grep -q 'KEYBOARD_SAMSUNG_STM32_POGO' drivers/input/keyboard/Kconfig || sed -i '/^endif$/i \
+config KEYBOARD_SAMSUNG_STM32_POGO\
+\ttristate "Samsung STM32 pogo keyboard (gts9p/gts9u)"\
+\tdepends on INPUT && I2C && GPIOLIB && REGULATOR\
+' drivers/input/keyboard/Kconfig
+grep -Fqx 'obj-$(CONFIG_KEYBOARD_SAMSUNG_STM32_POGO) += samsung_stm32_pogo.o' \
+    drivers/input/keyboard/Makefile || \
+    echo 'obj-$(CONFIG_KEYBOARD_SAMSUNG_STM32_POGO) += samsung_stm32_pogo.o' \
+        >> drivers/input/keyboard/Makefile
+
 # Shared wacom-wez01 pen-proximity/touch-suppression header (palm rejection).
 mkdir -p include/linux
 cp "$here/files/wacom_wez01.h" include/linux/
