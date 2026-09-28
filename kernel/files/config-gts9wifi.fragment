@@ -292,6 +292,11 @@ CONFIG_NETFILTER_NETLINK_QUEUE=m
 CONFIG_NETFILTER_XT_TARGET_NFQUEUE=m
 CONFIG_NFT_QUEUE=m
 
+# Boot images are flashed separately from the rootfs module tree. If a user
+# has temporarily mixed builds, reject only the stale module BTF metadata and
+# still load the ordinary kernel module; BTF is optional for module function.
+CONFIG_MODULE_ALLOW_BTF_MISMATCH=y
+
 # EgisTec EL721 fingerprint sensor (under-display, SM-X810).  Linux only owns
 # the sensor rail and its enable line plus Samsung's non-data ioctl ABI on
 # /dev/esfp0; the signed dualfp TrustZone app does capture, matching and

@@ -77,7 +77,8 @@ done
 # GPIO-powered, so the port patch makes gpio-vibra tolerate that valid wiring.
 for option in CONFIG_INPUT_GPIO_VIBRA=y \
               CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y \
-              CONFIG_CPU_FREQ_GOV_PERFORMANCE=y; do
+              CONFIG_CPU_FREQ_GOV_PERFORMANCE=y \
+              CONFIG_MODULE_ALLOW_BTF_MISMATCH=y; do
     grep -Fqx "$option" .config || {
         echo "X810 kernel is missing required CPU/haptics option: $option" >&2
         exit 1

@@ -32,6 +32,7 @@ reused, and a retired number is simply absent rather than reassigned
 | 24 | ADSP/sensorspd start ordering around panel coldboot recovery | fixed in source: the sensor-proxy unit requests `sensorspd` only after required panel recovery; live package update / clean-boot validation pending |
 | 25 | SSC QMI service absent; tablet rotation unavailable | open — current boot has `sensorspd` and `iio-sensor-proxy` inactive, the sensor wait unit failed, and QRTR service 400 is absent; source-side recovery changes remain unvalidated |
 | 26 | No GNOME power-profile/governor switcher | live root cause fixed: explicitly load `icc_osm_l3` so CPUFreq policies exist; profile switching verified over D-Bus, persistent RPM/boot validation pending |
+| 27 | Kernel rejects optional module BTF after boot/module builds differ | mitigation added: allow the module to load without its mismatched BTF metadata; exact boot/module matching is still preferred |
 
 Haptics are also enabled in the kernel source (stock-active-high GPIO18 plus
 `gpio-vibra`), but still need a kernel update and on-device ff-rumble check.
@@ -74,6 +75,21 @@ a short D-Bus test switched them to `performance` and restored `balanced` /
 boot through `modules-load.d`. Persistent startup and GNOME UI behavior remain
 to be checked after applying the update/reboot. This is CPUFreq-level control,
 not a Samsung power HAL; performance mode can increase heat and power draw.
+
+### 27 — Optional module BTF mismatches
+
+One boot showed the kernel BTF verifier rejecting the `nf_tables` module's
+optional type metadata (`ENUM (anon)`, `Invalid name`, BTF `-22`). The log
+proves a module-BTF validation failure, not why it happened. A plausible cause
+is that boot files and the rootfs module tree can be updated separately while
+both builds share the same `uname -r`, so a stale module tree may not be
+obvious. The kernel config now enables
+`CONFIG_MODULE_ALLOW_BTF_MISMATCH`: on this error Linux drops that module's BTF
+debug metadata and allows the actual module to load. This does not repair
+stale type data, and BPF programs that need the affected module's types will
+not have that metadata. Keep the boot bundle and `kernel.rpm` from the same
+release whenever possible; verify that `nf_tables` and firewall/NFQ modules
+load after the next kernel update.
 
 ### 24 — ADSP/sensorspd start ordering around panel coldboot recovery
 

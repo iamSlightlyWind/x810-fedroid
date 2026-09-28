@@ -237,6 +237,7 @@ jobs:
 
       - name: Test X810 CPU frequency and haptics kernel contracts
         run: |
+          python3 tools/test-x810-btf-module-compat.py
           python3 tools/test-x810-cpufreq-probe.py
           python3 tools/test-x810-vibrator-kernel-contract.py
 
