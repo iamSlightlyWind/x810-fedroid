@@ -72,8 +72,23 @@ gesture wake" report was a broken resume path, not a DT2W defect.
 |---|---|
 | Driver | `kernel/files/wacom-wez01.c` (out-of-tree) |
 
-Works. The native digitizer resolution was wrong and is fixed (100 units/mm);
-the tilt sensor is still missing.
+Pen position, pressure, distance, buttons, and the two tilt axes are exposed by
+the kernel input device. In particular, the driver reports `ABS_TILT_X/Y` from
+the signed coordinate-frame bytes and reads each axis limit from the controller
+query (falling back to ±63 if that query fails). The Samsung X810 downstream
+driver confirms the corresponding query offsets (0x0b/0x0c), report offsets
+(8/9), signed interpretation, and ±63 device-tree limits. The Ubuntu Tab S9
+Ultra driver also exposes the two ABS tilt axes, but has a distinct report
+layout and is not used to infer X810 byte offsets. The prior “tilt sensor is
+missing” claim was too strong: the kernel interface is implemented. However,
+actual changing values and axis orientation in this Fedora build, and whether
+drawing applications consume them correctly, have not been verified on-device.
+The X810 driver transforms position (`ABS_X = raw Y`, `ABS_Y = max X - raw X`)
+but currently reports tilt in untransformed packet axes; check `ABS_TILT_X/Y`
+with `evtest` while holding the pen upright and tilting it in opposing
+directions along each tablet axis. Values should move from near zero and change
+sign; if they change but their directions do not match the displayed axes, the
+tilt-vector rotation still needs correction.
 
 Palm rejection is kernel-level. The digitizer and the touchscreen are fully
 independent input devices; the touchscreen controller already classifies palm
@@ -410,9 +425,17 @@ on which decode API it speaks:
 | mpv `--hwdec=v4l2m2m-copy` | yes | FFmpeg's V4L2 M2M decoder |
 | GStreamer (`v4l2h264dec`) | yes | stateful M2M decoder |
 | Epiphany (WebKitGTK → GStreamer) | yes | inherits the GStreamer path |
+| Moonlight Flatpak (opt-in launcher) | unverified | FFmpeg V4L2 M2M decoder and hint are present; live streaming not yet tested |
 | VLC | no | only VA-API and VDPAU; no V4L2 M2M decoder at all |
 | Firefox | no | attempts VA-API, finds no driver |
 | Chromium / Vivaldi | no | VA-API compiled in but fails; no stateful V4L2 backend |
+
+Moonlight's opt-in launcher is described in
+[`MOONLIGHT-V4L2-EXPERIMENT.md`](x810-research/MOONLIGHT-V4L2-EXPERIMENT.md).
+Its Flatpak exposes device nodes to the app, and its FFmpeg backend can be
+hinted to use V4L2 M2M. This is separate from VA-API and does not change
+browser support. Until a live Moonlight stream is checked, treat its hardware
+decode as unverified.
 
 Measured: the same 1080p VP9 file costs 0.15 s of user CPU in hardware against
 3.20 s in software.
@@ -454,6 +477,13 @@ failure is `KEYMASTER_NOT_CONFIGURED` (cache status `9936`); neither that error
 nor loaded modules prove that the secure biometric path is ready. There is no
 X810 `libfprint` backend or supported enrollment/verification path in this
 repository, and the GNOME/PAM integration has not been validated for this port.
+
+The source now also maps the CYG1 board-id 04 stock `etspi-sleepPin` to the
+driver's enable/reset GPIO, based on the local Samsung CYG1 driver/DTBO audit.
+The candidate compiles against Linux 7.2, but is not yet in the port kernel
+bundle and has not been exercised on-device; it does not resolve the separate
+TrustZone authentication path. See
+[`FINGERPRINT-EL721-DTBO.md`](x810-research/FINGERPRINT-EL721-DTBO.md).
 
 The panel part is not wholly missing in source: the ANA38407 panel driver
 (`kernel/files/panel-samsung-ana38407.c`) implements a read-only `cell_id`

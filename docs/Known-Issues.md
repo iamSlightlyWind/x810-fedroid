@@ -39,7 +39,8 @@ Haptics are also enabled in the kernel source (stock-active-high GPIO18 plus
 
 Also outstanding, not in the numbered register:
 
-- the S Pen tilt sensor;
+- S Pen tilt is exposed as `ABS_TILT_X/Y`; live vector orientation and drawing-app behavior remain unverified (see `docs/Hardware-Notes.md`);
+- built-in microphone capture remains unverified: the CYG1 UCM maps TX DMIC1/3 to MultiMedia3, and a prior PipeWire graph exposed the stereo source, but no recorded sample/level test has been made; see `tools/diagnose-x810-mic.sh` for read-only routing checks;
 - the Android `/vendor` mount has a shipped read-only logical-partition mapper;
   confirm the mount on-device after the next update (see below);
 - SELinux runs permissive;
@@ -166,6 +167,10 @@ There is no supported X810 `libfprint` backend or validated GNOME/GDM/PAM
 enrollment path in this repository. Do not invoke secure-owner/Keymaster
 provisioning or touch credentials as a diagnostic step; first restore the
 missing kernel modules and re-evaluate the reader with read-only probes.
+
+The source now has a CYG1 board-id 04 `etspi-sleepPin` mapping based on the
+stock Samsung driver and DTBO, but it still needs a rebuilt kernel and
+supervised tablet validation. Details: [`FINGERPRINT-EL721-DTBO.md`](x810-research/FINGERPRINT-EL721-DTBO.md).
 
 Notes:
 
