@@ -46,6 +46,16 @@ def main() -> int:
     ):
         require((ROOT / "specs/iio-sensor-proxy-libssc/patches" / patch).is_file(),
                 f"source patch is missing: {patch}")
+    libssc_patches = ROOT / "specs/libssc-samsung/patches"
+    for patch in (
+        "fix-ssc-sync-wait-busy-loop.patch",
+    ):
+        require((libssc_patches / patch).is_file(),
+                f"libssc source patch is missing: {patch}")
+    require('specs/libssc-samsung/patches/*.patch' in helper,
+            "shared builder does not apply the X810 libssc patch series")
+    require("test-x810-libssc-patches.py" in helper,
+            "shared builder does not test the patched libssc source")
     require('"$repo_dir"/specs/iio-sensor-proxy-libssc/patches/*.patch' in helper,
             "shared builder does not apply the locked patch series")
     require("test-x810-sensor-proxy-claim-race.py" in helper,

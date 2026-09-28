@@ -77,6 +77,12 @@ fetch_locked_source() {
 }
 
 fetch_locked_source libssc "${source_values[0]}" "${source_values[1]}" "$work/libssc"
+echo ">>> Applying X810-specific libssc fixes" >&2
+for patch_file in "$repo_dir"/specs/libssc-samsung/patches/*.patch; do
+	[ -f "$patch_file" ] || continue
+	patch --batch --fuzz=0 --forward -d "$work/libssc" -p1 < "$patch_file"
+done
+python3 "$repo_dir/tools/test-x810-libssc-patches.py" "$work/libssc"
 echo ">>> Building pinned libssc with Fedora-native toolchain" >&2
 meson setup "$work/libssc-build" "$work/libssc" -Dprefix=/usr -Db_lto=true >&2
 meson compile -C "$work/libssc-build" >&2
