@@ -8,6 +8,15 @@ set -eu
 drv=/sys/bus/serial/drivers/hci_uart_qca
 dev=serial0-0
 
+# systemd gives oneshot services /dev/null on stdin. BlueZ's btmgmt may then
+# exit successfully without producing output, which makes the controller
+# readiness loop falsely time out. An empty pipe is the non-interactive mode
+# that works reliably; bound each management-socket call so a missing
+# controller cannot hang the service indefinitely.
+btmgmt_() {
+	printf '' | timeout 5 btmgmt "$@" 2>/dev/null
+}
+
 if [ -e "$drv/$dev" ]; then
 	echo "$dev" > "$drv/unbind"
 	sleep 4
@@ -47,8 +56,8 @@ sleep 0.5
 echo "$dev" > "$drv/bind"
 
 for _ in $(seq 1 150); do
-	btmgmt info 2>/dev/null | grep -q '^hci0:' && break
-	btmgmt config 2>/dev/null | grep -q '^hci0:' && break
+	btmgmt_ info | grep -q '^hci0:' && break
+	btmgmt_ config | grep -q '^hci0:' && break
 	sleep 0.1
 done
 

@@ -115,9 +115,11 @@ jobs:
           bash -n tools/build-libcamera-hi1337-ipa.sh
           bash -n tools/build-x810-sensor-proxy.sh
           bash -n tools/diagnose-x810-mic.sh
+          bash -n rootfs/overlay/usr/libexec/gts9wifi-bt-revive
           python3 tools/test-port-metadata.py
           python3 tools/test-port-update-bundle.py
           python3 tools/test-x810-sensor-proxy-stack.py
+          python3 tools/test-x810-bt-revive.py
           python3 tools/test-x810-single-release-publication.py
 
       - name: Restore Fedora 44 DNF tool cache
