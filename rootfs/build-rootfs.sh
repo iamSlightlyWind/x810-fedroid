@@ -212,10 +212,16 @@ if [ "$desktop" = "gnome" ]; then
     # Same environment group the Fedora Workstation install uses; gdm,
     # pipewire, gnome-shell and the Wayland session come with it.  GNOME's
     # touch support (on-screen keyboard, gestures) needs no extra setup.
+    # Fedora's PipeWire daemon is only a weak dependency of the Workstation
+    # audio group (and pipewire-pulseaudio/pipewire-alsa likewise recommend
+    # it). This build disables weak deps globally, so request the complete
+    # desktop audio stack explicitly or a clean image can have UCM/ALSA
+    # devices but no PipeWire service for GNOME/Firefox.
     dnf -y --installroot="$rootfs" --releasever="$fedora_release" \
         --use-host-config "${dnf_repo_args[@]}" \
         --setopt=install_weak_deps=False --setopt=tsflags=nodocs install \
-        '@^workstation-product-environment' snapshot
+        '@^workstation-product-environment' snapshot \
+        pipewire wireplumber pipewire-pulseaudio pipewire-alsa
     # The first-login welcome wizard has nothing to offer in a pre-provisioned
     # image; drop it so the first boot goes straight to the gdm login.
     dnf -y --installroot="$rootfs" --use-host-config "${dnf_repo_args[@]}" -q remove \

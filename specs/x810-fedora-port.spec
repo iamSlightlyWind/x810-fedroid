@@ -13,6 +13,14 @@ Requires:       device-mapper
 Requires:       libcamera-ipa%{?_isa} = 0.7.1-1.fc44
 Requires:       tuned-ppd
 Requires:       libssc.so.2()(64bit)
+# The port's GNOME profile and UCM route require a live PipeWire graph.  The
+# Workstation multimedia group recommends (rather than requires) the daemon,
+# while rootfs builds disable weak deps; declare the stack so both fresh
+# images and Tab Companion RPM updates cannot silently omit it.
+Requires:       pipewire
+Requires:       pipewire-alsa
+Requires:       pipewire-pulseaudio
+Requires:       wireplumber
 Provides:       iio-sensor-proxy = 3.9
 
 Source0:        port-overlay.tar.gz

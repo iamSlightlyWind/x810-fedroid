@@ -157,6 +157,35 @@ def check(rootfs, manifest_path, version, rpm_path=None):
     ).splitlines()
     if "libssc.so.2()(64bit)" not in requires:
         fail("support RPM does not declare its libssc.so.2 runtime requirement")
+    # The GNOME audio-routing fragment is ineffective if the support updater
+    # installs it without PipeWire's daemon, session manager, or compatibility
+    # backends. Keep these hard RPM requirements in the published artifact,
+    # not only in the source spec.
+    audio_runtime = ("pipewire", "wireplumber", "pipewire-pulseaudio", "pipewire-alsa")
+    for package in audio_runtime:
+        if not any(
+            requirement == package
+            or requirement.startswith(package + "(")
+            or requirement.startswith(package + " ")
+            for requirement in requires
+        ):
+            fail(f"support RPM does not require its PipeWire runtime package: {package}")
+    # A core/debug image is intentionally headless; where GNOME is present,
+    # assert the fresh rootfs actually installed the full audio runtime too.
+    has_gnome = subprocess.run(
+        ["rpm", "--root", str(rootfs), "-q", "gnome-shell"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+    if has_gnome:
+        for package in audio_runtime:
+            present = subprocess.run(
+                ["rpm", "--root", str(rootfs), "-q", package],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode == 0
+            if not present:
+                fail(f"GNOME rootfs is missing its PipeWire runtime package: {package}")
     for required_camera_file in (
         "/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so",
         HI1337_TUNING_FILE,

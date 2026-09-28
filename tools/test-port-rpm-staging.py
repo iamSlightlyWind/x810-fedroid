@@ -140,6 +140,32 @@ class SupportRpmStagingTests(unittest.TestCase):
             (ROOT / "rootfs/overlay/usr/lib/systemd/user/wireplumber.service.d").exists()
         )
 
+    def test_gnome_image_and_support_rpm_require_the_pipewire_runtime(self):
+        builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")
+        spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
+        # This build globally disables weak dependencies. The Workstation
+        # multimedia group contains clients/session policy, but the daemon is
+        # only recommended by some of those packages, so force it explicitly.
+        install = re.search(
+            r"(?ms)^if \[ \"\$desktop\" = \"gnome\" \]; then\n"
+            r".*?^    dnf .*? --setopt=install_weak_deps=False .*? install \\\n"
+            r"(?P<packages>.*?)(?=^    # The first-login welcome wizard)",
+            builder,
+        )
+        self.assertIsNotNone(install)
+        packages = install.group("packages")
+        for package in (
+            "pipewire",
+            "wireplumber",
+            "pipewire-pulseaudio",
+            "pipewire-alsa",
+        ):
+            self.assertRegex(
+                packages,
+                rf"(?<![A-Za-z0-9_-]){re.escape(package)}(?![A-Za-z0-9_-])",
+            )
+            self.assertRegex(spec, rf"(?m)^Requires:\s+{re.escape(package)}\s*$")
+
     def test_port_update_repairs_uid_1000_camera_access(self):
         spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
         self.assertIn("%global debug_package %{nil}", spec)
