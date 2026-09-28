@@ -64,11 +64,14 @@ boot image.
 
 ## Runtime dependencies on stock Android partitions (critical for Fedora design)
 
-The working system **mounts Android partitions at runtime** — this is not
-first-boot extraction:
+The port is configured to mount Android partitions at runtime — this is not
+first-boot extraction. The source implements these mounts; successful
+operation against the tablet's live partitions still needs on-device
+validation:
 
-- `gts9wifi-android-parts.service` → `make-dynpart-mappings /dev/disk/by-partlabel/super`
-  (dm-linear mapping of dynamic partitions) → `/dev/mapper/vendor`
+- `gts9wifi-android-parts.service` parses LP metadata from
+  `/dev/disk/by-partlabel/super`, then creates a verified read-only `dm-linear`
+  mapping → `/dev/mapper/vendor`
 - `vendor.mount`: super/vendor **erofs** → `/vendor` (read-only)
 - `vendor-dsp.mount`: partlabel `dsp` (sda16, ext4) → `/vendor/dsp`
 - `mnt-vendor-persist.mount`: partlabel `persist` (sda5) → `/mnt/vendor/persist`
@@ -79,8 +82,10 @@ first-boot extraction:
 
 Consequence: pocketblue's `droid-juicer` (copy-firmware-once) does **not** cover this
 device — persist needs a permanent RW mount and super/vendor need live mapping.
-`make-dynpart-mappings` has no Fedora equivalent yet (small tool; worst case: port it,
-or replicate the devicekit approach).
+The Fedora source includes the read-only LP mapper and systemd integration;
+its synthetic parser tests do not replace a live mount check. After a supervised
+boot/update, verify `systemctl status gts9wifi-android-parts.service vendor.mount`
+and `findmnt /vendor`.
 
 ## Kernel (converts to RPM)
 

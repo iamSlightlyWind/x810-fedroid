@@ -39,8 +39,8 @@ Haptics are also enabled in the kernel source (stock-active-high GPIO18 plus
 Also outstanding, not in the numbered register:
 
 - the S Pen tilt sensor;
-- the Android `/vendor` (`super`) partition is not mounted — needs a
-  `make-dynpart-mappings` equivalent (see below);
+- the Android `/vendor` mount has a shipped read-only logical-partition mapper;
+  confirm the mount on-device after the next update (see below);
 - SELinux runs permissive;
 - file capabilities are lost when the rootfs is packed (see below);
 - the VPU encoder node `/dev/video18` is untested;
@@ -157,20 +157,27 @@ Notes:
   control, and beware that the TA lookup needs **three** parameters, not the two
   the reference documentation suggests.
 
-### `/vendor` — the Android `super` partition is not mounted
+### `/vendor` — source fix shipped; on-device validation pending
 
 The working system needs the Android partitions at runtime, not just at
 first-boot extraction:
 
-- `make-dynpart-mappings /dev/disk/by-partlabel/super` creates a `dm-linear`
-  mapping of the dynamic partitions, giving `/dev/mapper/vendor`;
+- `gts9wifi-android-parts.service` parses the Android LP metadata on
+  `/dev/disk/by-partlabel/super`, then creates and verifies a read-only
+  `dm-linear` mapping at `/dev/mapper/vendor`;
 - `super/vendor` is **erofs** and mounts read-only at `/vendor`;
 - the `dsp` partition (ext4) mounts at `/vendor/dsp`;
 - the `persist` partition mounts **read-write** at `/mnt/vendor/persist`,
   because Samsung's sensor registry writes and Wi-Fi calibration live there.
 
-`make-dynpart-mappings` has **no Fedora equivalent yet**. Worst case: port it,
-or replicate the device-kit approach. Note that the usual
+The mapper, systemd units, and support-RPM enablement are implemented in the
+port source. The mapper fails closed on unsupported or invalid LP metadata and
+does not write to `super`. The synthetic metadata tests pass, but successful
+mounting against the tablet's live partitions has not yet been confirmed; check
+`systemctl status gts9wifi-android-parts.service vendor.mount` and
+`findmnt /vendor` after the next supervised boot/update.
+
+Note that the usual
 "copy-firmware-once" tooling does not cover this device, precisely because
 `persist` needs a permanent read-write mount and `super`/`vendor` need live
 mapping.
