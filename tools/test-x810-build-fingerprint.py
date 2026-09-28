@@ -74,6 +74,14 @@ class FingerprintTests(unittest.TestCase):
     def test_same_source_inputs_produce_same_key(self):
         self.assertEqual(self.key("kernel"), self.key("kernel"))
 
+    def test_builders_use_the_fedora_44_container_tag(self):
+        self.assertEqual(MODULE.BUILDER_IMAGE, "quay.io/fedora/fedora:44")
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/x810-fedora.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("quay.io/fedora/fedora:44", workflow)
+        self.assertNotIn("quay.io/fedora/fedora@sha256:", workflow)
+
     def test_rootfs_changes_do_not_invalidate_kernel(self):
         kernel_before = self.key("kernel")
         rootfs_before = self.key("rootfs")

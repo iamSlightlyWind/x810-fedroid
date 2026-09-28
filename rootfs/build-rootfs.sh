@@ -1,12 +1,12 @@
 #!/bin/bash
 # Build a Fedora aarch64 rootfs for the Samsung Galaxy Tab S9 Wi-Fi (gts9wifi).
 #
-# MUST run inside the pinned aarch64 Fedora environment — either the GitHub
+# MUST run inside the Fedora 44 aarch64 environment — either the GitHub
 # Actions arm64 runner container (see .github/workflows/rootfs.yml) or locally:
 #
 #   podman run --rm -it -v "$PWD:/work:Z" -w /work \
-#       -e BUILDER_IMAGE=quay.io/fedora/fedora@sha256:78839470162801db2182957e00652f09c4fecfd552435f4fe4569604679a9030 \
-#       quay.io/fedora/fedora@sha256:78839470162801db2182957e00652f09c4fecfd552435f4fe4569604679a9030 \
+#       -e BUILDER_IMAGE=quay.io/fedora/fedora:44 \
+#       quay.io/fedora/fedora:44 \
 #       ./rootfs/build-rootfs.sh
 #
 # Optional X810_DNF_CACHE_DIR selects an external DNF5 cache directory; it

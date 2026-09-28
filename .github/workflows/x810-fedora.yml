@@ -360,7 +360,7 @@ jobs:
                 fi
                 if [ "$old_key" = "$kernel_key" ] && \
                    [ "$(field firmware_sha256 || true)" = "$FIRMWARE_SHA256" ] && \
-                   [ "$(field builder_image || true)" = "quay.io/fedora/fedora@sha256:78839470162801db2182957e00652f09c4fecfd552435f4fe4569604679a9030" ] && \
+                   [ "$(field builder_image || true)" = "quay.io/fedora/fedora:44" ] && \
                    [ "$(field fedora_base_compose || true)" = "$FEDORA_BASE_COMPOSE" ] && \
                    [ "$(field fedora_updates_compose || true)" = "$FEDORA_UPDATES_COMPOSE" ]; then
                   bootstrap_ok=true
@@ -458,7 +458,7 @@ jobs:
             -v "$PWD:/work" -w /work \
             -v "$RUNNER_TEMP/x810-kernel-cache:/x810-cache" \
             -v "$RUNNER_TEMP/x810-dnf-kernel-cache:/var/cache/libdnf5" \
-            quay.io/fedora/fedora@sha256:78839470162801db2182957e00652f09c4fecfd552435f4fe4569604679a9030 \
+            quay.io/fedora/fedora:44 \
             bash -lc '
               set -euxo pipefail
               repo_root=https://kojipkgs.fedoraproject.org/compose
@@ -536,7 +536,7 @@ jobs:
                 printf "firmware_sha256=%s\\n" "$firmware_sha256"
                 printf "firmware_source_url=%s\\n" "$FIRMWARE_URL"
                 printf "repository_commit=%s\\n" "$BUILD_SOURCE_SHA"
-                printf "builder_image=quay.io/fedora/fedora@sha256:78839470162801db2182957e00652f09c4fecfd552435f4fe4569604679a9030\\n"
+                printf "builder_image=quay.io/fedora/fedora:44\\n"
                 printf "fedora_base_compose=%s\\n" "$FEDORA_BASE_COMPOSE"
                 printf "fedora_updates_compose=%s\\n" "$FEDORA_UPDATES_COMPOSE"
                 printf "builder_rpm_inventory_sha256=%s\\n" "$builder_rpm_inventory_sha256"
@@ -845,8 +845,8 @@ jobs:
             -e FIRMWARE_SOURCE_URL="$FIRMWARE_URL" \
             -e KERNEL_RPM=/work/_ci/kernel.rpm \
             -e X810_DNF_CACHE_DIR=/x810-dnf-cache \
-            -e BUILDER_IMAGE=quay.io/fedora/fedora@sha256:78839470162801db2182957e00652f09c4fecfd552435f4fe4569604679a9030 \
-            quay.io/fedora/fedora@sha256:78839470162801db2182957e00652f09c4fecfd552435f4fe4569604679a9030 \
+            -e BUILDER_IMAGE=quay.io/fedora/fedora:44 \
+            quay.io/fedora/fedora:44 \
             ./rootfs/build-rootfs.sh
           sudo chown -R "$(id -u):$(id -g)" out
           printf '%s\n' "$BUILD_KEY" > out/ROOTFS-BUILD-KEY.txt
