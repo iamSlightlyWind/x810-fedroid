@@ -6,6 +6,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import unittest
+import os
 from pathlib import Path
 
 from importlib.util import module_from_spec, spec_from_file_location
@@ -22,9 +23,17 @@ class FingerprintTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
-        subprocess.run(["git", "-C", str(self.root), "config", "user.email", "test@example.invalid"], check=True)
-        subprocess.run(["git", "-C", str(self.root), "config", "user.name", "Test"], check=True)
+        # GitHub runner global config can enable background maintenance. It can
+        # race TemporaryDirectory.cleanup() while the test removes .git/objects.
+        # Keep fixture repos hermetic and synchronous across hosts.
+        self.git_env = os.environ.copy()
+        self.git_env["GIT_CONFIG_GLOBAL"] = os.devnull
+        self.git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True, env=self.git_env)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.email", "test@example.invalid"], check=True, env=self.git_env)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.name", "Test"], check=True, env=self.git_env)
+        subprocess.run(["git", "-C", str(self.root), "config", "gc.auto", "0"], check=True, env=self.git_env)
+        subprocess.run(["git", "-C", str(self.root), "config", "maintenance.auto", "false"], check=True, env=self.git_env)
         for rel, content in (
             ("kernel/kernel.spec", "kernel one\n"),
             ("boot/cmdline.txt", "console=tty0\n"),
@@ -48,8 +57,8 @@ class FingerprintTests(unittest.TestCase):
             path = self.root / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.root), "add", "."], check=True)
-        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "base"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "add", "."], check=True, env=self.git_env)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "base"], check=True, env=self.git_env)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -70,8 +79,8 @@ class FingerprintTests(unittest.TestCase):
         return MODULE.fingerprint(component, **args)
 
     def commit_change(self, rel):
-        subprocess.run(["git", "-C", str(self.root), "add", rel], check=True)
-        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "change"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "add", rel], check=True, env=self.git_env)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "change"], check=True, env=self.git_env)
 
     def test_same_source_inputs_produce_same_key(self):
         self.assertEqual(self.key("kernel"), self.key("kernel"))
