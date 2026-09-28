@@ -1,0 +1,27 @@
+--- a/drivers/input/misc/gpio-vibra.c
++++ b/drivers/input/misc/gpio-vibra.c
+@@ -42 +42 @@
+-	if (!vibrator->vcc_on) {
++	if (vibrator->vcc && !vibrator->vcc_on) {
+@@ -60 +60 @@
+-	if (vibrator->vcc_on) {
++	if (vibrator->vcc && vibrator->vcc_on) {
+@@ -115,4 +115,14 @@
+-	vibrator->vcc = devm_regulator_get(&pdev->dev, "vcc");
+-	if (IS_ERR(vibrator->vcc))
+-		return dev_err_probe(&pdev->dev, PTR_ERR(vibrator->vcc),
+-				     "Failed to request regulator\n");
++	/*
++	 * Some GPIO-driven coin motors are powered directly and have no
++	 * separately described supply. Preserve mandatory regulator handling
++	 * whenever a vcc-supply is present, but allow that documented wiring.
++	 */
++	vibrator->vcc = devm_regulator_get_optional(&pdev->dev, "vcc");
++	if (IS_ERR(vibrator->vcc)) {
++		if (PTR_ERR(vibrator->vcc) == -ENODEV &&
++		    !device_property_present(&pdev->dev, "vcc-supply"))
++			vibrator->vcc = NULL;
++		else
++			return dev_err_probe(&pdev->dev, PTR_ERR(vibrator->vcc),
++					     "Failed to request regulator\n");
++	}

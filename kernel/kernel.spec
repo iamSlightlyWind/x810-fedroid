@@ -12,6 +12,8 @@ Release:        0.1%{?dist}
 Summary:        Mainline Linux kernel for Samsung Galaxy Tab S9+ Wi-Fi (SM-X810)
 License:        GPL-2.0-only
 URL:            https://www.kernel.org
+BuildRequires:  dtc
+BuildRequires:  python3
 BuildArch:      aarch64
 ExclusiveArch:  aarch64
 Provides:       kernel-uname-r
@@ -69,6 +71,76 @@ for module in egis_el721 snvm; do
         exit 1
     fi
 done
+
+# Check the actuator at the point where the kernel and DTB artifacts are
+# actually packaged. The source node has no vcc-supply: the X810 CYG1 motor is
+# GPIO-powered, so the port patch makes gpio-vibra tolerate that valid wiring.
+for option in CONFIG_INPUT_GPIO_VIBRA=y \
+              CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y \
+              CONFIG_CPU_FREQ_GOV_PERFORMANCE=y; do
+    grep -Fqx "$option" .config || {
+        echo "X810 kernel is missing required CPU/haptics option: $option" >&2
+        exit 1
+    }
+done
+vibrator_dtb="%{buildroot}/boot/dtbs-%{kversion}-%{flavor}/qcom/sm8550-samsung-gts9wifi.dtb"
+if [ ! -s "$vibrator_dtb" ]; then
+    echo "kernel RPM is missing the X810 device tree: $vibrator_dtb" >&2
+    exit 1
+fi
+python3 - "$vibrator_dtb" <<'PY'
+import subprocess
+import sys
+
+dtb = sys.argv[1]
+
+def run_fdtget(command):
+    result = subprocess.run(
+        ["fdtget", *command],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    if result.returncode:
+        return None
+    return result.stdout.strip()
+
+def prop(node, name, kind="s"):
+    return run_fdtget(["-t", kind, dtb, node, name])
+
+compatible = prop("/vibrator", "compatible")
+if compatible != "gpio-vibrator":
+    raise SystemExit(f"wrong/missing X810 vibrator compatible: {compatible!r}")
+status = prop("/vibrator", "status")
+if status == "disabled":
+    raise SystemExit("X810 vibrator DT node is disabled")
+
+cells = prop("/vibrator", "enable-gpios", "x")
+try:
+    gpio_phandle, gpio_line, gpio_flags = (int(value, 16) for value in cells.split())
+except (AttributeError, ValueError):
+    raise SystemExit(f"invalid X810 vibrator enable-gpios cells: {cells!r}")
+if gpio_line != 18 or gpio_flags != 0:
+    raise SystemExit(
+        f"X810 vibrator must use active-high GPIO18; got line={gpio_line}, flags={gpio_flags:#x}"
+    )
+
+# Phandle values are assigned by dtc and can change with unrelated DTS edits;
+# resolve the label exported by the board DTB rather than pinning a numeric
+# phandle or an address-bearing node path.
+gpio_controller = prop("/__symbols__", "tlmm")
+if not gpio_controller:
+    raise SystemExit("X810 DTB does not export the TLMM label")
+tlmm_phandle = prop(gpio_controller, "phandle", "x")
+if not tlmm_phandle or int(tlmm_phandle, 16) != gpio_phandle:
+    raise SystemExit("X810 vibrator enable-gpios does not reference TLMM")
+controller_compatible = prop(gpio_controller, "compatible") or ""
+gpio_count = prop(gpio_controller, "#gpio-cells", "x")
+if "qcom,sm8550-tlmm" not in controller_compatible.split() or gpio_count != "2":
+    raise SystemExit(
+        f"X810 vibrator GPIO is not on SM8550 TLMM: {gpio_controller} "
+        f"compatible={controller_compatible!r} #gpio-cells={gpio_count!r}"
+    )
+print("X810 haptics kernel/DTB contract OK")
+PY
 
 %files
 %license COPYING
