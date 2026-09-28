@@ -401,7 +401,7 @@ if [ -d "$assets/firmware-overrides" ]; then
     # the firmware payload.
     cp -a "$assets/firmware-overrides/." "$rootfs/"
 else
-    echo "    (no firmware-overrides/ in local-assets: staging public files below; the owner VPU blob is optional)" >&2
+    echo "    (no local firmware overrides; staging pinned public firmware and the tracked X810 VPU below)" >&2
 fi
 
 echo ">>> Staging the device-independent firmware overrides"
