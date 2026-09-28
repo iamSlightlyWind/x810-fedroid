@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build the updater-installable Fedora support RPM from the X810 rootfs overlay,
-# its pinned SSC-backed sensor proxy stack, and the Fedora 44 aarch64 HI1337 IPA.
-# The kernel, boot chain, and firmware remain excluded.
+# its pinned SSC-backed sensor proxy stack, Fedora 44 aarch64 HI1337 IPA, and
+# the one owner-authorized X810 CYG1 VPU firmware needed by Moonlight hardware
+# decoding. Kernel and boot-chain images remain excluded.
 set -euo pipefail
 
 if [ "$#" -lt 3 ] || [ "$#" -gt 5 ]; then
@@ -80,6 +81,20 @@ if doc["run_id"] > 0:
 PY
 fi
 
+# The VPU PAS image is needed by clean installs and in-place updates. Require
+# the exact X810 CYG1 payload so we never publish an RPM with a sibling image.
+vpu_path=/usr/lib/firmware/qcom/vpu/vpu30_4v.mbn
+vpu_sha256=c02a4f1cb253f4b817994c00145dc9abbd59a10bfcd9fd5d0c2f223c0dc543ba
+vpu_source="$repo_dir/firmware/x810-vpu-cyg1/vpu30_4v.mbn"
+if [ ! -f "$vpu_source" ] || [ "$(sha256sum "$vpu_source" | awk '{print $1}')" != "$vpu_sha256" ]; then
+	echo "build-port-support-rpm: repository lacks the verified X810 CYG1 VPU firmware" >&2
+	exit 1
+fi
+if [ -f "$rootfs$vpu_path" ] && [ "$(sha256sum "$rootfs$vpu_path" | awk '{print $1}')" != "$vpu_sha256" ]; then
+	echo "build-port-support-rpm: rootfs VPU firmware differs from the verified X810 payload" >&2
+	exit 1
+fi
+
 mkdir -p "$outdir"
 work="$(mktemp -d "${TMPDIR:-/tmp}/x810-port-rpm.XXXXXXXX")"
 trap 'rm -rf "$work"' EXIT
@@ -91,6 +106,7 @@ mkdir -p "$top/BUILD" "$top/BUILDROOT" "$top/RPMS" \
 # Stage only the repository-owned overlay. Use the already-stamped rootfs
 # port.json instead of the source overlay's deliberately-unknown template.
 cp -a "$repo_dir/rootfs/overlay/." "$stage/"
+install -D -m0644 "$vpu_source" "$stage$vpu_path"
 # Use the same source locks, patches and builder as the fresh rootfs. This
 # makes the slow-SSC/auto-rotation fix reach existing installs through the
 # existing single-RPM Tab Companion update channel.
@@ -199,10 +215,16 @@ if grep -Fxq '/usr/lib64/libcamera/ipa-x810/ipa_soft_simple.so.sign' "$work/pack
 	echo "build-port-support-rpm: refusing to ship an IPA signature that does not match Fedora's key" >&2
 	exit 1
 fi
-if grep -Eq '^/(boot|boot/|lib/modules/|usr/lib/modules/|usr/lib/firmware/|lib/firmware/)' "$work/package-files"; then
-	echo "build-port-support-rpm: refusing package that contains boot/kernel/firmware files" >&2
-	exit 1
-fi
+while IFS= read -r path; do
+	case "$path" in
+		/boot|/boot/*|/lib/modules/*|/usr/lib/modules/*|/lib/firmware/*|/usr/lib/firmware/*)
+			case "$path" in
+				"$vpu_path"|/usr/lib/firmware|/usr/lib/firmware/qcom|/usr/lib/firmware/qcom/vpu) ;;
+				*) echo "build-port-support-rpm: refusing unapproved boot/kernel/firmware path: $path" >&2; exit 1 ;;
+			esac
+			;;
+	esac
+done < "$work/package-files"
 
 destination="$outdir/$(basename "$rpm_path")"
 install -m0644 "$rpm_path" "$destination"

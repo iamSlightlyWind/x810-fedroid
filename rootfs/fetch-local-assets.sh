@@ -157,14 +157,15 @@ echo "    staged 2 Cirrus CS35L45 speaker-protection file(s) in firmware-overrid
 # VPU / iris video-decoder firmware (issue 16). Its X810 CYG1 hash differs
 # from the public X710/X910 image in PAS authentication data; the sibling
 # image fails on this model with -EINVAL during TrustZone initialization.
-# Keep the exact blob out of git and public releases. Supply it from your own
-# extracted SM-X810 CYG1 vendor image with GTS9_VPU_MBN=/path/to/vpu30_4v.mbn.
+# The owner-authorized CYG1 blob is tracked in firmware/x810-vpu-cyg1 and
+# staged by stage-public-firmware.sh for every clean build. A local extraction
+# can still be supplied as an override for verification.
 vpu="$assets/firmware-overrides/usr/lib/firmware/qcom/vpu"
 mkdir -p "$vpu"
 if [ -n "${GTS9_VPU_MBN:-}" ]; then
     "$repo_dir/tools/stage-x810-vpu-firmware.sh" "$GTS9_VPU_MBN"
 else
-    echo "    not staged: set GTS9_VPU_MBN to your extracted X810 CYG1 vpu30_4v.mbn" >&2
+    echo "    using the checked-in, hash-pinned X810 CYG1 VPU image at rootfs build" >&2
 fi
 
 echo ">>> known-good SD boot files (from port kit)"

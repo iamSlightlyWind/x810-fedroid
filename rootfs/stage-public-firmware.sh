@@ -8,9 +8,8 @@
 # linux-firmware's generic blobs and silently lost three fixes the port is
 # documented as having -- the CS35L45 speaker protection (issue 17), the iris
 # VPU firmware (issue 16) and the validated WCN6855 Wi-Fi set with the 5 GHz RX
-# BDF (issue 7).  Everything staged here is either relocated out of the
-# firmware payload or downloaded from a pinned public URL and checksum-verified,
-# so it needs no device and no local-assets/.
+# BDF (issue 7). Everything is sourced from a checked-in owner-authorized,
+# hash-pinned X810 blob or a pinned public URL, so CI needs no connected device.
 #
 # It is idempotent and a no-op over a tree that is already correct, so a local
 # build that ran fetch-local-assets.sh keeps the device-fetched files (same
@@ -19,7 +18,7 @@
 # Env:
 #   GTS9_SKIP_PUBLIC_FIRMWARE=1  report what is missing instead of downloading
 #   GTS9_CIRRUS_BASE             cirrus/ source (default: the Azkali firmware repo)
-#   GTS9_VPU_MBN                 owner-extracted SM-X810 CYG1 vpu30_4v.mbn
+#   GTS9_VPU_MBN                 optional local override for checked-in CYG1 VPU
 #   GTS9_IOE_BASE                WCN6855 IOE source (default: CodeLinaro ath11k-firmware)
 #   GTS9_BDF_REF_URL             board-2.bin reference container (default: CodeLinaro)
 
@@ -96,35 +95,26 @@ echo ">>> iris VPU / video-decoder firmware (issue 16)"
 # differs (public Azkali blob SHA-256
 # 431e976f95e3306ad9473e88c1c83795fce8de5811a4c7203c27e498f8aa3787): X810's
 # TrustZone rejects it with -EINVAL during PAS initialization.
-# The exact owner-supplied SM-X810 CYG1 file has SHA-256
-# c02a4f1c...dc543ba and was verified by hardware H.264 decode on this port.
-# It is proprietary and must neither be committed nor published in an RPM.
+# The exact SM-X810 CYG1 file has SHA-256 c02a4f1c...dc543ba and was verified
+# by hardware H.264 decode on this port. The repository owner authorized
+# redistribution; use the checked-in payload for deterministic CI builds.
+# GTS9_VPU_MBN can override it for a local extraction, but is hash-checked.
 vpu="$fw/qcom/vpu/vpu30_4v.mbn"
 x810_vpu_sha="c02a4f1cb253f4b817994c00145dc9abbd59a10bfcd9fd5d0c2f223c0dc543ba"
-vpu_src="${GTS9_VPU_MBN:-}"
-if [ -n "$vpu_src" ]; then
-    got="$(sha256sum "$vpu_src" 2>/dev/null | cut -d' ' -f1)"
-    if [ "$got" != "$x810_vpu_sha" ]; then
-        echo "    FAILED: GTS9_VPU_MBN is not the verified SM-X810 CYG1 firmware" >&2
-        echo "      got:  ${got:-missing}  expected: $x810_vpu_sha" >&2
-        exit 1
-    fi
-    mkdir -p "$(dirname "$vpu")"
-    install -m0644 "$vpu_src" "$vpu"
-    echo "    staged verified owner-supplied SM-X810 CYG1 VPU firmware"
-elif [ -f "$vpu" ]; then
-    got="$(sha256sum "$vpu" | cut -d' ' -f1)"
-    if [ "$got" = "$x810_vpu_sha" ]; then
-        echo "    exact SM-X810 CYG1 firmware already staged"
-    else
-        echo "    removing non-X810 VPU firmware (hash $got; X810 PAS rejects it)" >&2
-        rm -f "$vpu"
-        echo "    hardware decode will require owner-supplied CYG1 firmware" >&2
-    fi
-else
-    echo "    not included: owner-supplied SM-X810 CYG1 firmware is required" >&2
-    echo "    set GTS9_VPU_MBN=/path/to/vpu30_4v.mbn to enable hardware decode" >&2
+vpu_src="${GTS9_VPU_MBN:-$script_dir/../firmware/x810-vpu-cyg1/vpu30_4v.mbn}"
+if [ ! -s "$vpu_src" ]; then
+    echo "    FAILED: X810 CYG1 VPU firmware is missing: $vpu_src" >&2
+    exit 1
 fi
+got="$(sha256sum "$vpu_src" | cut -d' ' -f1)"
+if [ "$got" != "$x810_vpu_sha" ]; then
+    echo "    FAILED: VPU firmware is not the verified SM-X810 CYG1 image" >&2
+    echo "      got:  $got  expected: $x810_vpu_sha" >&2
+    exit 1
+fi
+mkdir -p "$(dirname "$vpu")"
+install -m0644 "$vpu_src" "$vpu"
+echo "    staged verified SM-X810 CYG1 VPU firmware"
 
 echo ">>> WCN6855 Wi-Fi firmware: the IOE 04866.5 mainline set (issue 7)"
 # The linux-firmware WCN6855 amss boots but the *IOE* build

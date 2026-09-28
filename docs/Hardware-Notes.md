@@ -425,13 +425,11 @@ installed without rebooting; `v4l2-ctl --all` then succeeded and FFmpeg decoded
 90 synthetic H.264 frames through `h264_v4l2m2m`, explicitly reporting
 `iris_driver` on `/dev/video17` in MPLANE mode.
 
-The firmware is PAS-authenticated and proprietary. It is not committed or
-included in the public release. A local image builder may stage its own
-extracted X810 CYG1 file with
-`GTS9_VPU_MBN=/path/to/vpu30_4v.mbn`; exact SHA-256 is required. GitHub-built
-images omit the VPU blob when the user-owned input is unavailable, rather than
-shipping a sibling-model firmware that boots the tablet but fails decoder
-initialization.
+The firmware is PAS-authenticated and proprietary. The repository owner
+authorized redistribution of this exact X810 CYG1 payload. It is now pinned in
+`firmware/x810-vpu-cyg1/vpu30_4v.mbn`; the build verifies its SHA-256 and
+places it in fresh rootfs images and the updater-installable support RPM. A local
+`GTS9_VPU_MBN` override is allowed only when it has the same verified hash.
 
 ### Which applications can use it
 

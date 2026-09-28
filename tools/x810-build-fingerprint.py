@@ -32,6 +32,7 @@ KERNEL_PATHS = (
 ROOTFS_PATHS = (
     "rootfs",
     "firmware/x810-cyg1",
+    "firmware/x810-vpu-cyg1",
     "specs",
     "tools/bdftool.py",
     "tools/stamp-port-metadata.py",

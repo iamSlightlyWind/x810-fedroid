@@ -152,7 +152,8 @@ source_inputs_sha256() {
                 tools/test-x810-sensor-proxy-stack.py \
                 tools/test-port-build-contract.py \
                 tools/verify-x810-rootfs-archive.py
-            find rootfs/overlay specs -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
+        find rootfs/overlay specs firmware/x810-cyg1 firmware/x810-vpu-cyg1 -type f -print0 \
+            | LC_ALL=C sort -z | xargs -0 -r sha256sum
         } | LC_ALL=C sort -k2
     ) | sha256sum | cut -d' ' -f1
 }
@@ -409,9 +410,8 @@ echo ">>> Staging the device-independent firmware overrides"
 # silently lost the CS35L45 speaker protection (#17) and validated WCN6855
 # Wi-Fi set with the 5 GHz RX BDF (#7). The stage script supplies those from
 # pinned public sources. X810 VPU firmware (#16) is different: it is
-# proprietary and PAS-bound to the exact device firmware, so only an
-# owner-supplied CYG1 blob is accepted. The script omits it from CI images
-# rather than shipping a sibling-model blob that X810 rejects.
+# PAS-bound to the exact device firmware. The owner-authorized CYG1 payload is
+# checked in with an exact hash; staging rejects sibling-model firmware.
 #
 # It fails the build when a piece cannot be staged, because each one is a
 # public silent-regression fix and the UCM sets the per-amp volume to 428

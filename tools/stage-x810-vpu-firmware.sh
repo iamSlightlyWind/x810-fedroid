@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stage the owner-provided SM-X810 CYG1 VPU firmware into ignored build assets.
-# This proprietary PAS image must never be committed or published.
+# Stage/validate the owner-authorized SM-X810 CYG1 VPU firmware into ignored
+# local build assets. Reproducible CI uses the SHA-256-pinned repo payload.
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

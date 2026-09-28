@@ -28,6 +28,8 @@ class FingerprintTests(unittest.TestCase):
         for rel, content in (
             ("kernel/kernel.spec", "kernel one\n"),
             ("boot/cmdline.txt", "console=tty0\n"),
+            ("firmware/x810-cyg1/a740_zap.mdt", "gpu firmware one\n"),
+            ("firmware/x810-vpu-cyg1/vpu30_4v.mbn", "vpu firmware one\n"),
             ("tools/make-twrp-zip.py", "zip one\n"),
             ("rootfs/build-rootfs.sh", "rootfs one\n"),
             ("rootfs/overlay/etc/issue", "fedora\n"),
@@ -97,6 +99,15 @@ class FingerprintTests(unittest.TestCase):
         self.commit_change("kernel/kernel.spec")
         self.assertNotEqual(kernel_before, self.key("kernel"))
         self.assertNotEqual(rootfs_before, self.key("rootfs", kernel_rpm_sha256="b" * 64))
+
+    def test_vpu_firmware_change_invalidates_rootfs_but_not_kernel(self):
+        kernel_before = self.key("kernel")
+        rootfs_before = self.key("rootfs")
+        vpu = self.root / "firmware/x810-vpu-cyg1/vpu30_4v.mbn"
+        vpu.write_text("vpu firmware two\n", encoding="utf-8")
+        self.commit_change("firmware/x810-vpu-cyg1/vpu30_4v.mbn")
+        self.assertEqual(kernel_before, self.key("kernel"))
+        self.assertNotEqual(rootfs_before, self.key("rootfs"))
 
     def test_component_parameters_are_in_the_key(self):
         base = self.key("rootfs")

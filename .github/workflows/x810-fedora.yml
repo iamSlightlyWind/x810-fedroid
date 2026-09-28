@@ -7,6 +7,7 @@ on:
       - "PORT_VERSION"
       - "kernel/**"
       - "boot/**"
+      - "firmware/**"
       - "rootfs/**"
       - "specs/**"
       - "tools/**"
@@ -253,6 +254,7 @@ jobs:
           python3 tools/test-x810-sensor-proxy-stack.py
           python3 tools/test-x810-dmic-ucm.py
           python3 tools/test-x810-moonlight-v4l2.py
+          python3 tools/test-x810-vpu-firmware-selection.py
           python3 tools/test-x810-rootfs-archive.py
           python3 tools/test-x810-sensor-attach-recovery.py
           python3 tools/test-x810-sensor-registry-runtime-tree.py

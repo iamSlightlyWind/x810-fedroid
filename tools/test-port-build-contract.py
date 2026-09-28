@@ -13,6 +13,8 @@ from pathlib import Path
 VERSION_RE = re.compile(r"^(?:0|[1-9][0-9]{0,19})\.(?:0|[1-9][0-9]{0,19})\.(?:0|[1-9][0-9]{0,19})$")
 PORT_FILE = "/usr/share/tab-companion/port.json"
 HI1337_TUNING_FILE = "/usr/share/libcamera/ipa/simple/hi1337-gts9u.yaml"
+X810_VPU_FIRMWARE = "/usr/lib/firmware/qcom/vpu/vpu30_4v.mbn"
+X810_VPU_SHA256 = "c02a4f1cb253f4b817994c00145dc9abbd59a10bfcd9fd5d0c2f223c0dc543ba"
 PACKAGE_NAME = "x810-fedora-port"
 PPD_CONFIG = "/etc/tuned/ppd.conf"
 TUNED_PERFORMANCE_PROFILE = "/usr/lib/tuned/profiles/throughput-performance/tuned.conf"
@@ -239,16 +241,33 @@ def check(rootfs, manifest_path, version, rpm_path=None):
         fail("support RPM must not replace Fedora's zram-generator-defaults file")
     if "/etc/systemd/zram-generator.conf" not in files:
         fail("support RPM does not own the /etc zram-generator override")
-    if any(re.match(r"^/(?:boot(?:/|$)|lib/modules/|usr/lib/modules/|usr/lib/firmware/|lib/firmware/)", item) for item in files):
-        fail("support RPM contains kernel, boot, or firmware payload")
+    if X810_VPU_FIRMWARE not in files:
+        fail("support RPM omits the X810 CYG1 VPU firmware needed for Moonlight hardware decode")
+    approved_vpu_paths = {
+        X810_VPU_FIRMWARE,
+        "/usr/lib/firmware",
+        "/usr/lib/firmware/qcom",
+        "/usr/lib/firmware/qcom/vpu",
+    }
+    unexpected_boot_or_firmware = [
+        item for item in files
+        if item not in approved_vpu_paths and re.match(
+            r"^/(?:boot(?:/|$)|lib/modules/|usr/lib/modules/|usr/lib/firmware/|lib/firmware/)", item
+        )
+    ]
+    if unexpected_boot_or_firmware:
+        fail(f"support RPM contains unapproved kernel/boot/firmware payload: {unexpected_boot_or_firmware[0]}")
 
     # Rootfs builds first copy the overlay unowned, then install this RPM to
     # make those exact existing files package-managed. Check that ownership
     # transfer succeeded for every packaged file (not just port.json).
-    for sensor_file in sensor_runtime_files:
+    for sensor_file in (*sensor_runtime_files, X810_VPU_FIRMWARE):
         image_file = rootfs / sensor_file.lstrip("/")
         if not image_file.is_file():
-            fail(f"rootfs is missing the packaged sensor runtime file: {sensor_file}")
+            fail(f"rootfs is missing a required packaged runtime file: {sensor_file}")
+    vpu_image = rootfs / X810_VPU_FIRMWARE.lstrip("/")
+    if hashlib.sha256(vpu_image.read_bytes()).hexdigest() != X810_VPU_SHA256:
+        fail("rootfs does not contain the verified X810 CYG1 VPU firmware")
     for filename in files:
         image_file = rootfs / filename.lstrip("/")
         if not image_file.is_file():
@@ -272,6 +291,7 @@ def check(rootfs, manifest_path, version, rpm_path=None):
             PORT_FILE,
             HI1337_TUNING_FILE,
             "/etc/environment.d/91-x810-gtk-rendering.conf",
+            X810_VPU_FIRMWARE,
         ):
             payload_digests[filename] = digest
     for filename, image_path in (
@@ -281,6 +301,7 @@ def check(rootfs, manifest_path, version, rpm_path=None):
             "/etc/environment.d/91-x810-gtk-rendering.conf",
             rootfs / "etc/environment.d/91-x810-gtk-rendering.conf",
         ),
+        (X810_VPU_FIRMWARE, vpu_image),
     ):
         image_digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
         if payload_digests.get(filename) != image_digest:

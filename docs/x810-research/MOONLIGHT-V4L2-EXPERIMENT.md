@@ -71,10 +71,11 @@ device access, firmware, and renderer compatibility; the hint only selects the
 decoder and does not fix initialization. Keep **Automatic** for the initial
 live-stream test until those paths are confirmed.
 
-The public Fedora release does not redistribute the proprietary VPU firmware.
-A clean install needs the owner's X810 CYG1 firmware staged by the documented
-`GTS9_VPU_MBN` local-build path before this hardware-decoding experiment can
-work. The launcher neither installs firmware nor changes the kernel.
+The repository owner authorized redistribution of the exact X810 CYG1 VPU
+firmware. It is now included in clean rootfs builds and the updater-installable
+support RPM, with its hash checked during staging. A local `GTS9_VPU_MBN`
+override must match that same image. The launcher itself only supplies the
+decoder hints; it does not install firmware or change the kernel.
 
 ## Opt-in launcher
 

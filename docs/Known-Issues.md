@@ -21,7 +21,7 @@ reused, and a retired number is simply absent rather than reassigned
 | 13 | Charging bypass on 25 W+ chargers | open — Linux driver/API support and verified hardware semantics are missing; not a GNOME-only patch |
 | 14 | Double tap to turn on the screen | fixed — with a GNOME extension UI |
 | 15 | Under-display fingerprint sensor (EgisTec EL721) | open — latest standalone kernel package includes reader modules and CYG1 mapping; installation/runtime and authentication remain unverified |
-| 16 | Hardware video decode (iris / VPU 3.0) | works with owner-supplied X810 CYG1 firmware; GitHub builds omit the proprietary PAS image; application support is partial |
+| 16 | Hardware video decode (iris / VPU 3.0) | exact owner-authorized X810 CYG1 firmware is now included in clean builds and support-RPM updates; Moonlight live-stream decoder selection still needs device verification |
 | 17 | Speaker volume capped (~−19 dB) | fixed — Cirrus speaker-protection DSP firmware now loads |
 | 18 | `/`, `/etc`, `/usr` owned by the image build user | fixed — this had silently disabled *every* `tmpfiles.d` entry |
 | 19 | Kernel log flooded by ADSP handover messages | fixed — the repeat is logged at debug level now |
@@ -331,14 +331,13 @@ it on the running Fedora system, and verified a 90-frame H.264 decode through
 FFmpeg's `h264_v4l2m2m` wrapper. FFmpeg reported `iris_driver` on `/dev/video17`
 in mplane mode. No kernel rebuild or reboot was needed.
 
-Samsung's firmware is proprietary, so the repo and public releases do not
-redistribute it. GitHub-built root filesystems therefore omit the VPU firmware
-unless the image builder is given the owner's extracted CYG1 file via
-`GTS9_VPU_MBN=/path/to/vpu30_4v.mbn`; the staging script hash-checks it and
-rejects sibling-model blobs. `rootfs/fetch-local-assets.sh` stages the same
-verified file for a local build. Without it, the device boots normally but
-video decoding falls back to software. The remaining limitation is application
-support — browsers still do not use this stateful V4L2 node — see
+The repository owner authorized redistribution of this exact firmware. Its
+verified 2.3 MB CYG1 payload is now included in the source tree; the build
+checks the SHA-256 and includes it both in fresh root filesystems and the
+updater-installable support RPM. A local `GTS9_VPU_MBN` override remains
+possible but must match the same hash. This closes the clean-build omission;
+it does not by itself prove that Moonlight selected the decoder in a live
+stream. Browsers still do not use this stateful V4L2 node; see
 [Hardware video decode](Hardware-Notes.md#hardware-video-decode).
 
 ### 17 — Speaker volume capped
