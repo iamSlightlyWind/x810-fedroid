@@ -114,6 +114,15 @@ if [[ "$dnf_cache_real" == "$rootfs_real" || "$dnf_cache_real" == "$rootfs_real/
 fi
 mkdir -p "$dnf_cache_dir"
 
+# Fedora's minimal container image does not include Python.  The firmware
+# verifier below (and later staging/metadata tools) need it before the rootfs
+# transaction starts, so install it from the same pinned, signature-checked
+# compose repositories first.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo ">>> Installing python3 in the build container"
+    dnf -y "${dnf_repo_args[@]}" install python3
+fi
+
 # The generic Fedora a740_zap is not accepted by the X810 CYG1 TrustZone.
 # Fail before the expensive DNF install instead of emitting an image that
 # predictably leaves GNOME/GDM at a TTY. Verify the redistributed, pinned
@@ -409,12 +418,6 @@ echo ">>> Staging the device-independent firmware overrides"
 # assuming speaker-protection firmware is loaded. GTS9_SKIP_PUBLIC_FIRMWARE=1
 # builds offline and reports what was skipped instead.
 #
-# Only the board-2.bin container edit needs python3 (tools/bdftool.py), and the
-# Fedora base image does not ship it.
-if ! command -v python3 >/dev/null 2>&1; then
-    echo ">>> Installing python3 in the build container (Wi-Fi BDF fix)"
-    dnf -y "${dnf_repo_args[@]}" install python3
-fi
 "$script_dir/stage-public-firmware.sh" "$rootfs"
 
 echo ">>> Staging the exact SM-X810 CYG1 Adreno 740 firmware"

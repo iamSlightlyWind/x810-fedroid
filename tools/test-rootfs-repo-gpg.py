@@ -30,6 +30,18 @@ class RootfsRepoGpgTests(unittest.TestCase):
         self.assertLess(preflight, first_dnf)
         self.assertIn("exit 2", SOURCE[preflight:repo_args])
 
+    def test_python_is_bootstrapped_before_first_python_tool(self):
+        bootstrap = SOURCE.index('if ! command -v python3 >/dev/null 2>&1; then')
+        first_tool = SOURCE.index(
+            'python3 "$repo_dir/tools/x810-gpu-firmware.py" verify-source'
+        )
+        self.assertLess(SOURCE.index("dnf_repo_args=("), bootstrap)
+        self.assertLess(bootstrap, first_tool)
+        self.assertIn(
+            'dnf -y "${dnf_repo_args[@]}" install python3',
+            SOURCE[bootstrap:first_tool],
+        )
+
     def test_both_dynamic_repos_keep_package_signature_checks_and_key(self):
         for repo_id in ("fedora_repo_id", "updates_repo_id"):
             self.assertIn(f'--setopt="${repo_id}.gpgcheck=1"', SOURCE)
