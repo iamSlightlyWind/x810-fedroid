@@ -43,7 +43,7 @@ still needs to be verified on that matching boot set with an on-device
 Also outstanding, not in the numbered register:
 
 - S Pen tilt is exposed as `ABS_TILT_X/Y`; live vector orientation and drawing-app behavior remain unverified (see `docs/Hardware-Notes.md`);
-- built-in microphone capture remains unverified: the CYG1 UCM maps TX DMIC1/3 to MultiMedia3, and a prior PipeWire graph exposed the stereo source, but no recorded sample/level test has been made; see `tools/diagnose-x810-mic.sh` for read-only routing checks;
+- built-in microphone capture remains unverified: commit `fc986e2` corrects the X810 UCM to Samsung's stock DEC1/DEC2 mapping and ships in the [latest aggregate release](https://github.com/iamSlightlyWind/x810-fedroid/releases/latest); a recorded sample/level test is still needed. See `tools/diagnose-x810-mic.sh` for read-only routing checks;
 - the Android `/vendor` mount has a shipped read-only logical-partition mapper;
   confirm the mount on-device after the next update (see below);
 - SELinux runs permissive;

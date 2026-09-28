@@ -34,7 +34,7 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 | Wi-Fi | ✅ | WCN6855/ath11k works with X810 firmware and board data. The port is pinned to kernel 7.2.0; later 7.2.1–7.2.6 stable kernels had a Wi-Fi regression. |
 | Bluetooth | ✅ | Controller and X810 radio firmware/coexistence configuration work. |
 | Speakers | 🟡 | Stereo playback has been heard in user tests, and a PipeWire/WirePlumber routing fix is packaged. GNOME's left/right output-test buttons have previously frozen Settings; avoid those tests until retested. |
-| Microphones | ❓ | A capture source is exposed, but microphone recording has not been qualified. |
+| Microphones | ❓ | The X810 UCM route was corrected to match Samsung's CYG1 DEC1/DEC2 mapping and ships in the [latest aggregate release](https://github.com/iamSlightlyWind/x810-fedroid/releases/latest); microphone recording still needs validation. |
 | Cameras | 🟡 | Front/rear sensors enumerate and libcamera support is integrated; a normal desktop capture flow still needs validation. Rear focus is fixed/manual, not autofocus. |
 | Hardware video decode | 🟡 | Stateful V4L2 decode was verified with owner-supplied X810 CYG1 firmware. Public releases omit that proprietary firmware; browser/VLC acceleration and encoding are not established. |
 | Qualcomm NPU / HTP | ❌ | CDSP remains disabled and no Fedora QNN/HTP runtime is integrated. The port now preserves the X810 CDSP firmware carveouts, but inference has not been enabled or tested. |
