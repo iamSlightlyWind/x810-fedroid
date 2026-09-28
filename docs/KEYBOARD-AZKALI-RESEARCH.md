@@ -73,9 +73,9 @@ releases NRST after reconnect, then allows 150 ms to settle. The patched Linux
 test ZIP and a separate known-good boot restore ZIP are staged under
 `out/keyboard-candidate/`; both write only `boot`, check SM-X810 identity and
 geometry, and verify read-back. Their hashes are in that folder's `SHA256SUMS`.
-The candidate still has **not** been flashed or tested on EF-DX815, so it is
-not a confirmed fix. Keep the restore ZIP accessible in TWRP before choosing
-whether to test the candidate.
+The owner-confirmed 0003+0004+0005 recovery build is a separate patch set; no
+claim is made that the hold-NRST behavior in this candidate was tested. Keep
+the restore ZIP accessible in TWRP before testing any different kernel.
 
 Tab Companion Fedora release
 [`Tab Companion build #19`](https://github.com/iamSlightlyWind/tab-companion/releases/tag/tab-companion-build-36331825449)
@@ -127,8 +127,10 @@ hashes were restored. A full kernel was then built in a reflinked source copy;
 the `Image.gz` passed gzip validation, the reconstructed boot image passed
 AVB verification, and both the candidate and known-good restore ZIPs passed
 archive, size, SHA-256, and boot-only updater contract checks. Artifacts and
-instructions are in `out/keyboard-i2c-recovery-build/artifacts/`. They have not
-been sent to or flashed on the tablet; physical validation remains required.
+instructions are in `out/keyboard-i2c-recovery-build/artifacts/`. The owner
+later reported that the cumulative 0003+0004+0005 recovery build worked on the
+tablet; this earlier 0003-only artifact is not the exact build covered by that
+report.
 
 ## Diagnostic-only follow-up
 
@@ -170,12 +172,14 @@ replacing that log with a generic message and `invalid_key_events` counter.
 `candidates/0005-recover-invalid-key-event.patch` is a separate inference: when
 the Fedora parser rejects code 0 or a code above Linux `KEY_MAX`, it returns
 `-EPROTO`, letting 0003 use the already-gated reset/defer path. This matches
-the invalid-event-then-`-ENXIO` observation, but remains unverified and cannot
-help when GPIO75 never interrupts or the STM32 is silent.
+the invalid-event-then-`-ENXIO` observation. The owner later confirmed the
+cumulative 0003+0004+0005 build worked on-device. It cannot help when GPIO75
+never interrupts or the STM32 is silent.
 
 Host artifacts are separated and boot-only:
 - `out/keyboard-combined-build/artifacts/` is 0003+0004 diagnostics.
 - `out/keyboard-invalid-frame-build/artifacts/` is 0003+0004+0005.
 Both packages have AVB-verified 100663296-byte boot images, pass the single-boot
 ZIP contract tests, and include byte-identical known-good boot restore ZIPs.
-The build source is isolated; no tablet write, push, flash, or reboot occurred.
+The owner-confirmed report applies to the 0003+0004+0005 package only. The build
+source is isolated; no tablet write, push, flash, or reboot occurred here.

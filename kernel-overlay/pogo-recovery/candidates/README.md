@@ -1,4 +1,21 @@
-# Unpromoted candidate: hold NRST across physical hot-unplug
+# Pogo recovery patch status
+
+The owner confirmed on 2026-09-27 that the cumulative `0003` + `0004` +
+`0005` recovery build restored keyboard operation in their tablet test. Treat
+that recovery set as **user-tested/working**; the older host-only wording below
+predates that report. The tested recovery build is the one recorded under
+`out/keyboard-invalid-frame-build/artifacts/` (0003 deferred I²C-read recovery,
+0004 safe diagnostics, 0005 recover from invalid key frames).
+
+This confirmation does not cover every patch in this directory: `0001` (hold
+NRST throughout physical detach) and `0002` (ignore transient GPIO62 lows)
+remain separate experiments and are not part of the confirmed 0003+0004+0005
+set. It also does not make the X910 driver/DTS compatible with the current
+X810 Fedora kernel, which presently lacks the X810 pogo DT node and driver.
+The recovery patches must be integrated with the X810 SE15/GPIO10 driver path
+before they can fix keyboard recognition in a fresh Fedora kernel build.
+
+## Separate experiments: hold NRST across physical hot-unplug
 
 `../patches/0001-add-explicit-samsung-pogo-recovery.patch` is the baseline.
 It pulses NRST after VDDO returns. The candidate patch here is an **incremental,
@@ -16,8 +33,8 @@ The reconnect hunk retries after the normal 250 ms debounce if the connection
 GPIO falls again between VDDO restoration and NRST release, so it does not
 leave the data IRQ disabled after a raced disconnect. This is a correctness
 guard, not a timing workaround.
-The candidate is not applied by normal `apply.sh` and must not be treated as
-the default fix.
+This separate experiment is not part of the user-confirmed 0003+0004+0005
+recovery set and is not applied by normal `apply.sh`.
 
 ## Incremental connection-glitch guard
 
@@ -122,10 +139,9 @@ Host-only patch application, arm64 object build, and full `Image.gz` link
 passed. A partition-sized boot image was AVB-verified and packaged with the
 boot-only TWRP updater; both it and the separate known-good restore ZIP pass
 host archive/hash/size tests. Artifacts and manual test order are in
-`out/keyboard-i2c-recovery-build/artifacts/`. This candidate is **not
-physically validated** and remains separate from the held-NRST (`0001`) and
-GPIO62 glitch (`0002`) candidates. Keep unpromoted until a live test confirms
-rapid reconnect plus sustained key input after the deferred NRST recovery.
+`out/keyboard-i2c-recovery-build/artifacts/`. The owner later confirmed that
+the cumulative 0003+0004+0005 build worked in a tablet test; this individual
+0003-only artifact was built earlier and is not the user-confirmed package.
 
 ## No-key-values runtime diagnostics
 
@@ -166,12 +182,14 @@ if the Fedora parser rejects code 0 or a code above `KEY_MAX`, it returns
 or defer safely otherwise. CYG1/Azkali decode a 16-bit key/press field and call
 `input_report_key` even for values beyond their `STM32_KEY_MAX` state array;
 they do not reset on an invalid code. Thus 0005 is a recovery inference from
-the observed invalid-event-then-`-ENXIO` sequence, not a protocol-proven fix.
-It cannot address silence without a GPIO75 interrupt. Keep it unpromoted until
-physical testing shows a sustained recovery.
+the observed invalid-event-then-`-ENXIO` sequence, not a protocol-proven
+mechanism. The owner later confirmed the cumulative 0003+0004+0005 package
+worked in a tablet test. It cannot address silence without a GPIO75 interrupt.
 
-Host full-boot TWRP candidates (not flashed):
+Host full-boot TWRP packages:
 - `out/keyboard-combined-build/artifacts/`: 0003+0004.
 - `out/keyboard-invalid-frame-build/artifacts/`: 0003+0004+0005.
-Both contain only a boot writer and exact known-good restore ZIP, with AVB,
-readback geometry, and ZIP contract validation recorded in their manifests.
+The owner confirmed the 0003+0004+0005 package worked in their tablet test;
+the 0003+0004-only package is not covered by that report. Both contain only a
+boot writer and exact known-good restore ZIP, with AVB, readback geometry, and
+ZIP contract validation recorded in their manifests.
