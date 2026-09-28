@@ -46,8 +46,8 @@ if command -v amixer >/dev/null 2>&1; then
     }
     for name in \
         "MultiMedia3 Mixer TX_CODEC_DMA_TX_3" \
-        "TX DEC0 MUX" "TX DMIC MUX0" "TX_AIF1_CAP Mixer DEC0" "TX_DEC0 Volume" \
-        "TX DEC1 MUX" "TX DMIC MUX1" "TX_AIF1_CAP Mixer DEC1" "TX_DEC1 Volume"; do
+        "TX DEC1 MUX" "TX DMIC MUX1" "TX_AIF1_CAP Mixer DEC1" "TX_DEC1 Volume" \
+        "TX DEC2 MUX" "TX DMIC MUX2" "TX_AIF1_CAP Mixer DEC2" "TX_DEC2 Volume"; do
         if grep -Fq "name='$name'" <<<"$controls"; then
             printf '[present] %s\n' "$name"
             amixer -c "$CARD" cget "name='$name'" 2>&1 || true

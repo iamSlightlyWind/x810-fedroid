@@ -50,17 +50,19 @@ def main() -> None:
     if "straight into the LPASS VA macro" in card_text:
         raise AssertionError("card UCM still claims capture uses the VA macro")
 
-    # CYG1's X810 gts9pwifi mixer_paths.xml routes main/sub mic through TX
-    # DMIC1/3. Keep UCM, the DAI link, and the LPI DMIC pins on that same path.
+    # CYG1's Samsung gts9pwifi handset-dmic-endfire mixer path routes DMIC1
+    # through TX decimator 1 and DMIC3 through decimator 2. The prior UCM
+    # accidentally selected decimators 0/1, which disagreed with the exact
+    # stock gts9pwifi route. Keep the UCM, DAI link, and LPI DMIC pins aligned.
     for route in (
-        'cset "name=\'TX DEC0 MUX\' MSM_DMIC"',
-        'cset "name=\'TX DMIC MUX0\' DMIC1"',
         'cset "name=\'TX DEC1 MUX\' MSM_DMIC"',
-        'cset "name=\'TX DMIC MUX1\' DMIC3"',
-        'cset "name=\'TX_AIF1_CAP Mixer DEC0\' 1"',
+        'cset "name=\'TX DMIC MUX1\' DMIC1"',
+        'cset "name=\'TX DEC2 MUX\' MSM_DMIC"',
+        'cset "name=\'TX DMIC MUX2\' DMIC3"',
         'cset "name=\'TX_AIF1_CAP Mixer DEC1\' 1"',
-        'cset "name=\'TX_DEC0 Volume\' 80%"',
+        'cset "name=\'TX_AIF1_CAP Mixer DEC2\' 1"',
         'cset "name=\'TX_DEC1 Volume\' 80%"',
+        'cset "name=\'TX_DEC2 Volume\' 80%"',
         'CaptureChannels 2',
         'CapturePriority 100',
         'CapturePCM "hw:${CardId},2"',
@@ -69,15 +71,17 @@ def main() -> None:
             raise AssertionError(f"missing X810 TX DMIC source route item: {route}")
 
     for route in (
-        'cset "name=\'TX_AIF1_CAP Mixer DEC0\' 0"',
         'cset "name=\'TX_AIF1_CAP Mixer DEC1\' 0"',
-        'cset "name=\'TX DMIC MUX0\' ZERO"',
+        'cset "name=\'TX_AIF1_CAP Mixer DEC2\' 0"',
         'cset "name=\'TX DMIC MUX1\' ZERO"',
+        'cset "name=\'TX DMIC MUX2\' ZERO"',
     ):
         if route not in mic:
             raise AssertionError(f"missing paired TX capture disable route: {route}")
     if "VA DMIC" in mic or "VA_AIF1_CAP" in mic:
         raise AssertionError("X810 mic profile mixes the Ultra/reference VA path with TX")
+    if "TX_AIF1_CAP Mixer DEC0" in mic or "TX DMIC MUX0" in mic:
+        raise AssertionError("X810 UCM still routes stock DMIC1/3 through the wrong DEC0 lane")
 
     for route in (
         'cset "name=\'MultiMedia3 Mixer TX_CODEC_DMA_TX_3\' 1"',
@@ -109,14 +113,14 @@ def main() -> None:
         raise AssertionError("X810 microphone diagnostic is not executable")
     for evidence in (
         "arecord -l", "amixer", "MultiMedia3 Mixer TX_CODEC_DMA_TX_3",
-        "TX DMIC MUX0", "TX DMIC MUX1", "pcm2c/sub0/status", "wpctl status",
+        "TX DMIC MUX1", "TX DMIC MUX2", "pcm2c/sub0/status", "wpctl status",
     ):
         if evidence not in diagnostic:
             raise AssertionError(f"mic diagnostic omits required read-only evidence: {evidence}")
     if "arecord -D" in diagnostic or "speaker-test" in diagnostic:
         raise AssertionError("mic diagnostic must not capture audio or play a test tone by default")
 
-    print("PASS: X810 stock TX DMIC1/3 -> TX macro -> MultiMedia3 route is consistent")
+    print("PASS: X810 stock TX DMIC1/3 -> DEC1/2 -> TX macro -> MultiMedia3 route is consistent")
     print("PASS: read-only mic diagnostic covers ALSA routing and PipeWire visibility")
     print("NOTE: static contract only; actual microphone capture remains unverified")
 
