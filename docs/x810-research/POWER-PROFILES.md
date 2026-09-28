@@ -1,22 +1,23 @@
 # X810 CPU power profiles
 
-The Fedora 44 image currently has neither `power-profiles-daemon` nor TuneD
-installed. GNOME therefore has no power-profile service, even though the
-running `7.2.0-gts9wifi` kernel exposes the CPUFreq governors `schedutil`,
-`ondemand`, `userspace`, and `performance` on all three policies.
+Fedora's `tuned-ppd` is the GNOME Power Profiles D-Bus implementation. The
+support RPM enables it, and the tablet's balanced profile was already active.
+That was not enough: Linux's `qcom-cpufreq-hw` driver deferred because the
+SM8550 OSM L3 interconnect provider (`icc_osm_l3`) was present as a module but
+was never loaded. The result was no `/sys/devices/system/cpu/cpufreq/policy*`
+and therefore no effective governor control.
 
-The port now includes Fedora's `tuned-ppd` package for GNOME's standard
-PowerProfiles D-Bus API. Its Fedora 44 mapping keeps `balanced` as the default,
-maps `power-saver` to TuneD's `powersave` profile, and `performance` to
-`throughput-performance`. Those profiles select governors supported by the
-current X810 CPUFreq policies: `schedutil` for balanced/power-saver and
-`performance` for the performance profile. The updater RPM enables the
-services so already-installed systems get the same UI as new rootfs images.
+On the running SM-X810, manually loading `icc_osm_l3` created all three CPU
+frequency policies (`policy0`, `policy3`, `policy7`) with `schedutil`,
+`performance`, `ondemand`, and `conservative` governors. A short D-Bus profile
+test switched all three policies to `performance` and restored them to
+`schedutil` under `balanced`. The support RPM now loads the provider immediately
+when upgraded, and `/etc/modules-load.d/x810-cpufreq.conf` ensures it is loaded
+on subsequent boots. The kernel module's BTF metadata warning remains, but the
+module loaded and both CPUFreq policy creation and TuneD profile changes worked.
 
-This is a CPUFreq-level switcher, not a Samsung power HAL or complete SoC
-power-management port. This tablet has no ACPI platform-profile interface;
-TuneD settings for other hardware may therefore be no-ops. Performance mode
-can raise power draw and heat. The source change has not yet been installed on
-the tablet; verify the GNOME selector, active profile, and governors after the
-next support-package update. Restore `balanced` if thermal or battery behavior
-is undesirable.
+This is CPUFreq-level control, not a Samsung power HAL or a complete SoC
+performance policy. It does not establish GPU boost behavior or thermal limits.
+The user-visible GNOME selector and persistence after a clean boot still need
+owner validation; use `balanced` by default and expect `performance` to use
+more power and produce more heat.

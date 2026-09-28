@@ -245,6 +245,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Test X810 CPU frequency dependency autoload
+        run: python3 tools/test-x810-cpufreq-probe.py
+
       - name: Run lightweight planner and rootfs integrity contract tests
         run: |
           python3 tools/test-x810-build-fingerprint.py

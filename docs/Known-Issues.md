@@ -31,7 +31,7 @@ reused, and a retired number is simply absent rather than reassigned
 | 23 | No 120 Hz display mode | fixed — user confirmed 120 Hz works on-device; 60 Hz remains the default |
 | 24 | ADSP/sensorspd start ordering around panel coldboot recovery | fixed in source: the sensor-proxy unit requests `sensorspd` only after required panel recovery; live package update / clean-boot validation pending |
 | 25 | SSC QMI service absent; tablet rotation unavailable | open — current boot has `sensorspd` and `iio-sensor-proxy` inactive, the sensor wait unit failed, and QRTR service 400 is absent; source-side recovery changes remain unvalidated |
-| 26 | No GNOME power-profile/governor switcher | TuneD PPD API is live and exposes power-saver, balanced, and performance; GNOME UI/thermal behavior still needs owner validation |
+| 26 | No GNOME power-profile/governor switcher | live root cause fixed: explicitly load `icc_osm_l3` so CPUFreq policies exist; profile switching verified over D-Bus, persistent RPM/boot validation pending |
 
 Haptics are also enabled in the kernel source (stock-active-high GPIO18 plus
 `gpio-vibra`), but still need a kernel update and on-device ff-rumble check.
@@ -66,16 +66,14 @@ Also outstanding, not in the numbered register:
 
 ### 26 — GNOME power profiles on Qualcomm CPUFreq
 
-The running X810 kernel exposes `schedutil`, `ondemand`, `userspace` and
-`performance` governors, but the image did not include either TuneD or
-`power-profiles-daemon`, so GNOME had no power-profile service to talk to. The
-source update now installs Fedora's `tuned-ppd` compatibility daemon and
-enables it for new images and support-package upgrades. Its default balanced
-profile remains selected; GNOME's power menu can request the standard
-power-saver or performance profiles. The device has no ACPI platform-profile
-interface, so the effective controls are CPUFreq-level only. Performance mode
-can increase power draw and heat; the physical UI/profile behavior still needs
-validation on the tablet after the update.
+The `tuned-ppd` D-Bus API was already active, but the CPU frequency policies
+were absent: `qcom-cpufreq-hw` deferred until the SM8550 OSM L3 provider loaded.
+Manually loading `icc_osm_l3` on the running tablet created all three policies;
+a short D-Bus test switched them to `performance` and restored `balanced` /
+`schedutil`. The support RPM now loads the module during an update and at each
+boot through `modules-load.d`. Persistent startup and GNOME UI behavior remain
+to be checked after applying the update/reboot. This is CPUFreq-level control,
+not a Samsung power HAL; performance mode can increase heat and power draw.
 
 ### 24 — ADSP/sensorspd start ordering around panel coldboot recovery
 

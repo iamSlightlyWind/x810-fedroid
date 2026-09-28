@@ -92,6 +92,13 @@ if command -v systemctl >/dev/null 2>&1; then
     # can select power-saver/performance from GNOME's normal power menu.
     systemctl enable tuned.service tuned-ppd.service >/dev/null 2>&1 || :
     systemctl start tuned-ppd.service >/dev/null 2>&1 || :
+    # qcom-cpufreq-hw defers until the SM8550 OSM L3 interconnect provider
+    # registers. Load it now so an RPM update repairs an already-booted system;
+    # modules-load.d repeats this at every boot. Older/foreign kernels may not
+    # ship the module, so that case must not fail the support-RPM transaction.
+    if command -v modprobe >/dev/null 2>&1; then
+        modprobe icc_osm_l3 >/dev/null 2>&1 || :
+    fi
     # Keep ADSP and sensorspd out of standalone preset enablement. The
     # sensor-proxy recovery unit requests them only after panel coldboot
     # recovery, with FastRPC node ownership and HexagonFS cache permissions
