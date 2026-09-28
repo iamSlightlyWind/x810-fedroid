@@ -28,6 +28,11 @@ def main() -> None:
     assert "source_dir=/vendor/firmware_mnt/image" in start
     assert "refusing non-read-only APNHLOS mount" in start
     assert '"$source_dir/adsp_dtb.mdt"' in start
+    for mapping in ("adspr.jsn", "adsps.jsn", "adspua.jsn", "cdspr.jsn"):
+        assert mapping in start, f"ADSP helper must stage the device-local {mapping} map"
+    assert 'cp -- "$source_dir/$name" "$stage/$name"' in start
+    assert "never substitute the sibling X910/X710 maps" in start
+    assert "APNHLOS exposed $have_pd_maps/4 protection-domain maps" in start
     assert "incomplete CYG1 ADSP segment set" in start
     assert "install -m 0644" in start
     assert "TimeoutStartSec=110" in adsp

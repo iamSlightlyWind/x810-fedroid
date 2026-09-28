@@ -36,6 +36,7 @@ set -- "$source_dir/adsp.mdt" "$source_dir/adsp_dtb.mdt" \
 	"$source_dir"/adsp.b* "$source_dir"/adsp_dtb.b*
 have_adsp_segment=0
 have_dtb_segment=0
+have_pd_maps=0
 for file do
 	[ -s "$file" ] || continue
 	name=${file##*/}
@@ -46,6 +47,16 @@ for file do
 		*) continue ;;
 	esac
 	cp -- "$file" "$stage/$name"
+done
+# The ADSP starts without these protection-domain maps, but pd-mapper needs
+# the stock maps to publish the audio and sensor QRTR services. Keep them
+# device-specific: stage only maps found in this tablet's read-only APNHLOS;
+# never substitute the sibling X910/X710 maps from a repository firmware set.
+for name in adspr.jsn adsps.jsn adspua.jsn cdspr.jsn; do
+	if [ -s "$source_dir/$name" ]; then
+		cp -- "$source_dir/$name" "$stage/$name"
+		have_pd_maps=$((have_pd_maps + 1))
+	fi
 done
 if [ "$have_adsp_segment" -ne 1 ] || [ "$have_dtb_segment" -ne 1 ]; then
 	echo "gts9wifi-adsp-boot: incomplete CYG1 ADSP segment set" >&2
@@ -59,6 +70,11 @@ for file in "$stage"/*; do
 		install -m 0644 -- "$file" "$dest_dir/$name"
 	fi
 done
+if [ "$have_pd_maps" -eq 4 ]; then
+	echo "gts9wifi-adsp-boot: staged the four device-local protection-domain maps"
+else
+	echo "gts9wifi-adsp-boot: WARNING: APNHLOS exposed $have_pd_maps/4 protection-domain maps; pd-mapper audio/sensor services may remain unavailable" >&2
+fi
 
 for directory in /sys/class/remoteproc/remoteproc*; do
 	[ -r "$directory/name" ] || continue

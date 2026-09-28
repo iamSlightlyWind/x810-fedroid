@@ -15,14 +15,21 @@ The additive drop-in at
 makes `pd-mapper` want and follow that existing, panel-ordered ADSP unit and
 retry a failed mapper start after three seconds. This matches the local
 X910 Ubuntu drop-in and the X910 pmOS drop-in, adjusted to X810 unit names.
-The pinned firmware payload includes the ADSP metadata and its PD JSON
-maps, so this is an ordering correction rather than a substitute for missing
-firmware.
 
-This is a static/source-supported fix for a concrete startup race, **not yet
-validated on the X810 tablet**. It cannot by itself prove the cause of missing
-SSC service 400 or working auto-rotation. The kernel image/DT and runtime
-evidence are still needed to verify the QRTR service and sensor discovery.
+The reference ports exposed an additional packaging requirement: `pd-mapper`
+needs the device's `adspr.jsn`, `adsps.jsn`, `adspua.jsn`, and `cdspr.jsn`
+protection-domain maps alongside the ADSP metadata. Earlier X810 code staged
+only `.mdt` files and ELF segments. The ADSP helper now copies these maps when
+they exist on this tablet's read-only APNHLOS mount before starting remoteproc.
+It does not substitute X910/X710 maps or make ADSP boot depend on optional
+maps. Missing maps are reported explicitly because QRTR services may still
+fail to publish.
+
+This is a static/source-supported fix for the mapper startup race and a
+reference-derived map-staging improvement, **not yet validated on the X810
+tablet**. It cannot by itself prove the cause of missing SSC service 400 or
+working auto-rotation. The kernel image/DT and runtime evidence are still
+needed to verify the QRTR service and sensor discovery.
 
 ## Smallest read-only runtime check
 
@@ -41,7 +48,8 @@ qrtr-lookup 400
 ```
 
 Expected ordering: panel recovery completes, the delayed ADSP unit starts,
-then `pd-mapper` starts/retries with the firmware JSON maps present. A mapper
-log that still reports no maps after this ordering, or a running ADSP with no
-QRTR 400 service, points beyond systemd ordering and needs the captured logs
-plus the active firmware-directory/map listing for the next diagnosis.
+then `pd-mapper` starts/retries. Confirm that all four device-local JSON maps
+appear in `/usr/lib/firmware/qcom/sm8550/`. A mapper log that still reports no
+maps after this ordering, or a running ADSP with no QRTR 400 service, points
+beyond systemd ordering and needs the captured logs plus the active
+firmware-directory/map listing for the next diagnosis.
