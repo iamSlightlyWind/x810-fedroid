@@ -1723,6 +1723,24 @@
 };
 
 /*
+ * CDSP/NPU firmware lookup is recorded for the locally staged, exact X810
+ * CYG1 images.  The PAS driver's SM8550 CDSP descriptor requests both the
+ * main image and the PAS-authenticated CDSP DT image (firmware-name indices
+ * 0 and 1).  The staging helper places these as
+ * /usr/lib/firmware/qcom/sm8550/{cdsp,cdsp_dtb}.mdt.  Keep the remoteproc
+ * disabled: firmware layout alone does not prove secure PAS boot, FastRPC
+ * intent negotiation, HTP execution, or safe teardown on this tablet.
+ */
+&remoteproc_cdsp {
+	firmware-name = "qcom/sm8550/cdsp.mdt",
+			"qcom/sm8550/cdsp_dtb.mdt";
+	/* Even if a future experimental DT enables the node, require a deliberate
+	 * userspace `echo start` after its firmware/runtime preflight. */
+	qcom,no-auto-boot;
+	status = "disabled";
+};
+
+/*
  * Speaker I2C bus drive strength.  The four CS35L45 amplifiers sit on the QUPv3
  * I2C master hub SE6 (998000.i2c, Samsung's I2C18) which this board runs at
  * 1 MHz, i.e. Fast-Mode Plus.  Mainline's generic hub_i2c6_data_clk state asks
