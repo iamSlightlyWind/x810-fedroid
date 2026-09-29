@@ -1,0 +1,22 @@
+#!/usr/bin/bash
+# Explicitly install or update the system-wide Flathub Moonlight app used by
+# x810-moonlight-v4l2. This is never run by rootfs build/upgrade scripts.
+set -euo pipefail
+
+readonly app_id="com.moonlight_stream.Moonlight"
+readonly flathub_ref="https://dl.flathub.org/repo/flathub.flatpakrepo"
+
+if ! command -v flatpak >/dev/null 2>&1; then
+	echo "x810-moonlight-install: Flatpak is not installed." >&2
+	exit 127
+fi
+
+if [[ "$(id -u)" -ne 0 ]]; then
+	echo "x810-moonlight-install: run with sudo to install system-wide (e.g. sudo x810-moonlight-install)." >&2
+	exit 1
+fi
+
+# Keep this opt-in and aligned with the launcher's --system scope. Adding a
+# remote only provides a source; no app is installed until this command runs.
+flatpak remote-add --if-not-exists --system --from flathub "$flathub_ref"
+flatpak install --system --noninteractive --or-update flathub "$app_id"

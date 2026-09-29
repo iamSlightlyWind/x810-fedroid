@@ -51,6 +51,11 @@ other units or every build. See [`docs/Hardware-Notes.md`](docs/Hardware-Notes.m
 and [`docs/Known-Issues.md`](docs/Known-Issues.md) for caveats and subsystem
 details.
 
+Moonlight V4L2 hints are available through an opt-in launcher. Flathub and
+Moonlight are not added automatically; install/update explicitly with
+`sudo x810-moonlight-install`. Live-stream hardware decoding remains
+unverified. See [the Moonlight V4L2 experiment](docs/x810-research/MOONLIGHT-V4L2-EXPERIMENT.md).
+
 ## Install Fedora
 
 The supported entry point is the guided installer on a Linux PC. Requirements:

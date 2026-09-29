@@ -8,12 +8,13 @@ until a real stream confirms it.
 
 ## Current evidence
 
-Read-only checks on the SM-X810 found:
-
-- Moonlight Flatpak `6.1.0`, stable, aarch64, installed system-wide.
-- The matching Flathub manifest pins Moonlight `v6.1.0` and enables FFmpeg's
-  `h264_v4l2m2m` and `hevc_v4l2m2m` decoders.
-- The Flathub manifest grants `--device=all`, which exposes the V4L2 character
+Read-only checks on the SM-X810 found `/dev/video17` as the Iris stateful
+decoder with H.264, HEVC, VP9, and AV1 formats. The current tablet state has
+no installed `com.moonlight_stream.Moonlight` Flatpak and only the Fedora
+Flatpak remote configured, so the desktop launcher currently cannot start the
+app. Earlier research examined Moonlight Flatpak `6.1.0` stable/aarch64; its
+matching Flathub manifest pins Moonlight `v6.1.0` and enables FFmpeg's
+`h264_v4l2m2m` and `hevc_v4l2m2m` decoders. The Flathub manifest grants `--device=all`, which exposes the V4L2 character
   devices to Moonlight. The X810 launcher relies on this declared permission
   and does not add a broader runtime permission or persistent override.
 - On this tablet, `/dev/video17` identifies as the `qcom-iris-decoder` and is
@@ -76,6 +77,24 @@ firmware. It is now included in clean rootfs builds and the updater-installable
 support RPM, with its hash checked during staging. A local `GTS9_VPU_MBN`
 override must match that same image. The launcher itself only supplies the
 decoder hints; it does not install firmware or change the kernel.
+
+## Optional install/update flow
+
+The Fedora rootfs does not enable Flathub or install Moonlight. To explicitly
+configure the system Flathub remote and install/update the system-wide app used
+by the X810 launcher, run:
+
+```sh
+sudo x810-moonlight-install
+```
+
+The command adds the official Flathub remote only if absent, then runs Flatpak's
+`--or-update` operation for `com.moonlight_stream.Moonlight`. It requires an
+internet connection and administrator privileges. Re-run it when you want to
+update Moonlight. This is separate from normal port/rootfs updates and does not
+launch Moonlight. Once installed, **Moonlight (X810 V4L2 decode)** is an
+opt-in launcher; it supplies decoder hints but still requires live-stream
+validation before claiming hardware decode works.
 
 ## Opt-in launcher
 

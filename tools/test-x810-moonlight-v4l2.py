@@ -12,6 +12,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "rootfs/overlay/usr/bin/x810-moonlight-v4l2"
 DESKTOP = ROOT / "rootfs/overlay/usr/share/applications/x810-moonlight-v4l2.desktop"
+INSTALLER = ROOT / "rootfs/overlay/usr/bin/x810-moonlight-install"
 APP_ID = "com.moonlight_stream.Moonlight"
 ROOTFS_BUILDER = ROOT / "rootfs/build-rootfs.sh"
 RPM_BUILDER = ROOT / "tools/build-port-support-rpm.sh"
@@ -118,6 +119,51 @@ class MoonlightV4L2LauncherTests(unittest.TestCase):
         self.assertIn("streaming decode has not been", experiment)
         self.assertIn("1dd6cdb567d9c79bcbd8caee13d999a447a8b413", experiment)
 
+    def test_optional_installer_adds_flathub_and_installs_or_updates_system_app(self):
+        fake_id = self.bin / "id"
+        fake_id.write_text("#!/bin/sh\necho 0\n", encoding="utf-8")
+        fake_id.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = str(self.bin) + os.pathsep + env.get("PATH", "")
+        env["FAKE_FLATPAK_LOG"] = str(self.log)
+        result = subprocess.run(
+            [str(INSTALLER)], env=env, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.calls(),
+            [
+                ["remote-add", "--if-not-exists", "--system", "--from", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"],
+                ["install", "--system", "--noninteractive", "--or-update", "flathub", APP_ID],
+            ],
+        )
+
+    def test_installer_refuses_non_root_and_does_not_touch_flatpak(self):
+        # Mock id as non-root, regardless of the uid running this test.
+        fake_id = self.bin / "id"
+        fake_id.write_text("#!/bin/sh\necho 1000\n", encoding="utf-8")
+        fake_id.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = str(self.bin) + os.pathsep + env.get("PATH", "")
+        env["FAKE_FLATPAK_LOG"] = str(self.log)
+        result = subprocess.run(
+            [str(INSTALLER)], env=env, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("run with sudo", result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_installer_is_explicit_and_never_invoked_by_build_or_update(self):
+        self.assertTrue(INSTALLER.stat().st_mode & 0o111)
+        self.assertIn("never run by rootfs build/upgrade scripts", INSTALLER.read_text(encoding="utf-8"))
+        text = INSTALLER.read_text(encoding="utf-8")
+        self.assertIn("--system", text)
+        self.assertIn("--or-update", text)
+        for path in (ROOTFS_BUILDER, RPM_BUILDER):
+            self.assertNotIn("x810-moonlight-install", path.read_text(encoding="utf-8"))
+
     def test_desktop_entry_is_an_opt_in_launcher_not_the_default_flatpak_entry(self):
         text = DESKTOP.read_text(encoding="utf-8")
         self.assertIn("Name=Moonlight (X810 V4L2 decode)", text)
@@ -141,6 +187,7 @@ class MoonlightV4L2LauncherTests(unittest.TestCase):
         self.assertIn('comm -23 "$top/SOURCES/port-overlay.filelist"', rpm_builder)
         self.assertTrue(LAUNCHER.is_file())
         self.assertTrue(DESKTOP.is_file())
+        self.assertTrue(INSTALLER.is_file())
 
 
 if __name__ == "__main__":
