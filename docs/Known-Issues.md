@@ -12,7 +12,7 @@ reused, and a retired number is simply absent rather than reassigned
 | 3 | Bluetooth lag under 2.4 GHz Wi-Fi | fixed — Samsung NVM/rampatch substituted for the generic ones |
 | 4 | Rear camera (13 MP HI1337 + DW9808 lens) | works — manual focus only; a fixed focus of 384 ships |
 | 4b | Front camera (12 MP HI1337) | works |
-| 5 | No rotation sensor | partial — the port builds an SSC-linked proxy, but the installed tablet currently lacks QRTR service 400; see #25 |
+| 5 | No rotation sensor | partial — the latest live check found QRTR service 400 and SensorProxy's accelerometer property; physical GNOME auto-rotation remains unverified; see #25 |
 | 6 | USB debug link flaky | fixed — RNDIS gadget converted to ECM |
 | 7 | Weak 5 GHz Wi-Fi RX | fixed — board-data (BDF) substitution, ~47 dB improvement |
 | 9 | Discord/Roblox unreachable (DPI) | fixed — kernel rebuilt with `nfqueue` |
@@ -29,8 +29,8 @@ reused, and a retired number is simply absent rather than reassigned
 | 21 | PipeWire speaker streams fail to link | fixed — system-wide WirePlumber configuration is packaged, and the owner confirms stereo playback works |
 | 22 | GNOME camera clients cannot open `root:video` camera nodes | fixed in installer and support-RPM upgrade path; fresh-login/device validation pending |
 | 23 | No 120 Hz display mode | fixed — user confirmed 120 Hz works on-device; 60 Hz remains the default |
-| 24 | ADSP/sensorspd start ordering around panel coldboot recovery | fixed in source: the sensor-proxy unit requests `sensorspd` only after required panel recovery; live package update / clean-boot validation pending |
-| 25 | SSC QMI service absent; tablet rotation unavailable | open — live check found QRTR service 400 absent; rootpd had been skipped before `/dev/fastrpc-adsp` appeared. Source now requires the panel-ordered ADSP helper before rootpd; SSC/rotation still need runtime validation |
+| 24 | ADSP/sensorspd start ordering around panel coldboot recovery | confirmed on the latest boot: installed ordering drop-ins match source, and ADSP/rootpd/sensorspd are active; see #25 for the separate physical rotation check |
+| 25 | SSC sensor discovery and tablet auto-rotation | partial — QRTR service 400 and SensorProxy's accelerometer/orientation properties are present on the latest boot; physical GNOME auto-rotation remains unverified |
 | 26 | No GNOME power-profile/governor switcher | live root cause fixed: explicitly load `icc_osm_l3` so CPUFreq policies exist; profile switching verified over D-Bus, persistent RPM/boot validation pending |
 | 27 | Kernel rejects optional module BTF after boot/module builds differ | mitigation added: allow the module to load without its mismatched BTF metadata; exact boot/module matching is still preferred |
 | 28 | Deep suspend can freeze and fail to wake | mitigated in the reproducible overlay: lid close ignores suspend and sleep targets are masked; root cause still needs X810 wake-source tracing |
@@ -106,11 +106,13 @@ node readiness and writable HexagonFS tree in order. This keeps direct
 standalone autostart disabled while giving the sensor-proxy recovery path a
 deterministic dependency chain.
 
-The source and support RPM are updated, but the current tablet still has the
-older installed unit until the support update is applied. Do not manually start
-either ADSP unit or race it against panel recovery.
+The latest live boot has the source-matching ordering drop-ins installed and
+the ADSP, rootpd, and sensorspd active. The sensor-proxy recovery subsequently
+completed after an SSC response. This validates the startup chain on this boot,
+but not physical display rotation; see #25. Do not manually start either ADSP
+unit or race it against panel recovery.
 
-### 25 — SSC QMI service absent; tablet rotation unavailable
+### 25 — SSC sensor discovery and tablet auto-rotation
 
 The startup chain now stages a private `/run` HexagonFS tree from this tablet's
 mounted CYG1 `/vendor/etc/sensors` and `/mnt/vendor/persist/sensors/registry`
@@ -120,29 +122,36 @@ changing Android partitions, and supplies the target's socinfo selector values
 where mainline sysfs does not expose Samsung's aliases. The desktop proxy then
 waits for the SSC endpoint.
 
-The latest read-only check on the installed tablet found `gts9wifi-adsp-boot`
-running and `hexagonrpcd-adsp-sensorspd` active, while
-`hexagonrpcd-adsp-rootpd` was inactive: systemd had skipped it at multi-user
-because its `/dev/fastrpc-adsp` condition was checked before the deferred ADSP
-boot created the node. The rootpd override now `Requires=` and follows the
-same panel-ordered `gts9wifi-adsp-boot.service`; this prevents the known early
-condition skip without starting ADSP ahead of panel recovery. At that live
-check, `qrtr-lookup 400` was empty, `ssccli` reported “SSC QMI Service not
-found”, and iio-sensor-proxy exited without sensors. This source ordering fix
-is not yet confirmed to restore QRTR 400 or auto-rotation; that requires a
-fresh boot and runtime validation. Earlier snapshots showing QRTR service 66
-do not imply the SSC service is registered.
+An earlier live failure found `gts9wifi-adsp-boot` running and
+`hexagonrpcd-adsp-sensorspd` active, while `hexagonrpcd-adsp-rootpd` was
+inactive: systemd had skipped it at multi-user because its
+`/dev/fastrpc-adsp` condition was checked before deferred ADSP boot created the
+node. The rootpd override now `Requires=` and follows the same panel-ordered
+`gts9wifi-adsp-boot.service`, preventing that early condition skip without
+starting ADSP ahead of panel recovery.
+
+On the 2026-09-29 live boot, a read-only check found the current recovery
+oneshot completed successfully after SSC responded on its first probe;
+`hexagonrpcd-adsp-sensorspd` and `iio-sensor-proxy` were active,
+`qrtr-lookup 400` returned the Snapdragon Sensor Core service, and SensorProxy
+reported `HasAccelerometer=true` with orientation `normal`. GNOME's
+`orientation-lock` setting was `false`. The live FastRPC udev database also
+contained the `ssc-accel` discovery tag and configured board mount matrix.
+Thus SSC discovery and the orientation API are present on this boot; this does
+not prove that GNOME visibly rotates with the tablet. Physical auto-rotation
+and suspend/resume recovery remain unverified. The proxy's log that the
+firmware matrix is all zero is its documented identity-matrix fallback before
+the configured udev matrix is applied, not evidence that the udev rule is
+missing.
 
 The support update uses the same hash-locked `libssc`/`iio-sensor-proxy`
 builder as a clean image and adds an early-claim race guard in the proxy. It
 also replaces donor-model sensor inputs with a checked runtime composition of
-the tablet's own stock config and persist registry. These changes remove
-image-versus-update build drift and address two plausible userspace causes;
-they cannot create a missing QRTR service. The update has not yet been
-installed or validated on the tablet. Next, use a supervised, correctly
-ordered boot with a recovery path available; do not manually restart remoteproc
-or sensorspd while the tablet is unattended, since a failed attach can
-interrupt audio.
+the tablet's own stock config and persist registry. The installed service and
+udev-rule files match repository source; the installed recovery helper differs
+only in its shell interpreter path. Do not manually restart remoteproc or
+sensorspd while the tablet is unattended, since a failed attach can interrupt
+audio.
 
 ### 13 — Charging bypass on 25 W+ chargers
 

@@ -38,7 +38,7 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 | Cameras | 🟡 | Front/rear sensors enumerate and libcamera support is integrated; a normal desktop capture flow still needs validation. Rear focus is fixed/manual, not autofocus. |
 | Hardware video decode | 🟡 | Stateful V4L2 decode was verified with owner-supplied X810 CYG1 firmware. Public releases omit that proprietary firmware; browser/VLC acceleration and encoding are not established. |
 | Qualcomm NPU / HTP | ❌ | CDSP remains disabled and no Fedora QNN/HTP runtime is integrated. The port now preserves the X810 CDSP firmware carveouts, but inference has not been enabled or tested. |
-| Motion sensors / auto-rotation | ❌ | Rotation is unavailable on the installed system: the SSC QRTR service is still absent. Source changes address sensor-registry setup and ADSP/sensorspd startup ordering, but the service recovery and auto-rotation have not been validated after an update or clean boot. |
+| Motion sensors / auto-rotation | 🟡 | The installed system now discovers SSC QRTR service 400, and SensorProxy reports an accelerometer/orientation property. Physical GNOME auto-rotation has not yet been verified on this boot. |
 | Battery / charging | 🟡 | Battery telemetry and charging work; the prior 96% cap is fixed. Not all chargers and charge behaviors have been validated. |
 | USB-C / powered USB hub | ✅ | The owner has confirmed that a powered USB hub supplies power to the tablet. Data passthrough and other host, dock, and display combinations are not all tested. |
 | Haptics | 🟡 | Kernel/DTB support is in the latest standalone kernel release; physical vibration validation on that kernel is pending. |

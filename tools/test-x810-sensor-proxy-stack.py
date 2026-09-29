@@ -38,6 +38,9 @@ def main() -> int:
     rpm_builder = (ROOT / "tools/build-port-support-rpm.sh").read_text(encoding="utf-8")
     spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
     workflow = (ROOT / ".github/workflows/x810-fedora.yml").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    issues = (ROOT / "docs/Known-Issues.md").read_text(encoding="utf-8")
+    hardware_notes = (ROOT / "docs/Hardware-Notes.md").read_text(encoding="utf-8")
     sensor_proxy_unit = (ROOT / "rootfs/overlay/usr/lib/systemd/system/"
                          "gts9wifi-wait-sensor-proxy.service").read_text(encoding="utf-8")
     sensor_pd_dropin = (ROOT / "rootfs/overlay/etc/systemd/system/"
@@ -50,6 +53,15 @@ def main() -> int:
             "SSC recovery may run before GNOME opens its sensor client")
     require("WantedBy=graphical.target" in sensor_proxy_unit,
             "SSC recovery must be started by the desktop target, not multi-user")
+    require("SSC QRTR service 400" in readme and
+            "Physical GNOME auto-rotation has not yet been verified" in readme,
+            "README must distinguish live SSC discovery from unverified physical rotation")
+    require("HasAccelerometer=true" in issues and
+            "Physical auto-rotation" in issues,
+            "known-issues page must record the current SensorProxy result and rotation-test gap")
+    require("QRTR service 400 was present" in hardware_notes and
+            "physical GNOME auto-rotation remains unverified" in hardware_notes,
+            "hardware notes must not claim SSC service 400 is absent")
     require("After=display-manager.service" in sensor_pd_dropin,
             "sensor-PD can still attach before GNOME and miss delayed SSC failure")
     require("systemctl reenable gts9wifi-wait-sensor-proxy.service" in spec,

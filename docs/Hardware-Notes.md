@@ -114,17 +114,18 @@ is not seen at all.
 | Exposed | accelerometer, rotation vector, ambient light, compass |
 
 The sensors live behind the ADSP's sensor core, not on an AP I2C bus. The port
-includes `hexagonrpcd` and a patched `iio-sensor-proxy`, but the latest remote
-read-only inspection did not find SSC QRTR service 400; `ssccli` reported that
-the service was absent. Accelerometer-based auto-rotation and ALS/compass are
-therefore **not currently available** on the installed system. The unresolved
-live state is tracked in [Known Issues #25](Known-Issues.md#25-ssc-qmi-service-absent-tablet-rotation-unavailable).
+includes `hexagonrpcd` and a patched `iio-sensor-proxy`. On the 2026-09-29
+read-only live check, QRTR service 400 was present, the recovery oneshot
+completed successfully, and SensorProxy reported `HasAccelerometer=true` and
+an orientation property. This confirms SSC discovery and the orientation API,
+but **physical GNOME auto-rotation remains unverified**. See [Known Issues
+#25](Known-Issues.md#25-ssc-sensor-discovery-and-tablet-auto-rotation).
 
-The updated source prepares the X810 sensor-registry tree before the
-sensor-PD attaches and orders ADSP startup behind panel cold-boot recovery.
-This is a source-side recovery path, not yet a verified clean-boot or
-suspend/resume fix. Do not manually restart the ADSP or sensorspd: a failed
-sensor-PD attach can reset the shared ADSP and interrupt audio.
+The installed boot's recovery path prepared the sensor-registry tree and
+ordered ADSP startup behind panel cold-boot recovery. Clean-boot sensor
+discovery succeeded, while suspend/resume recovery remains unverified. Do not
+manually restart the ADSP or sensorspd: a failed sensor-PD attach can reset the
+shared ADSP and interrupt audio.
 
 Sensor rotation is not observable from the sensor values; orientation is
 verified by eye, and the mapping does not necessarily match the vendor's
