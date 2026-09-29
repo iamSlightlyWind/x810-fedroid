@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply the X810 native Bluetooth address to WCN6855
+After=bluetooth.service
+Wants=bluetooth.service
+ConditionPathExists=/dev/disk/by-partlabel/efs
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/gts9wifi-bt-address
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

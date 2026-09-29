@@ -12,6 +12,7 @@ enable NetworkManager.service
 enable hexagonrpcd-adsp-rootpd.service
 enable pd-mapper.service
 enable gts9wifi-bt-provision.service
+enable gts9wifi-bt-address.service
 enable gts9wifi-mem-reclaim.service
 enable gts9wifi-wait-sensor-proxy.service
 enable gts9wifi-panel-coldboot-recover.service

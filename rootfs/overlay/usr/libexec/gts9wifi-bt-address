@@ -1,0 +1,102 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Apply the tablet's native WCN6855 public address when the controller is
+# exposed by the kernel as configurable. EFS is mounted strictly read-only.
+set -u
+
+efs=/dev/disk/by-partlabel/efs
+mountpoint=/run/gts9wifi-efs-bt-ro
+deadline=30
+
+log() { echo "gts9wifi-bt-address: $*" >&2; }
+
+# systemd services have stdin=/dev/null; btmgmt needs a pipe to avoid a
+# silent no-op. Each call is bounded so a missing/unconfigured HCI cannot
+# stall boot indefinitely.
+btmgmt_() { printf '' | timeout 8 btmgmt "$@" 2>/dev/null; }
+
+current_address() {
+	btmgmt_ info | awk '
+		/^hci0:/ { found = 1; next }
+		/^hci[1-9][0-9]*:/ { found = 0 }
+		found && $1 == "addr" { print toupper($2); exit }
+	'
+}
+
+i=0
+while [ "$i" -lt "$deadline" ] && [ ! -d /sys/class/bluetooth/hci0 ]; do
+	sleep 1
+	i=$((i + 1))
+done
+if [ ! -d /sys/class/bluetooth/hci0 ]; then
+	log 'hci0 is not present; leaving Bluetooth unchanged'
+	exit 0
+fi
+
+i=0
+while [ "$i" -lt "$deadline" ] && [ ! -b "$efs" ]; do
+	sleep 1
+	i=$((i + 1))
+done
+if [ ! -b "$efs" ]; then
+	log 'EFS partition is unavailable; cannot read native address'
+	exit 0
+fi
+
+mkdir -p "$mountpoint"
+cleanup() {
+	mountpoint -q "$mountpoint" && umount "$mountpoint" || true
+}
+trap cleanup EXIT HUP INT TERM
+if ! mount -o ro,noload "$efs" "$mountpoint"; then
+	log 'could not mount EFS read-only'
+	exit 0
+fi
+address=$(tr -d '\r\n[:space:]' < "$mountpoint/bluetooth/bt_addr" 2>/dev/null)
+cleanup
+trap - EXIT HUP INT TERM
+case "$address" in
+	[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;;
+	*) log 'invalid native Bluetooth address in EFS'; exit 0 ;;
+esac
+address=$(printf '%s' "$address" | tr '[:lower:]' '[:upper:]')
+
+current=$(current_address)
+if [ "$current" = "$address" ]; then
+	log 'native public address is already active'
+	exit 0
+fi
+
+# Some first-boot controller states expose hci0 in the config list before it
+# has an address. Only that supported state may receive the one-shot value.
+i=0
+while [ "$i" -lt "$deadline" ]; do
+	if btmgmt_ config | grep -q '^hci0:'; then
+		break
+	fi
+	sleep 1
+	i=$((i + 1))
+done
+if ! btmgmt_ config | grep -q '^hci0:'; then
+	log 'controller is not in the configurable list; address was not changed'
+	exit 0
+fi
+
+if ! btmgmt_ --index 0 public-addr "$address"; then
+	log 'controller rejected the native public address; no EFS data was changed'
+	exit 0
+fi
+
+i=0
+while [ "$i" -lt 15 ]; do
+	current=$(current_address)
+	[ "$current" = "$address" ] && break
+	sleep 1
+	i=$((i + 1))
+done
+if [ "$current" = "$address" ]; then
+	log "native public address applied after ${i}s"
+else
+	log 'controller did not confirm its native public address'
+fi
+exit 0

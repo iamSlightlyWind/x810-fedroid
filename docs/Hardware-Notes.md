@@ -195,7 +195,7 @@ identified. A test network's SSID and BSSID are deliberately not recorded.
 | Item | Value |
 |---|---|
 | Driver | `hci_uart_qca` |
-| Enable line | `BT_EN` = TLMM GPIO 204 |
+| Enable line | `BT_EN` = TLMM GPIO 81; XO clock strobe = GPIO 204 |
 | Address source | the `efs` partition |
 
 - BD address provisioning patches the boot images, not a config file. A
@@ -204,6 +204,10 @@ identified. A test network's SSID and BSSID are deliberately not recorded.
   on every boot. It is idempotent and survives reflashes, but the address
   applies from the second boot after flashing a new bundle — the "Bluetooth
   needs one extra reboot" note in [Installation](../INSTALL.md).
+- A bounded service also runs after BlueZ starts and applies the EFS address
+  through `btmgmt` if the controller is in its configurable state. EFS is
+  mounted `ro,noload`; if the controller is not configurable, it leaves it
+  unchanged and the DT-provisioned next boot remains the fallback.
 - `bt-revive` rebinds `hci_uart_qca` while holding `BT_EN` through the gpio
   character device, for when the chip comes up in a bad state.
 - 2.4 GHz coexistence was fixed by substituting Samsung's device-tuned
