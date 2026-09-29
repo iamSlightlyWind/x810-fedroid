@@ -2,9 +2,11 @@
 # boot and strips enablement from anything without a preset entry, which is
 # how the first Fedora boot silently lost the whole device stack.
 #
-# The ADSP units are not standalone-enabled: gts9wifi-wait-sensor-proxy is
-# the sole start path, ordered after panel-coldboot recovery. This avoids the
-# previously observed reset/freeze when ADSP startup raced panel recovery.
+# The remoteproc boot helper is not standalone-enabled; enabled clients such
+# as pd-mapper/rootpd may pull it in, but its drop-in requires and follows the
+# panel cold-boot recovery and the read-only firmware mount. Keep sensorspd
+# disabled as a standalone unit: it is attached only through the later,
+# panel-ordered sensor-proxy recovery path.
 enable sshd.service
 enable NetworkManager.service
 enable hexagonrpcd-adsp-rootpd.service

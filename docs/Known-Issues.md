@@ -30,7 +30,7 @@ reused, and a retired number is simply absent rather than reassigned
 | 22 | GNOME camera clients cannot open `root:video` camera nodes | fixed in installer and support-RPM upgrade path; fresh-login/device validation pending |
 | 23 | No 120 Hz display mode | fixed — user confirmed 120 Hz works on-device; 60 Hz remains the default |
 | 24 | ADSP/sensorspd start ordering around panel coldboot recovery | fixed in source: the sensor-proxy unit requests `sensorspd` only after required panel recovery; live package update / clean-boot validation pending |
-| 25 | SSC QMI service absent; tablet rotation unavailable | open — current boot has `sensorspd` and `iio-sensor-proxy` inactive, the sensor wait unit failed, and QRTR service 400 is absent; source-side recovery changes remain unvalidated |
+| 25 | SSC QMI service absent; tablet rotation unavailable | open — live check found QRTR service 400 absent; rootpd had been skipped before `/dev/fastrpc-adsp` appeared. Source now requires the panel-ordered ADSP helper before rootpd; SSC/rotation still need runtime validation |
 | 26 | No GNOME power-profile/governor switcher | live root cause fixed: explicitly load `icc_osm_l3` so CPUFreq policies exist; profile switching verified over D-Bus, persistent RPM/boot validation pending |
 | 27 | Kernel rejects optional module BTF after boot/module builds differ | mitigation added: allow the module to load without its mismatched BTF metadata; exact boot/module matching is still preferred |
 | 28 | Deep suspend can freeze and fail to wake | mitigated in the reproducible overlay: lid close ignores suspend and sleep targets are masked; root cause still needs X810 wake-source tracing |
@@ -121,12 +121,17 @@ where mainline sysfs does not expose Samsung's aliases. The desktop proxy then
 waits for the SSC endpoint.
 
 The latest read-only check on the installed tablet found `gts9wifi-adsp-boot`
-active but `hexagonrpcd-adsp-sensorspd`, `iio-sensor-proxy`, and the sensor wait
-unit inactive/failed; `qrtr-lookup 400` returned no service. Earlier snapshots
-showed QRTR service 66, but that does not imply the required SSC service is
-registered. The installed runtime has not yet been tested with the new
-X810-specific registry composition; package ordering alone has not explained
-the missing service.
+running and `hexagonrpcd-adsp-sensorspd` active, while
+`hexagonrpcd-adsp-rootpd` was inactive: systemd had skipped it at multi-user
+because its `/dev/fastrpc-adsp` condition was checked before the deferred ADSP
+boot created the node. The rootpd override now `Requires=` and follows the
+same panel-ordered `gts9wifi-adsp-boot.service`; this prevents the known early
+condition skip without starting ADSP ahead of panel recovery. At that live
+check, `qrtr-lookup 400` was empty, `ssccli` reported “SSC QMI Service not
+found”, and iio-sensor-proxy exited without sensors. This source ordering fix
+is not yet confirmed to restore QRTR 400 or auto-rotation; that requires a
+fresh boot and runtime validation. Earlier snapshots showing QRTR service 66
+do not imply the SSC service is registered.
 
 The support update uses the same hash-locked `libssc`/`iio-sensor-proxy`
 builder as a clean image and adds an early-claim race guard in the proxy. It
