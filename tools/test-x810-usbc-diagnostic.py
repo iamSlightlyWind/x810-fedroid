@@ -32,7 +32,10 @@ def main() -> None:
         write(port / "data_role", "host\n")
         write(port / "port_type", "dual\n")
         write(partner / "supports_usb_power_delivery", "yes\n")
+        write(partner / "type", "power_brick\n")
         write(partner / "number_of_alternate_modes", "1\n")
+        write(partner / "identity/id_header", "0x01c02f16\n")
+        write(partner / "identity/product", "0x00000000\n")
         write(altmode / "svid", "0xff01\n")
         write(altmode / "mode", "1\n")
         write(altmode / "active", "1\n")
@@ -45,6 +48,9 @@ def main() -> None:
         write(supply / "current_now", "1800000\n")
         write(supply / "input_current_limit", "3000000\n")
         write(supply / "serial_number", "must-not-be-read\n")
+
+        usb_role = sysfs / "class/usb_role/a600000.usb-role-switch"
+        write(usb_role / "role", "device\n")
 
         drm = sysfs / "class/drm/card0-DP-1"
         write(drm / "status", "connected\n")
@@ -80,8 +86,12 @@ def main() -> None:
         attrs = {item["path"]: item for item in snapshot["typec"]}
         assert attrs[str(port)]["power_role"] == "sink"
         assert attrs[str(port)]["data_role"] == "host"
+        assert any(item.get("type") == "power_brick" for item in attrs.values())
+        assert any(item.get("id_header") == "0x01c02f16" for item in attrs.values())
         assert attrs[str(altmode)]["svid"] == "0xff01"
         assert attrs[str(altmode)]["active"] == "1"
+        role_switches = {item["path"]: item for item in snapshot["usb_role_switches"]}
+        assert role_switches[str(usb_role)]["role"] == "device"
         assert "serial_number" not in str(snapshot)
         supplies = {item["path"]: item for item in snapshot["power_supplies"]}
         assert supplies[str(supply)]["voltage_now"] == "9000000"

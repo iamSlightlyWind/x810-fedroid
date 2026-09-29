@@ -63,8 +63,13 @@ the system.
 For the powered-dock case, connect the dock's host lead to the tablet, its
 external PD input to the dock, and a DP display to the dock. Allow about 15
 seconds for negotiation/enumeration before each capture. The four snapshots
-record Type-C power/data roles and alternate modes, power-supply telemetry,
-DRM connector status, USB topology, and filtered current-boot kernel messages.
+record Type-C power/data roles, partner kind and PD identity, alternate modes,
+the active USB role-switch state, power-supply telemetry, DRM connector status,
+USB topology, and filtered current-boot kernel messages. Partner kind matters:
+an attached `power_brick` is not evidence that an MST hub or dock is connected.
+The USB role-switch and Type-C data role should agree; a powered hub can power
+its downstream devices independently of whether the tablet negotiated sink
+power or enumerated its upstream data link.
 `journalctl`/`dmesg` log access may require running the command with `sudo` to
 get complete logs; the tool itself never invokes `sudo`.
 

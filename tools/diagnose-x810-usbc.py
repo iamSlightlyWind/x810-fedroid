@@ -21,7 +21,8 @@ from typing import Any, Iterable
 
 
 TYPEC_ATTRIBUTES = {
-    "name", "power_role", "data_role", "port_type", "preferred_role",
+    "name", "type", "id_header", "product", "cert_stat",
+    "power_role", "data_role", "port_type", "preferred_role",
     "accessory_mode", "vconn_source", "usb_power_delivery_revision",
     "supports_usb_power_delivery", "number_of_alternate_modes", "svid",
     "mode", "active", "orientation", "usb_type",
@@ -33,6 +34,7 @@ POWER_SUPPLY_ATTRIBUTES = {
     "input_current_limit", "charge_type", "health",
 }
 DRM_ATTRIBUTES = {"status", "enabled", "dpms", "modes"}
+USB_ROLE_ATTRIBUTES = {"role"}
 LOG_PATTERN = re.compile(
     r"sm5714|sm5440|tcpm|type.?c|usb.?pd|pdic|alt.?mode|displayport|"
     r"\bdrm\b.*\b(dp|hpd|mst)\b|\b(dp|hpd|mst)\b.*\bdrm\b|"
@@ -114,6 +116,13 @@ def collect_power_supplies(sysfs_root: Path) -> list[dict[str, Any]]:
 
 def collect_drm(sysfs_root: Path) -> list[dict[str, Any]]:
     return _walk_attributes(sysfs_root / "class/drm", DRM_ATTRIBUTES, max_depth=0)
+
+
+def collect_usb_roles(sysfs_root: Path) -> list[dict[str, Any]]:
+    """Capture the active USB controller data role without changing it."""
+    return _walk_attributes(
+        sysfs_root / "class/usb_role", USB_ROLE_ATTRIBUTES, max_depth=0
+    )
 
 
 def collect_identity(proc_root: Path) -> dict[str, str]:
@@ -239,6 +248,7 @@ def collect_snapshot(
         "identity": collect_identity(proc_root),
         "typec": collect_typec(sysfs_root),
         "power_supplies": collect_power_supplies(sysfs_root),
+        "usb_role_switches": collect_usb_roles(sysfs_root),
         "drm_connectors": collect_drm(sysfs_root),
     }
     if label:
