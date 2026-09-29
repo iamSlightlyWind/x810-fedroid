@@ -19,6 +19,9 @@ class RootfsZramConfigTests(unittest.TestCase):
         contents = override.read_text(encoding="utf-8")
         self.assertIn("[zram0]", contents)
         self.assertRegex(contents, re.compile(r"^zram-size\s*=\s*4096\s*$", re.MULTILINE))
+        self.assertIn("conf.d drop-in", contents)
+        app_override = OVERLAY / "etc/systemd/zram-generator.conf.d/90-tab-companion.conf"
+        self.assertFalse(app_override.exists(), "rootfs must not bake a per-user Tab Companion choice")
 
 
 if __name__ == "__main__":

@@ -403,12 +403,12 @@
 			link-name = "Internal DMIC Capture";
 
 			cpu {
-				/* X810 CYG1's stock built-in mic routes use TX AIF1. */
-				sound-dai = <&q6apmbedai TX_CODEC_DMA_TX_3>;
+				/* Built-in DMICs capture on the VA macro's own DMA lane. */
+				sound-dai = <&q6apmbedai VA_CODEC_DMA_TX_0>;
 			};
 
 			codec {
-				sound-dai = <&lpass_txmacro 0>;
+				sound-dai = <&lpass_vamacro 0>;
 			};
 
 			platform {
