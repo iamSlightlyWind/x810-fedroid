@@ -34,7 +34,7 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 | Wi-Fi | ✅ | WCN6855/ath11k works with X810 firmware and board data. The port is pinned to kernel 7.2.0; later 7.2.1–7.2.6 stable kernels had a Wi-Fi regression. |
 | Bluetooth | ✅ | Controller and X810 radio firmware/coexistence configuration work. |
 | Speakers | ✅ | Stereo output works; the PipeWire/WirePlumber routing fix is packaged and owner-confirmed. The GNOME left/right test-button UI is not needed to validate playback. |
-| Microphones | ❌ | The UCM now selects CYG1's `rec-stereo-mic` DEC0/DEC1 route and PipeWire exposes the source, but repeat captures were inconsistent (one low-level sample, later all-zero). Recording is not yet reliable. |
+| Microphones | 🟡 | A Linux candidate now uses the reference-backed VA-macro capture backend while retaining CYG1's physical DMIC3/1 recording pair. Short raw captures show nonzero signal, stronger on that mapping, but controlled speech and normal GNOME/PipeWire input remain unverified. |
 | Cameras | 🟡 | Front/rear sensors enumerate and libcamera support is integrated; a normal desktop capture flow still needs validation. Rear focus is fixed/manual, not autofocus. |
 | Hardware video decode | 🟡 | Stateful V4L2 decode was verified with owner-supplied X810 CYG1 firmware. Public releases omit that proprietary firmware; browser/VLC acceleration and encoding are not established. |
 | Qualcomm NPU / HTP | ❌ | CDSP remains disabled and no Fedora QNN/HTP runtime is integrated. The port now preserves the X810 CDSP firmware carveouts, but inference has not been enabled or tested. |

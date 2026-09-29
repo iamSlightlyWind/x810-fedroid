@@ -37,7 +37,7 @@ run_readonly "Capture devices" arecord -l
 run_readonly "Capture PCM names" arecord -L
 run_readonly "UCM card profiles" alsaucm listcards
 
-section "X810 TX-macro mixer controls (read only)"
+section "X810 TX/VA-macro mixer controls (read only)"
 if command -v amixer >/dev/null 2>&1; then
     controls="$(amixer -c "$CARD" controls 2>&1)" || {
         printf '%s\n' "$controls"
@@ -47,7 +47,11 @@ if command -v amixer >/dev/null 2>&1; then
     for name in \
         "MultiMedia3 Mixer TX_CODEC_DMA_TX_3" \
         "TX DEC1 MUX" "TX DMIC MUX1" "TX_AIF1_CAP Mixer DEC1" "TX_DEC1 Volume" \
-        "TX DEC2 MUX" "TX DMIC MUX2" "TX_AIF1_CAP Mixer DEC2" "TX_DEC2 Volume"; do
+        "TX DEC2 MUX" "TX DMIC MUX2" "TX_AIF1_CAP Mixer DEC2" "TX_DEC2 Volume" \
+        "MultiMedia3 Mixer VA_CODEC_DMA_TX_0" \
+        "VA DMIC MUX0" "VA DMIC MUX1" "VA DEC0 MUX" "VA DEC1 MUX" \
+        "VA_AIF1_CAP Mixer DEC0" "VA_AIF1_CAP Mixer DEC1" \
+        "VA_DEC0 Volume" "VA_DEC1 Volume"; do
         if grep -Fq "name='$name'" <<<"$controls"; then
             printf '[present] %s\n' "$name"
             amixer -c "$CARD" cget "name='$name'" 2>&1 || true

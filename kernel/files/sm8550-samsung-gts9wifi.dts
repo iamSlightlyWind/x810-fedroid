@@ -369,9 +369,11 @@
 	/*
 	 * Unlike the SM8550 QRD, the X710 has no WSA884x speaker path and no
 	 * WCD938x. Its four CS35L45 amplifiers consume PRIMARY_MI2S_RX over
-	 * TLMM126..129. The CYG1 gts9pwifi mixer paths route the built-in main and
-	 * sub microphones through the TX macro (TX DMIC1 and TX DMIC3), so expose
-	 * the board-specific TX-macro capture backend here.
+	 * TLMM126..129. CYG1's ordinary recording route uses TX-macro DEC0/1 with
+	 * physical DMIC3/DMIC1. This Linux candidate routes that X810-specific pair
+	 * through the VA macro's native capture DMA lane, matching the working S9
+	 * reference topology; this backend change still needs controlled mic input
+	 * validation.
 	 */
 	sound {
 		compatible = "qcom,sm8550-sndcard", "qcom,sm8450-sndcard";
@@ -1676,23 +1678,17 @@
 };
 
 &lpass_vamacro {
-	/*
-	 * Keep the VA macro configured because it supplies the TX macro's
-	 * frame-sync-generator clock. This sample-rate property configures its
-	 * optional VA decimators; the X810 capture DAI itself is the TX macro.
-	 */
+	pinctrl-names = "default";
+	pinctrl-0 = <&dmic01_default>, <&dmic23_default>,
+		    <&dmic45_default>, <&dmic67_default>;
+	/* Native VA-macro DMIC capture needs its decimator clock divider. */
 	qcom,dmic-sample-rate = <4800000>;
 	/* See vreg_l10b_1p8: the DMIC bias rail Samsung uses for va-vdd-micb. */
 	vdd-micb-supply = <&vreg_l10b_1p8>;
 	status = "okay";
 };
 
-/* The X810 CYG1 mixer paths select built-in DMIC1 and DMIC3 on the TX macro. */
-&lpass_txmacro {
-	pinctrl-names = "default";
-	pinctrl-0 = <&dmic01_default>, <&dmic23_default>,
-		    <&dmic45_default>, <&dmic67_default>;
-};
+/* Linux capture candidate routes the CYG1 DMIC3/1 pair through the VA macro. */
 
 &remoteproc_adsp {
 	firmware-name = "qcom/sm8550/adsp.mdt",
