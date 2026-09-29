@@ -150,6 +150,7 @@ MODULE_PARM_DESC(max_pps_ma,
  */
 int sm5714_battery_set_direct_charge(bool active);
 bool sm5714_battery_fast_charge_enabled(void);
+bool sm5714_battery_charge_limit_reached(int capacity);
 
 struct sm5440_direct {
 	struct device *dev;
@@ -701,6 +702,7 @@ static bool sm5440_eligible(struct sm5440_direct *sm)
 	voltage = sm5440_psy_get(sm->battery, POWER_SUPPLY_PROP_VOLTAGE_NOW);
 
 	return online > 0 && capacity >= 5 && capacity < 90 &&
+	       !sm5714_battery_charge_limit_reached(capacity) &&
 	       temp >= 100 && temp < 420 &&
 	       voltage >= 3500000 && voltage < 4350000;
 }
@@ -780,6 +782,17 @@ static void sm5440_work(struct work_struct *work)
 		goto out;
 	}
 
+	capacity = sm5440_psy_get(sm->battery, POWER_SUPPLY_PROP_CAPACITY);
+	if (capacity >= 0 && sm5714_battery_charge_limit_reached(capacity)) {
+		dev_info(sm->dev,
+			 "charge end threshold reached at %d%%; handing battery back\n",
+			 capacity);
+		ret = sm5440_restore_switching(sm);
+		if (ret)
+			delay = msecs_to_jiffies(SM5440_RETRY_MS);
+		goto out;
+	}
+
 	/*
 	 * PPS sources leave the programmable contract unless the sink refreshes
 	 * its Request periodically. Samsung's downstream loop does this every
@@ -804,7 +817,6 @@ static void sm5440_work(struct work_struct *work)
 		}
 	}
 
-	capacity = sm5440_psy_get(sm->battery, POWER_SUPPLY_PROP_CAPACITY);
 	pack_temp = sm5440_psy_get(sm->battery, POWER_SUPPLY_PROP_TEMP);
 	op_mode = i2c_smbus_read_byte_data(sm->client, SM5440_REG_CNTL5);
 	status3 = i2c_smbus_read_byte_data(sm->client, SM5440_REG_STATUS3);

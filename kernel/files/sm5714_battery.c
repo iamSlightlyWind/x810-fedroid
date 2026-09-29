@@ -35,6 +35,7 @@
 #include <linux/workqueue.h>
 
 #include "x810_pd_limits.h"
+#include "x810_charge_thresholds.h"
 
 #define SM5714_MUIC_I2C_ADDR		0x25
 #define SM5714_FG_I2C_ADDR		0x71
@@ -135,6 +136,11 @@ struct sm5714_battery {
 	 * attribute.
 	 */
 	bool fast_charge;
+	/* Standard power-supply SOC threshold policy; 0/100 preserves old behavior. */
+	int charge_control_start_threshold;
+	int charge_control_end_threshold;
+	bool charge_limit_active;
+	bool charge_control_start_configured;
 };
 
 static DEFINE_MUTEX(sm5714_global_lock);
@@ -142,10 +148,12 @@ static struct sm5714_battery *sm5714_primary;
 
 static int sm5714_get_online_raw(struct sm5714_battery *sm);
 static int sm5714_get_online(struct sm5714_battery *sm);
+static int sm5714_get_capacity(struct sm5714_battery *sm, int *val);
 static int sm5714_get_temp(struct sm5714_battery *sm, int *val);
 int sm5714_battery_set_pd_contract(unsigned int mv, unsigned int ma);
 bool sm5714_battery_fast_charge_enabled(void);
 int sm5714_battery_set_direct_charge(bool active);
+bool sm5714_battery_charge_limit_reached(int capacity);
 int sm5714_battery_set_otg(bool active);
 bool sm5714_battery_is_otg_active(void);
 
@@ -374,6 +382,16 @@ static int sm5714_configure_charging(struct sm5714_battery *sm)
 		ret = 0;
 		goto out_unlock;
 	}
+	/*
+	 * Opening Q4 stops the switching charger while preserving the cable/PD
+	 * contract for the rest of the system.  The SOC policy is shared with the
+	 * SM5440 owner, which hands the pack back before this path is reconfigured.
+	 */
+	if (READ_ONCE(sm->charge_limit_active)) {
+		ret = sm5714_chg_update_bits(sm, SM5714_CHG_REG_CNTL1,
+					     SM5714_CHG_CNTL1_ENQ4FET, 0);
+		goto out_unlock;
+	}
 
 	typec_mv = sm->typec_mv;
 	typec_ma = sm->typec_ma;
@@ -548,6 +566,7 @@ int sm5714_battery_set_direct_charge(bool active)
 	struct sm5714_battery *sm;
 	int temp;
 	int online;
+	int capacity;
 	int ret = 0;
 
 	mutex_lock(&sm5714_global_lock);
@@ -558,6 +577,20 @@ int sm5714_battery_set_direct_charge(bool active)
 	}
 
 	if (active) {
+		ret = sm5714_get_capacity(sm, &capacity);
+		if (ret)
+			goto out;
+		WRITE_ONCE(sm->charge_limit_active,
+			x810_charge_thresholds_update(
+				READ_ONCE(sm->charge_limit_active),
+				READ_ONCE(sm->charge_control_start_threshold),
+				READ_ONCE(sm->charge_control_end_threshold), capacity));
+		if (READ_ONCE(sm->charge_limit_active)) {
+			ret = sm5714_configure_charging(sm);
+			if (!ret)
+				ret = -EAGAIN;
+			goto out;
+		}
 		ret = sm5714_get_temp(sm, &temp);
 		if (ret)
 			goto out;
@@ -592,6 +625,44 @@ out:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(sm5714_battery_set_direct_charge);
+
+/*
+ * The SM5440 worker calls this before starting or continuing direct charging.
+ * Serialise the hysteresis update with threshold writes and the SM5714 policy.
+ */
+bool sm5714_battery_charge_limit_reached(int capacity)
+{
+	struct sm5714_battery *sm;
+	bool stopped, old_stopped;
+	int online, ret;
+
+	mutex_lock(&sm5714_global_lock);
+	sm = sm5714_primary;
+	if (!sm) {
+		stopped = true;
+		goto out;
+	}
+
+	old_stopped = READ_ONCE(sm->charge_limit_active);
+	stopped = x810_charge_thresholds_update(old_stopped,
+		READ_ONCE(sm->charge_control_start_threshold),
+		READ_ONCE(sm->charge_control_end_threshold), capacity);
+	WRITE_ONCE(sm->charge_limit_active, stopped);
+	if (stopped != old_stopped && !READ_ONCE(sm->direct_charging)) {
+		online = sm5714_get_online(sm);
+		if (online > 0) {
+			ret = sm5714_configure_charging(sm);
+			if (ret)
+				dev_err_ratelimited(sm->dev,
+					"failed to apply charge threshold policy: %d\n",
+					ret);
+		}
+	}
+out:
+	mutex_unlock(&sm5714_global_lock);
+	return stopped;
+}
+EXPORT_SYMBOL_GPL(sm5714_battery_charge_limit_reached);
 
 /*
  * Feed VBUS while TCPM owns the source role.  Samsung's downstream charger
@@ -913,6 +984,12 @@ static int sm5714_bat_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CAPACITY:
 		ret = sm5714_get_capacity(sm, &val->intval);
 		break;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+		val->intval = READ_ONCE(sm->charge_control_start_threshold);
+		return 0;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		val->intval = READ_ONCE(sm->charge_control_end_threshold);
+		return 0;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		ret = sm5714_get_voltage(sm, SM5714_FG_SRAM_VBAT, &val->intval);
 		break;
@@ -957,6 +1034,80 @@ static int sm5714_bat_get_property(struct power_supply *psy,
 	}
 
 	return ret;
+}
+
+static int sm5714_bat_set_property(struct power_supply *psy,
+				   enum power_supply_property psp,
+				   const union power_supply_propval *val)
+{
+	struct sm5714_battery *sm = power_supply_get_drvdata(psy);
+	int capacity = -1, old_start, old_end, new_start;
+	bool old_active;
+	bool old_start_configured;
+	bool reconfigure_attempted = false;
+	int ret;
+
+	if (psp != POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD &&
+	    psp != POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD)
+		return -EINVAL;
+
+	mutex_lock(&sm5714_global_lock);
+	old_start = READ_ONCE(sm->charge_control_start_threshold);
+	old_end = READ_ONCE(sm->charge_control_end_threshold);
+	old_active = READ_ONCE(sm->charge_limit_active);
+	old_start_configured = READ_ONCE(sm->charge_control_start_configured);
+	if (psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD) {
+		if (!x810_charge_thresholds_valid(val->intval, old_end)) {
+			ret = -EINVAL;
+			goto out_unlock;
+		}
+		WRITE_ONCE(sm->charge_control_start_threshold, val->intval);
+		WRITE_ONCE(sm->charge_control_start_configured, true);
+	} else {
+		new_start = old_start_configured ? old_start :
+			x810_charge_threshold_default_start(val->intval);
+		if (!x810_charge_thresholds_valid(new_start, val->intval)) {
+			ret = -EINVAL;
+			goto out_unlock;
+		}
+		WRITE_ONCE(sm->charge_control_start_threshold, new_start);
+		WRITE_ONCE(sm->charge_control_end_threshold, val->intval);
+	}
+
+	ret = sm5714_get_capacity(sm, &capacity);
+	if (ret)
+		goto restore_policy;
+	WRITE_ONCE(sm->charge_limit_active,
+		x810_charge_thresholds_update(old_active,
+			READ_ONCE(sm->charge_control_start_threshold),
+			READ_ONCE(sm->charge_control_end_threshold), capacity));
+	reconfigure_attempted = true;
+	ret = sm5714_configure_charging(sm);
+	if (ret)
+		goto restore_policy;
+
+	power_supply_changed(sm->psy_bat);
+	mutex_unlock(&sm5714_global_lock);
+	return 0;
+
+restore_policy:
+	WRITE_ONCE(sm->charge_control_start_threshold, old_start);
+	WRITE_ONCE(sm->charge_control_end_threshold, old_end);
+	WRITE_ONCE(sm->charge_control_start_configured, old_start_configured);
+	WRITE_ONCE(sm->charge_limit_active, old_active);
+	if (reconfigure_attempted && sm5714_configure_charging(sm))
+		dev_err(sm->dev,
+			"failed to restore charger after charge-threshold update error\n");
+out_unlock:
+	mutex_unlock(&sm5714_global_lock);
+	return ret;
+}
+
+static int sm5714_bat_property_is_writeable(struct power_supply *psy,
+					    enum power_supply_property psp)
+{
+	return psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD ||
+	       psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD;
 }
 
 static int sm5714_usb_get_property(struct power_supply *psy,
@@ -1007,6 +1158,8 @@ static enum power_supply_property sm5714_bat_props[] = {
 	POWER_SUPPLY_PROP_CURRENT_AVG,
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD,
 };
 
 static enum power_supply_property sm5714_usb_props[] = {
@@ -1022,6 +1175,8 @@ static const struct power_supply_desc sm5714_bat_desc = {
 	.properties	= sm5714_bat_props,
 	.num_properties	= ARRAY_SIZE(sm5714_bat_props),
 	.get_property	= sm5714_bat_get_property,
+	.set_property	= sm5714_bat_set_property,
+	.property_is_writeable = sm5714_bat_property_is_writeable,
 };
 
 static const struct power_supply_desc sm5714_usb_desc = {
@@ -1060,6 +1215,9 @@ static void sm5714_poll_work(struct work_struct *work)
 	    sm5714_get_capacity(sm, &capacity))
 		capacity = sm->last_capacity;
 
+	sm5714_battery_charge_limit_reached(capacity);
+	status = sm5714_get_status(sm);
+
 	old_thermal_state = sm->thermal_state;
 	if (online > 0 && !sm5714_get_temp(sm, &temp))
 		sm->thermal_state = sm5714_charge_thermal_state(sm, temp);
@@ -1078,9 +1236,19 @@ static void sm5714_poll_work(struct work_struct *work)
 	 */
 	if (online > 0 && !READ_ONCE(sm->direct_charging) &&
 	    status == POWER_SUPPLY_STATUS_NOT_CHARGING &&
-	    sm->thermal_state != SM5714_THERMAL_STOP) {
+	    sm->thermal_state != SM5714_THERMAL_STOP &&
+	    !READ_ONCE(sm->charge_limit_active)) {
 		cntl1 = i2c_smbus_read_byte_data(sm->chg, SM5714_CHG_REG_CNTL1);
 		if (cntl1 >= 0 && !(cntl1 & SM5714_CHG_CNTL1_ENQ4FET) &&
+		    !sm5714_configure_charging(sm))
+			status = sm5714_get_status(sm);
+	}
+
+	/* Retry opening Q4 if an earlier threshold stop could not reach the chip. */
+	if (online > 0 && !READ_ONCE(sm->direct_charging) &&
+	    READ_ONCE(sm->charge_limit_active)) {
+		cntl1 = i2c_smbus_read_byte_data(sm->chg, SM5714_CHG_REG_CNTL1);
+		if (cntl1 >= 0 && (cntl1 & SM5714_CHG_CNTL1_ENQ4FET) &&
 		    !sm5714_configure_charging(sm))
 			status = sm5714_get_status(sm);
 	}
@@ -1274,6 +1442,11 @@ static int sm5714_probe(struct i2c_client *client)
 	ret = devm_mutex_init(dev, &sm->chg_lock);
 	if (ret)
 		return ret;
+	/* No cap is applied unless userspace explicitly lowers this threshold. */
+	sm->charge_control_start_threshold = 0;
+	sm->charge_control_end_threshold = 100;
+	sm->charge_limit_active = false;
+	sm->charge_control_start_configured = false;
 
 	ret = i2c_smbus_read_byte_data(client, SM5714_CHG_REG_DEVICEID);
 	if (ret < 0)

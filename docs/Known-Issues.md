@@ -20,13 +20,13 @@ reused, and a retired number is simply absent rather than reassigned
 | 11 | libcamera had no sensor helper, so max gain | fixed — helper added, AGC runs |
 | 13 | Charging bypass on 25 W+ chargers | open — Linux driver/API support and verified hardware semantics are missing; not a GNOME-only patch |
 | 14 | Double tap to turn on the screen | fixed — with a GNOME extension UI |
-| 15 | Under-display fingerprint sensor (EgisTec EL721) | open — latest standalone kernel package includes reader modules and CYG1 mapping; installation/runtime and authentication remain unverified |
+| 15 | Under-display fingerprint sensor (EgisTec EL721) | open — live EL721/K250A devices and kernel modules are present, but Fedora has no EL721 `libfprint` backend; X810 calibration, FTS1BA90A FOD integration, and safe SPSS/QTEE ownership remain unresolved ([audit](x810-research/FINGERPRINT-LIVE-STATUS.md)) |
 | 16 | Hardware video decode (iris / VPU 3.0) | exact owner-authorized X810 CYG1 firmware is now included in clean builds and support-RPM updates; Moonlight live-stream decoder selection still needs device verification |
 | 17 | Speaker volume capped (~−19 dB) | fixed — Cirrus speaker-protection DSP firmware now loads |
 | 18 | `/`, `/etc`, `/usr` owned by the image build user | fixed — this had silently disabled *every* `tmpfiles.d` entry |
 | 19 | Kernel log flooded by ADSP handover messages | fixed — the repeat is logged at debug level now |
 | 20 | Wi-Fi dead on the 7.2.1–7.2.6 stable kernels | open — pinned to 7.2.0 |
-| 21 | PipeWire speaker streams fail to link | fixed in the live configuration; reproducible system-wide WirePlumber fix now ships in the overlay and support RPM; pending clean-install validation |
+| 21 | PipeWire speaker streams fail to link | fixed — system-wide WirePlumber configuration is packaged, and the owner confirms stereo playback works |
 | 22 | GNOME camera clients cannot open `root:video` camera nodes | fixed in installer and support-RPM upgrade path; fresh-login/device validation pending |
 | 23 | No 120 Hz display mode | fixed — user confirmed 120 Hz works on-device; 60 Hz remains the default |
 | 24 | ADSP/sensorspd start ordering around panel coldboot recovery | fixed in source: the sensor-proxy unit requests `sensorspd` only after required panel recovery; live package update / clean-boot validation pending |
@@ -45,7 +45,7 @@ still needs to be verified on that matching boot set with an on-device
 Also outstanding, not in the numbered register:
 
 - S Pen tilt is exposed as `ABS_TILT_X/Y`; live vector orientation and drawing-app behavior remain unverified (see `docs/Hardware-Notes.md`);
-- built-in microphone capture remains unverified: commit `fc986e2` corrects the X810 UCM to Samsung's stock DEC1/DEC2 mapping and ships in the [latest aggregate release](https://github.com/iamSlightlyWind/x810-fedroid/releases/latest); a recorded sample/level test is still needed. See `tools/diagnose-x810-mic.sh` for read-only routing checks;
+- built-in microphone capture remains open: the live UCM now selects Samsung CYG1's `rec-stereo-mic` route (DEC0/DEC1, DMIC3/DMIC1), but a five-second PipeWire capture had low-level nonzero samples and subsequent two- and ten-second captures were all-zero. Temporary recordings were deleted without listening or retaining them; reliable input remains unverified. See `tools/diagnose-x810-mic.sh` for read-only routing checks;
 - the Android `/vendor` mount has a shipped read-only logical-partition mapper;
   confirm the mount on-device after the next update (see below);
 - SELinux runs permissive;

@@ -91,3 +91,19 @@ create a second path to the same amplifiers. Keep MultiMedia2 untouched until a
 reproduction captures the GNOME/PipeWire stream's selected node and the
 corresponding ALSA PCM state. No GNOME test button or audio tone was triggered
 during this audit.
+
+## CYG1 built-in microphone route
+
+The X810 UCM initially selected the Android `handset-dmic-endfire` call path
+(TX DEC1/DEC2, DMIC1/DMIC3), while the stock `gts9pwifi` HAL assigns ordinary
+stereo recording to `rec-stereo-mic` → `sub-main-mic` (TX DEC0/DEC1, DMIC3 on
+MUX0 and DMIC1 on MUX1). The source and live UCM were changed to the stock
+stereo mapping. Follow-up PipeWire tests were inconsistent: a five-second
+sample had RMS 225/32768 and peak 3549/32768, while later two- and ten-second
+samples were all-zero despite the capture node reporting `RUNNING`. The
+recordings were deleted immediately; they were analyzed only for sample counts
+and levels, not played or retained. Source enumeration is not enough to call
+the microphone fixed. Reliable input and the GNOME input meter remain
+unverified. The current mixer showed both DEC0/DEC1 capture mixers on and the
+expected DMIC3/1 MUX values, so simply repeating the same route is not an
+adequate next step.

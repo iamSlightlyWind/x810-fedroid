@@ -33,8 +33,8 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 | Cover touchpad | ❓ | Not separately qualified. |
 | Wi-Fi | ✅ | WCN6855/ath11k works with X810 firmware and board data. The port is pinned to kernel 7.2.0; later 7.2.1–7.2.6 stable kernels had a Wi-Fi regression. |
 | Bluetooth | ✅ | Controller and X810 radio firmware/coexistence configuration work. |
-| Speakers | 🟡 | Stereo playback has been heard in user tests, and a PipeWire/WirePlumber routing fix is packaged. GNOME's left/right output-test buttons have previously frozen Settings; avoid those tests until retested. |
-| Microphones | ❓ | The X810 UCM route was corrected to match Samsung's CYG1 DEC1/DEC2 mapping and ships in the [latest aggregate release](https://github.com/iamSlightlyWind/x810-fedroid/releases/latest); microphone recording still needs validation. |
+| Speakers | ✅ | Stereo output works; the PipeWire/WirePlumber routing fix is packaged and owner-confirmed. The GNOME left/right test-button UI is not needed to validate playback. |
+| Microphones | ❌ | The UCM now selects CYG1's `rec-stereo-mic` DEC0/DEC1 route and PipeWire exposes the source, but repeat captures were inconsistent (one low-level sample, later all-zero). Recording is not yet reliable. |
 | Cameras | 🟡 | Front/rear sensors enumerate and libcamera support is integrated; a normal desktop capture flow still needs validation. Rear focus is fixed/manual, not autofocus. |
 | Hardware video decode | 🟡 | Stateful V4L2 decode was verified with owner-supplied X810 CYG1 firmware. Public releases omit that proprietary firmware; browser/VLC acceleration and encoding are not established. |
 | Qualcomm NPU / HTP | ❌ | CDSP remains disabled and no Fedora QNN/HTP runtime is integrated. The port now preserves the X810 CDSP firmware carveouts, but inference has not been enabled or tested. |
@@ -43,7 +43,7 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 | USB-C / powered USB hub | ✅ | The owner has confirmed that a powered USB hub supplies power to the tablet. Data passthrough and other host, dock, and display combinations are not all tested. |
 | Haptics | 🟡 | Kernel/DTB support is in the latest standalone kernel release; physical vibration validation on that kernel is pending. |
 | Suspend / resume | 🟡 | Resume is not qualified. The support update masks systemd sleep targets and ignores cover-close suspend as a freeze-prevention mitigation; it does not fix the kernel wake path. |
-| Fingerprint reader | ❌ | Authentication is unavailable. The latest standalone kernel release packages the EL721/K250A modules and CYG1 GPIO mapping, but its installation/runtime is unverified; secure-world and Linux authentication remain unvalidated. |
+| Fingerprint reader | ❌ | Authentication is unavailable. EL721/K250A nodes and kernel drivers are present on the running tablet, but there is no Fedora EL721 `libfprint` backend, verified X810 calibration set, or safe SPSS/QTEE owner lifecycle. |
 | Charging bypass | ❌ | No safe, verified Linux control is available. |
 
 These statuses describe what has been observed on this device, not promises for
