@@ -263,6 +263,7 @@ jobs:
           python3 tools/test-x810-install.py
           python3 tools/test-x810-pd-limits.py
           python3 tools/test-x810-npu-memory-policy.py
+          python3 tools/test-x810-suspend-candidate.py
           python3 tools/test-x810-fingerprint-kernel-contract.py
           python3 tools/test-x810-camera-diagnostic.py
           python3 tools/test-x810-graphics-policy.py

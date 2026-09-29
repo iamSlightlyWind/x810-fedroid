@@ -280,4 +280,24 @@ scripts/kconfig/merge_config.sh -m .config "$here/files/config-gts9wifi.fragment
 unset LDFLAGS
 make ARCH=arm64 LLVM=1 olddefconfig
 
+# Experimental suspend diagnostics/fixes are deliberately not part of the
+# default kernel bundle.  They are board-scoped but have not been validated on
+# the SM-X810 hardware.  Enable only for an explicitly supervised candidate
+# build after review: X810_SUSPEND_EXPERIMENTAL=1.
+case "${X810_SUSPEND_EXPERIMENTAL:-0}" in
+    0)
+        ;;
+    1)
+        for p in "$here"/experimental/suspend/*.patch; do
+            [ -f "$p" ] || continue
+            echo ">>> applying opt-in X810 suspend candidate: $(basename "$p")"
+            patch --batch --fuzz=0 --forward -p1 < "$p"
+        done
+        ;;
+    *)
+        echo "X810_SUSPEND_EXPERIMENTAL must be 0 or 1" >&2
+        exit 2
+        ;;
+esac
+
 echo ">>> kernel tree prepared: $(make ARCH=arm64 kernelrelease 2>/dev/null || true)"
