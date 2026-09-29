@@ -250,6 +250,7 @@ jobs:
           python3 tools/test-x810-build-fingerprint.py
           python3 tools/test-x810-release-manifest.py
           python3 tools/test-x810-gpu-firmware.py
+          python3 tools/test-x810-vpu-firmware.py
           python3 tools/test-rootfs-repo-gpg.py
           python3 tools/test-rootfs-zram-config.py
           python3 tools/test-port-rpm-staging.py
@@ -532,6 +533,9 @@ jobs:
               tar xzf /tmp/fw.tar.gz -C /
               python3 /work/tools/x810-gpu-firmware.py stage \
                 --source /x810-gpu-firmware --dest /usr/lib/firmware/qcom
+              python3 /work/tools/x810-vpu-firmware.py stage \
+                --source /work/firmware/x810-vpu-cyg1/vpu30_4v.mbn \
+                --dest /usr/lib/firmware/qcom/vpu
               cp -a /work/boot/dracut/90gts9wifi-usbnet /usr/lib/dracut/modules.d/
               cp /work/boot/dracut/dracut.conf.d/gts9wifi.conf /usr/lib/dracut/dracut.conf.d/
               dracut --kver "$KVER" --force /tmp/initramfs.img

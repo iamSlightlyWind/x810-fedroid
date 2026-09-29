@@ -26,8 +26,8 @@ ROOTFS_RECIPE_REVISION = "3"
 FULL_SET_RECIPE_REVISION = "1"
 
 KERNEL_PATHS = (
-    "kernel", "boot", "firmware/x810-cyg1",
-    "tools/make-twrp-zip.py", "tools/x810-gpu-firmware.py",
+    "kernel", "boot", "firmware/x810-cyg1", "firmware/x810-vpu-cyg1",
+    "tools/make-twrp-zip.py", "tools/x810-gpu-firmware.py", "tools/x810-vpu-firmware.py",
 )
 ROOTFS_PATHS = (
     "rootfs",

@@ -109,13 +109,13 @@ class FingerprintTests(unittest.TestCase):
         self.assertNotEqual(kernel_before, self.key("kernel"))
         self.assertNotEqual(rootfs_before, self.key("rootfs", kernel_rpm_sha256="b" * 64))
 
-    def test_vpu_firmware_change_invalidates_rootfs_but_not_kernel(self):
+    def test_vpu_firmware_change_invalidates_kernel_and_rootfs(self):
         kernel_before = self.key("kernel")
         rootfs_before = self.key("rootfs")
         vpu = self.root / "firmware/x810-vpu-cyg1/vpu30_4v.mbn"
         vpu.write_text("vpu firmware two\n", encoding="utf-8")
         self.commit_change("firmware/x810-vpu-cyg1/vpu30_4v.mbn")
-        self.assertEqual(kernel_before, self.key("kernel"))
+        self.assertNotEqual(kernel_before, self.key("kernel"))
         self.assertNotEqual(rootfs_before, self.key("rootfs"))
 
     def test_component_parameters_are_in_the_key(self):

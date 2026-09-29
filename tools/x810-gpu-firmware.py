@@ -35,6 +35,16 @@ EXPECTED_SHA256 = {
     "gmu_gen70200.bin": "1a2a419c39046d3141fc5fed5aa7f971de2db40cc7a1d89693c3e26fad64dd98",
 }
 
+# These exact CYG1 blobs are required by drivers built into the kernel: those
+# drivers can probe before the real rootfs (and its support RPMs) is mounted.
+EXPECTED_VENDOR_BOOT_SHA256 = {
+    f"usr/lib/firmware/qcom/{name}": digest
+    for name, digest in EXPECTED_SHA256.items()
+}
+EXPECTED_VENDOR_BOOT_SHA256["usr/lib/firmware/qcom/vpu/vpu30_4v.mbn"] = (
+    "c02a4f1cb253f4b817994c00145dc9abbd59a10bfcd9fd5d0c2f223c0dc543ba"
+)
+
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -148,12 +158,18 @@ def _parse_newc(data: bytes) -> dict[str, bytes]:
             name.startswith("usr/lib/firmware/qcom/")
             or name.startswith("lib/firmware/qcom/")
         ):
-            files[name.rsplit("/", 1)[-1]] = data[body_start:body_end]
+            # Keep the complete archive path: matching basenames would allow a
+            # misplaced or duplicate blob to pass the early-boot check.
+            files[name] = data[body_start:body_end]
         offset = (body_end + 3) & ~3
     return files
 
 
-def check_vendor_boot(image: Path, lz4: str = "lz4", expected: Mapping[str, str] = EXPECTED_SHA256) -> None:
+def check_vendor_boot(
+    image: Path,
+    lz4: str = "lz4",
+    expected: Mapping[str, str] = EXPECTED_VENDOR_BOOT_SHA256,
+) -> None:
     raw = image.read_bytes()
     if len(raw) < 4096 or raw[:8] != b"VNDRBOOT":
         raise ValueError("not an Android vendor_boot image")
@@ -176,10 +192,10 @@ def check_vendor_boot(image: Path, lz4: str = "lz4", expected: Mapping[str, str]
     files = _parse_newc(completed.stdout)
     missing = sorted(set(expected) - files.keys())
     if missing:
-        raise ValueError("vendor_boot initramfs lacks X810 CYG1 GPU firmware: " + ", ".join(missing))
+        raise ValueError("vendor_boot initramfs lacks required X810 CYG1 early firmware paths: " + ", ".join(missing))
     wrong = [name for name, digest in expected.items() if _sha256(files[name]) != digest]
     if wrong:
-        raise ValueError("vendor_boot has generic/wrong GPU firmware instead of X810 CYG1 blobs: " + ", ".join(wrong))
+        raise ValueError("vendor_boot has generic/wrong X810 CYG1 early firmware: " + ", ".join(wrong))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -203,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"verified {len(EXPECTED_SHA256)} X810 CYG1 GPU firmware blobs in {args.source}")
         else:
             check_vendor_boot(args.image, args.lz4)
-            print(f"verified X810 CYG1 Adreno firmware in {args.image}")
+            print(f"verified X810 CYG1 GPU/VPU early firmware in {args.image}")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         parser.error(str(exc))
     return 0

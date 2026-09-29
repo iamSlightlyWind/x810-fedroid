@@ -81,12 +81,15 @@ class FirmwareStagingTests(unittest.TestCase):
     def test_newc_parser_finds_qcom_firmware_files(self):
         content = self.payloads["a740_zap.mdt"]
         archive = cpio_newc_file("usr/lib/firmware/qcom/a740_zap.mdt", content) + cpio_trailer()
-        self.assertEqual(firmware._parse_newc(archive)["a740_zap.mdt"], content)
+        self.assertEqual(firmware._parse_newc(archive)["usr/lib/firmware/qcom/a740_zap.mdt"], content)
 
     def test_vendor_boot_checker_requires_exact_firmware(self):
         initramfs = b"".join(
-            cpio_newc_file(f"usr/lib/firmware/qcom/{name}", content)
-            for name, content in self.payloads.items()
+            cpio_newc_file(path, content)
+            for path, content in {
+                **{f"usr/lib/firmware/qcom/{name}": data for name, data in self.payloads.items()},
+                "usr/lib/firmware/qcom/vpu/vpu30_4v.mbn": b"exact-CYG1-vpu-test-fixture",
+            }.items()
         ) + cpio_trailer()
         image = bytearray(4096 + len(initramfs))
         image[:8] = b"VNDRBOOT"
@@ -103,11 +106,59 @@ class FirmwareStagingTests(unittest.TestCase):
             encoding="utf-8",
         )
         fake_lz4.chmod(0o755)
-        firmware.check_vendor_boot(image_path, str(fake_lz4), self.expected)
-        wrong = dict(self.expected)
-        wrong["a740_zap.mdt"] = "0" * 64
-        with self.assertRaisesRegex(ValueError, "generic/wrong GPU firmware"):
+        expected = {
+            **{f"usr/lib/firmware/qcom/{name}": digest for name, digest in self.expected.items()},
+            "usr/lib/firmware/qcom/vpu/vpu30_4v.mbn": hashlib.sha256(b"exact-CYG1-vpu-test-fixture").hexdigest(),
+        }
+        firmware.check_vendor_boot(image_path, str(fake_lz4), expected)
+        wrong = dict(expected)
+        wrong["usr/lib/firmware/qcom/a740_zap.mdt"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "generic/wrong X810 CYG1 early firmware"):
             firmware.check_vendor_boot(image_path, str(fake_lz4), wrong)
+
+    def test_vendor_boot_requires_vpu_at_exact_nested_path_and_hash(self):
+        image_path = self.root / "vendor_boot_missing_vpu.img"
+        initramfs = b"".join(
+            cpio_newc_file(f"usr/lib/firmware/qcom/{name}", content)
+            for name, content in self.payloads.items()
+        ) + cpio_trailer()
+        image = bytearray(4096 + len(initramfs))
+        image[:8] = b"VNDRBOOT"
+        struct.pack_into("<II", image, 8, 4, 4096)
+        struct.pack_into("<I", image, 24, len(initramfs))
+        image[4096:] = initramfs
+        image_path.write_bytes(image)
+        fake_lz4 = self.root / "lz4-test-double"
+        fake_lz4.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, sys\n"
+            "sys.stdout.buffer.write(pathlib.Path(sys.argv[-1]).read_bytes())\n",
+            encoding="utf-8",
+        )
+        fake_lz4.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, "vpu/vpu30_4v.mbn"):
+            firmware.check_vendor_boot(image_path, str(fake_lz4))
+
+    def test_vendor_boot_rejects_wrong_vpu_hash_at_correct_path(self):
+        initramfs = cpio_newc_file("usr/lib/firmware/qcom/vpu/vpu30_4v.mbn", b"wrong vpu") + cpio_trailer()
+        image = bytearray(4096 + len(initramfs))
+        image[:8] = b"VNDRBOOT"
+        struct.pack_into("<II", image, 8, 4, 4096)
+        struct.pack_into("<I", image, 24, len(initramfs))
+        image[4096:] = initramfs
+        image_path = self.root / "vendor_boot_wrong_vpu.img"
+        image_path.write_bytes(image)
+        fake_lz4 = self.root / "lz4-test-double"
+        fake_lz4.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, sys\n"
+            "sys.stdout.buffer.write(pathlib.Path(sys.argv[-1]).read_bytes())\n",
+            encoding="utf-8",
+        )
+        fake_lz4.chmod(0o755)
+        expected_vpu = {"usr/lib/firmware/qcom/vpu/vpu30_4v.mbn": "c02a4f1cb253f4b817994c00145dc9abbd59a10bfcd9fd5d0c2f223c0dc543ba"}
+        with self.assertRaisesRegex(ValueError, "wrong X810 CYG1 early firmware"):
+            firmware.check_vendor_boot(image_path, str(fake_lz4), expected_vpu)
 
 
 if __name__ == "__main__":
