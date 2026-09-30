@@ -1,0 +1,14 @@
+[Unit]
+Description=Provide the X810 display with a default sRGB color profile
+Requires=colord.service
+After=colord.service
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/gts9wifi-color-profile
+RemainAfterExit=yes
+TimeoutStartSec=20
+
+[Install]
+WantedBy=multi-user.target

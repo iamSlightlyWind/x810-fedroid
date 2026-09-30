@@ -22,6 +22,7 @@ Requires:       pipewire-alsa
 Requires:       pipewire-pulseaudio
 Requires:       wireplumber
 Requires:       pipewire-utils
+Requires:       colord
 Provides:       iio-sensor-proxy = 3.9
 
 Source0:        port-overlay.tar.gz
@@ -119,6 +120,11 @@ if command -v systemctl >/dev/null 2>&1; then
     # restarts WirePlumber/reselects HiFi after ALSA is present, never the ADSP.
     systemctl enable gts9wifi-audio-session.service >/dev/null 2>&1 || :
     systemctl start gts9wifi-audio-session.service >/dev/null 2>&1 || :
+    # This panel has no EDID and no assigned profile by default. Mutter then
+    # reports Night Light as supported but leaves GAMMA_LUT unset. Create a
+    # persistent system-scope sRGB fallback while preserving any custom ICC.
+    systemctl enable gts9wifi-color-profile.service >/dev/null 2>&1 || :
+    systemctl start gts9wifi-color-profile.service >/dev/null 2>&1 || :
     # qcom-cpufreq-hw defers until the SM8550 OSM L3 interconnect provider
     # registers. Load it now so an RPM update repairs an already-booted system;
     # modules-load.d repeats this at every boot. Older/foreign kernels may not

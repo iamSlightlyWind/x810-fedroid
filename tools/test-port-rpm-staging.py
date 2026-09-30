@@ -13,6 +13,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SupportRpmStagingTests(unittest.TestCase):
+    def test_edidless_x810_panel_gets_persistent_srgb_fallback_for_night_light(self):
+        helper = ROOT / "rootfs/overlay/usr/libexec/gts9wifi-color-profile"
+        unit = ROOT / "rootfs/overlay/usr/lib/systemd/system/gts9wifi-color-profile.service"
+        helper_text = helper.read_text(encoding="utf-8")
+        unit_text = unit.read_text(encoding="utf-8")
+        spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
+
+        self.assertTrue(helper.stat().st_mode & 0o111)
+        self.assertIn("device_id=xrandr-DSI-1", helper_text)
+        self.assertIn("/usr/share/color/icc/colord/sRGB.icc", helper_text)
+        self.assertIn('create-device "$device_id" normal display', helper_text)
+        self.assertIn('device-add-profile "$device_path" "$profile_path"', helper_text)
+        self.assertIn('device-make-profile-default "$device_path" "$profile_path"', helper_text)
+        self.assertIn("preserving the existing DSI-1 color profile", helper_text)
+        self.assertIn("Requires=colord.service", unit_text)
+        self.assertIn("Before=display-manager.service", unit_text)
+        self.assertIn("Requires:       colord", spec)
+        self.assertIn("systemctl enable gts9wifi-color-profile.service", spec)
+        self.assertIn("systemctl start gts9wifi-color-profile.service", spec)
+
     def test_measured_x810_touch_calibration_is_in_fresh_image_and_update(self):
         rule_path = (
             ROOT

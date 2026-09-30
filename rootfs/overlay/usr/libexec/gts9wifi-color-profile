@@ -1,0 +1,52 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# The tablet's DSI panel has no EDID. Without a colord default profile Mutter
+# does not generate its per-output gamma LUT, so GNOME Night Light is a no-op.
+set -euo pipefail
+
+device_id=xrandr-DSI-1
+profile_file=/usr/share/color/icc/colord/sRGB.icc
+
+if [[ ! -x /usr/bin/colormgr || ! -r "$profile_file" ]]; then
+	echo "gts9wifi-color-profile: colord or its sRGB profile is unavailable" >&2
+	exit 1
+fi
+
+profile_path=$(/usr/bin/colormgr find-profile-by-filename "$profile_file" |
+	sed -n 's/^Object Path:[[:space:]]*//p' | head -n 1)
+if [[ -z "$profile_path" ]]; then
+	echo "gts9wifi-color-profile: could not resolve the system sRGB profile" >&2
+	exit 1
+fi
+
+# Create a persistent system-scope output record. Mutter also makes a
+# per-session temporary record with the same device ID; colord associates it
+# with this persistent record and inherits the selected profile.
+device_path=$(/usr/bin/colormgr get-devices | awk -v wanted="$device_id" '
+	/^Object Path:/ { path = $3 }
+	/^Scope:/ { scope = $2 }
+	/^Device ID:/ && $3 == wanted && scope == "normal" { print path; exit }
+')
+if [[ -z "$device_path" ]]; then
+	created=$(/usr/bin/colormgr create-device "$device_id" normal display)
+	device_path=$(printf '%s\n' "$created" |
+		sed -n 's/^Object Path:[[:space:]]*//p' | head -n 1)
+fi
+if [[ -z "$device_path" ]]; then
+	echo "gts9wifi-color-profile: could not create the persistent DSI-1 device" >&2
+	exit 1
+fi
+
+# Respect any user-selected calibrated profile. Install sRGB only as the
+# fallback for this EDID-less panel, and keep reruns idempotent.
+if current=$(/usr/bin/colormgr device-get-default-profile "$device_path" 2>/dev/null); then
+	if grep -Fq "$profile_file" <<<"$current"; then
+		exit 0
+	fi
+	echo "gts9wifi-color-profile: preserving the existing DSI-1 color profile"
+	exit 0
+fi
+
+/usr/bin/colormgr device-add-profile "$device_path" "$profile_path"
+/usr/bin/colormgr device-make-profile-default "$device_path" "$profile_path"
+echo "gts9wifi-color-profile: assigned sRGB as the fallback profile for DSI-1"
