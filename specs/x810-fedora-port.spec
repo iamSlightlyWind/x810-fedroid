@@ -8,6 +8,7 @@ BuildArch:      aarch64
 # sources are in the repository and no compiled debugsource package is needed.
 %global debug_package %{nil}
 Requires:       systemd
+Requires:       policycoreutils
 Requires:       python3
 Requires:       device-mapper
 Requires:       libcamera-ipa%{?_isa} = 0.7.1-1.fc44
@@ -48,6 +49,21 @@ tar -xzf %{SOURCE0} -C %{buildroot}
 install -D -m0644 %{SOURCE2} %{buildroot}%{_licensedir}/%{name}/LICENSE
 
 %posttrans
+# Existing rootfs archives were extracted by TWRP without Fedora's SELinux
+# xattrs. Repair labels immediately to stop permissive-mode AVC flooding, then
+# request Fedora's stock early-boot autorelabel once. That reboot relaunches
+# PID 1 and services with correct SELinux domains. New images already contain
+# both markers and therefore do not repeat this migration on every update.
+selinux_migration_marker=/var/lib/x810-fedora/selinux-relabel-v1-requested
+if [ ! -e "$selinux_migration_marker" ] && command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+    if command -v restorecon >/dev/null 2>&1; then
+        restorecon -RFx / >/dev/null 2>&1 || :
+    fi
+    printf '%s\n' '-F' > /.autorelabel
+    mkdir -p /var/lib/x810-fedora
+    touch "$selinux_migration_marker"
+fi
+
 if command -v getent >/dev/null 2>&1 && command -v usermod >/dev/null 2>&1; then
     # The installer assigns the chosen desktop account UID 1000. Add it to
     # video on existing installations so the updater repairs camera-node

@@ -13,6 +13,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SupportRpmStagingTests(unittest.TestCase):
+    def test_selinux_labels_are_repaired_on_clean_and_existing_installs(self):
+        builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")
+        spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
+        contract = (ROOT / "tools/test-port-build-contract.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"$rootfs/.autorelabel"', builder)
+        self.assertIn("selinux-relabel-v1-requested", builder)
+        self.assertIn("Requires:       policycoreutils", spec)
+        self.assertIn("restorecon -RFx /", spec)
+        self.assertIn("/.autorelabel", spec)
+        self.assertIn("selinux-relabel-v1-requested", spec)
+        self.assertIn("fresh rootfs must request Fedora's full SELinux autorelabel", contract)
+
     def test_edidless_x810_panel_gets_persistent_srgb_fallback_for_night_light(self):
         helper = ROOT / "rootfs/overlay/usr/libexec/gts9wifi-color-profile"
         unit = ROOT / "rootfs/overlay/usr/lib/systemd/system/gts9wifi-color-profile.service"

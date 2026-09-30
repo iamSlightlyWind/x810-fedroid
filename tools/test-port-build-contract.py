@@ -76,6 +76,12 @@ def check_power_profile_mapping(rootfs):
 
 def check(rootfs, manifest_path, version, rpm_path=None):
     rootfs = Path(rootfs)
+    autorelabel = rootfs / ".autorelabel"
+    migration_marker = rootfs / "var/lib/x810-fedora/selinux-relabel-v1-requested"
+    if not autorelabel.is_file() or "-F" not in autorelabel.read_text(encoding="utf-8"):
+        fail("fresh rootfs must request Fedora's full SELinux autorelabel on first boot")
+    if not migration_marker.is_file():
+        fail("fresh rootfs is missing the one-time SELinux migration marker")
     check_power_profile_mapping(rootfs)
     tuning_overlay = REPO_ROOT / "rootfs/overlay" / HI1337_TUNING_FILE.lstrip("/")
     tuning_image = rootfs / HI1337_TUNING_FILE.lstrip("/")
@@ -167,6 +173,9 @@ def check(rootfs, manifest_path, version, rpm_path=None):
     files = subprocess.check_output(["rpm", "-qpl", str(package_path)], text=True).splitlines()
     if PORT_FILE not in files:
         fail("support RPM does not own port.json")
+    scripts = subprocess.check_output(["rpm", "-qp", "--scripts", str(package_path)], text=True)
+    if "selinux-relabel-v1-requested" not in scripts or "restorecon -RFx /" not in scripts or "/.autorelabel" not in scripts:
+        fail("support RPM must repair old SELinux labels and schedule Fedora autorelabel once")
     sensor_runtime_files = (
         "/usr/libexec/iio-sensor-proxy",
         "/usr/bin/monitor-sensor",

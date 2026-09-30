@@ -49,7 +49,10 @@ Also outstanding, not in the numbered register:
 - built-in microphone now enumerates and captures environmental input. A late-ALSA-card session recovery, persistent `audio` group membership, and higher VA decimator gain (120/124) are installed live and in the Fedora port source; five-second captures showed stable nonzero signal without clipping and GNOME Settings was linked to the built-in mic. Natural speech level/intelligibility remains unverified. See `docs/x810-research/AUDIO-PIPEWIRE.md` and `tools/diagnose-x810-mic.sh`;
 - the Android `/vendor` mount has a shipped read-only logical-partition mapper;
   confirm the mount on-device after the next update (see below);
-- SELinux runs permissive;
+- SELinux remains permissive, but first boot now requests Fedora's standard full
+  autorelabel because TWRP extraction drops SELinux xattrs. The support RPM
+  performs a one-time relabel migration and schedules the standard relabel
+  reboot for installs created before this fix;
 - file capabilities are lost when the rootfs is packed (see below);
 - the VPU encoder node `/dev/video18` is untested;
 - early-boot timestamps read 1970 — the RTC has no valid time before NTP;

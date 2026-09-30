@@ -456,6 +456,16 @@ else
     echo "    WARN: /etc/selinux/config not found; SELinux left at default" >&2
 fi
 
+# TWRP's tar extraction does not restore Fedora's security.selinux xattrs.
+# Request Fedora's standard early-boot relabel before normal services start;
+# the autorelabel generator relabels the filesystem and reboots once so PID 1
+# and services are launched in their intended SELinux domains. The support RPM
+# uses this marker for a one-time migration on older installations too.
+printf '%s\n' '-F' > "$rootfs/.autorelabel"
+chmod 0600 "$rootfs/.autorelabel"
+mkdir -p "$rootfs/var/lib/x810-fedora"
+touch "$rootfs/var/lib/x810-fedora/selinux-relabel-v1-requested"
+
 # USB gadget network comes up configured by the pmOS initramfs; keep the
 # address after switch_root so first-boot debugging works over SSH.
 mkdir -p "$rootfs/etc/NetworkManager/system-connections"
