@@ -516,6 +516,9 @@ jobs:
               export KBUILD_BUILD_TIMESTAMP="1970-01-01 00:00:00 UTC"
               export KBUILD_BUILD_USER=x810-reproducible KBUILD_BUILD_HOST=x810-reproducible
               export LC_ALL=C
+              python3 /work/tools/test-dpu-color-resource-modeset.py \
+                drivers/gpu/drm/msm/disp/dpu1/dpu_crtc.c \
+                drivers/gpu/drm/msm/msm_atomic.c
               bash /work/kernel/prepare.sh .
               echo "-gts9wifi" > localversion-gts9wifi
               cd ..

@@ -36,6 +36,7 @@ reused, and a retired number is simply absent rather than reassigned
 | 28 | Deep suspend can freeze and fail to wake | mitigated in the reproducible overlay: lid close ignores suspend and sleep targets are masked; root cause still needs X810 wake-source tracing |
 | 30 | Device-wide GPU startup/rendering on fresh install | exact X810 CYG1 Adreno firmware is now embedded in rootfs and vendor_boot; validate the new aggregate on-device |
 | 31 | Fine visual artifacts in GTK4 controls | global `GSK_GPU_DISABLE=merge` profile is in the rootfs and updater RPM; Vulkan/Turnip remains selected, fresh-install verification pending |
+| 32 | External-display transitions can leave both screens frozen/fading | DPU atomic-resource reassignment fix from the Tab S9 Ultra port is included in the kernel; user reports external display is working correctly on X810 |
 
 Haptics are enabled in the kernel source (stock-active-high GPIO18 plus
 `gpio-vibra`) and included in the latest standalone kernel release; the tablet

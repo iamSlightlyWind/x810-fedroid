@@ -558,6 +558,15 @@ The debug gadget was originally RNDIS and was flaky under sustained sessions
 and suspend cycles; converting it to ECM fixed the host binding. Host mode, PD
 and docks work.
 
+The 2026-09-30 host log shows the USB hub re-enumerating, followed by
+`typec_displayport ... probe ... error -71` during PD renegotiation. Upstream
+Type-C DP code returns `-EPROTO` when the port data role is not host at probe;
+this is a negotiation/role failure, not evidence of a GPU fault. Separately,
+the Tab S9 Ultra port reproduced a dual-display modeset wedge on the same
+SM8550 DPU family and fixed a DPU atomic resource-reassignment bug. The
+zero-fuzz port of that fix is now in the X810 kernel source, and the user has
+confirmed external-display operation is now working correctly on the X810.
+
 ---
 
 ## Cross-cutting notes
