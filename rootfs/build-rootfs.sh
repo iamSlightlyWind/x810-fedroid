@@ -240,7 +240,7 @@ if [ "$desktop" = "gnome" ]; then
         --use-host-config "${dnf_repo_args[@]}" \
         --setopt=install_weak_deps=False --setopt=tsflags=nodocs install \
         '@^workstation-product-environment' snapshot \
-        pipewire wireplumber pipewire-pulseaudio pipewire-alsa
+        pipewire wireplumber pipewire-pulseaudio pipewire-alsa pipewire-utils
     # The first-login welcome wizard has nothing to offer in a pre-provisioned
     # image; drop it so the first boot goes straight to the gdm login.
     dnf -y --installroot="$rootfs" --use-host-config "${dnf_repo_args[@]}" -q remove \

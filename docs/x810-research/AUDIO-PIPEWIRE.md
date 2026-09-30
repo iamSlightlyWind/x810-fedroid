@@ -92,7 +92,7 @@ reproduction captures the GNOME/PipeWire stream's selected node and the
 corresponding ALSA PCM state. No GNOME test button or audio tone was triggered
 during this audit.
 
-## CYG1 built-in microphone route
+## CYG1 built-in microphone route and late-card recovery
 
 The X810 UCM initially selected the Android `handset-dmic-endfire` call path
 (TX DEC1/DEC2, DMIC1/DMIC3), while the stock `gts9pwifi` HAL assigns ordinary
@@ -107,3 +107,37 @@ the microphone fixed. Reliable input and the GNOME input meter remain
 unverified. The current mixer showed both DEC0/DEC1 capture mixers on and the
 expected DMIC3/1 MUX values, so simply repeating the same route is not an
 adequate next step.
+
+### September 30: PipeWire had no hardware access in the remote session
+
+On the live Fedora tablet, `/proc/asound/cards` showed the Samsung card, but
+`arecord -l` initially reported no sound cards and the remote user's PipeWire
+graph had no audio objects. The PCM and control nodes were `root:audio` mode
+0660 with logind `uaccess`; the only ACL holder was the GDM greeter, not UID
+1000. Adding the desktop account to `audio`, granting its current UID a
+temporary ACL for the live `/dev/snd` nodes, and restarting its PipeWire and
+WirePlumber services made both ALSA capture PCMs and the UCM-backed built-in
+microphone source appear. The temporary ACL is runtime-only; the group
+membership is persistent.
+
+The port now includes `gts9wifi-audio-session.service`, modeled on the
+reference port's late-card recovery: after the existing panel/ADSP boot order
+and ALSA card registration, it restarts only `alsa-restore` and the desktop
+user's WirePlumber, then selects the UCM `HiFi` profile. It never hot-restarts
+the ADSP. This recovery ran successfully on the live tablet and selected
+`HiFi`; the built-in source appeared again. A short PipeWire capture contained
+nonzero samples, but no controlled spoken phrase was available, so this fixes
+the missing capture-device/session graph, **not yet a proven intelligible
+microphone signal**. Keep the issue open until a speech/input-meter check
+succeeds.
+
+The owner's live GNOME Settings stream was subsequently confirmed linked to
+`Built-in digital microphones`, with the ALSA PCM `RUNNING`. The prior UCM gain
+was `99/124` (shown as `80%`, about 25 dB below full scale). Level-only captures
+at that setting were near the noise floor and aligned with the owner's
+no-activity report. Both VA decimator gains are now set to `120/124` (4 dB below
+maximum) in the live mixer and packaged UCM. After reloading HiFi, five seconds
+of ambient capture measured roughly 487–583 RMS counts and 2,198–3,311 peak
+counts per channel, with no clipped samples. The temporary recording was
+deleted. This demonstrates an active signal path and materially stronger
+environmental input; intelligible speech still needs owner confirmation.

@@ -21,6 +21,7 @@ Requires:       pipewire
 Requires:       pipewire-alsa
 Requires:       pipewire-pulseaudio
 Requires:       wireplumber
+Requires:       pipewire-utils
 Provides:       iio-sensor-proxy = 3.9
 
 Source0:        port-overlay.tar.gz
@@ -59,6 +60,12 @@ if command -v getent >/dev/null 2>&1 && command -v usermod >/dev/null 2>&1; then
     # The udev rule limits this group access to the vibrator event node.
     if [ -n "$desktop_user" ] && getent group input >/dev/null 2>&1; then
         usermod -a -G input "$desktop_user" || :
+    fi
+    # Keep ALSA hardware capture/playback available to the port's desktop
+    # user's PipeWire services even in non-seat/SSH-started sessions. Normal
+    # logind uaccess ACLs still grant devices to the active graphical user.
+    if [ -n "$desktop_user" ] && getent group audio >/dev/null 2>&1; then
+        usermod -a -G audio "$desktop_user" || :
     fi
 fi
 if command -v systemctl >/dev/null 2>&1; then
@@ -107,6 +114,11 @@ if command -v systemctl >/dev/null 2>&1; then
     # can select power-saver/performance from GNOME's normal power menu.
     systemctl enable tuned.service tuned-ppd.service >/dev/null 2>&1 || :
     systemctl start tuned-ppd.service >/dev/null 2>&1 || :
+    # The Qualcomm ALSA card can register after WirePlumber's first scan. Run
+    # the bounded user-session recovery now on updates and every boot; it only
+    # restarts WirePlumber/reselects HiFi after ALSA is present, never the ADSP.
+    systemctl enable gts9wifi-audio-session.service >/dev/null 2>&1 || :
+    systemctl start gts9wifi-audio-session.service >/dev/null 2>&1 || :
     # qcom-cpufreq-hw defers until the SM8550 OSM L3 interconnect provider
     # registers. Load it now so an RPM update repairs an already-booted system;
     # modules-load.d repeats this at every boot. Older/foreign kernels may not

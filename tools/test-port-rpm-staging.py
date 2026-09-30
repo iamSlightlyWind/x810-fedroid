@@ -248,6 +248,7 @@ class SupportRpmStagingTests(unittest.TestCase):
             "wireplumber",
             "pipewire-pulseaudio",
             "pipewire-alsa",
+            "pipewire-utils",
         ):
             self.assertRegex(
                 packages,
@@ -262,8 +263,36 @@ class SupportRpmStagingTests(unittest.TestCase):
         self.assertIn('usermod -a -G video "$desktop_user"', spec)
         self.assertIn('getent group input', spec)
         self.assertIn('usermod -a -G input "$desktop_user"', spec)
+        self.assertIn('getent group audio', spec)
+        self.assertIn('usermod -a -G audio "$desktop_user"', spec)
         install = (ROOT / "tools/x810-install").read_text()
-        self.assertIn("--groups wheel,video,input", install)
+        self.assertIn("--groups wheel,video,input,audio", install)
+
+    def test_audio_session_recovers_late_alsa_card_without_restarting_adsp(self):
+        helper = (ROOT / "rootfs/overlay/usr/libexec/gts9wifi-audio-session").read_text(
+            encoding="utf-8"
+        )
+        unit = (ROOT / "rootfs/overlay/usr/lib/systemd/system/"
+                "gts9wifi-audio-session.service").read_text(encoding="utf-8")
+        spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
+
+        self.assertIn("/dev/snd/controlC0", helper)
+        self.assertIn("systemctl restart alsa-restore.service", helper)
+        self.assertIn("systemctl --user restart wireplumber.service", helper)
+        self.assertIn('wpctl set-profile "$card_id" "$profile_id"', helper)
+        self.assertIn("audio-session-refreshed-$uid", helper)
+        self.assertNotRegex(helper, r"remoteproc.*/state|echo\s+restart")
+        self.assertIn("gts9wifi-adsp-boot.service", unit)
+        self.assertIn("Before=display-manager.service", unit)
+        self.assertIn("systemctl enable gts9wifi-audio-session.service", spec)
+        self.assertIn("systemctl start gts9wifi-audio-session.service", spec)
+
+        result = subprocess.run(
+            ["bash", "-n", str(ROOT / "rootfs/overlay/usr/libexec/gts9wifi-audio-session")],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_support_rpm_builder_keeps_stdout_to_single_path(self):
         builder = (ROOT / "tools/build-port-support-rpm.sh").read_text(encoding="utf-8")

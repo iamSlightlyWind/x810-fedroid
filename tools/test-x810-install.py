@@ -1527,7 +1527,7 @@ class InstallerTests(unittest.TestCase):
         script = next(call[2] for call in calls if call[:2] == ("push", "/tmp/x810-install-provision.sh"))
         passwd_hash = next(call[2] for call in calls if call[:2] == ("push", "/tmp/x810-install-password"))
         self.assertIn("/usr/sbin/useradd", script)
-        self.assertIn("--groups wheel,video,input", script)
+        self.assertIn("--groups wheel,video,input,audio", script)
         self.assertIn("--lock root", script)
         self.assertIn('"$uid" -ge 1000', script)
         self.assertIn("X810_VERIFY: hostname mismatch", script)

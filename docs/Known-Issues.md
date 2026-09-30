@@ -46,7 +46,7 @@ still needs to be verified on that matching boot set with an on-device
 Also outstanding, not in the numbered register:
 
 - S Pen tilt is exposed as `ABS_TILT_X/Y`; live vector orientation and drawing-app behavior remain unverified (see `docs/Hardware-Notes.md`);
-- built-in microphone capture remains open pending controlled validation: the Linux candidate now uses the reference-backed VA-macro DMA/DMIC path and keeps the X810 CYG1 ordinary-recording physical pair (DMIC3/1). Three-second raw level-only captures were nonzero and stronger on DMIC3/1 than DMIC0/1, but no controlled speech was present; this does not prove intelligibility or GNOME/PipeWire input. No audio was retained or played. See `tools/diagnose-x810-mic.sh` for read-only routing checks;
+- built-in microphone now enumerates and captures environmental input. A late-ALSA-card session recovery, persistent `audio` group membership, and higher VA decimator gain (120/124) are installed live and in the Fedora port source; five-second captures showed stable nonzero signal without clipping and GNOME Settings was linked to the built-in mic. Natural speech level/intelligibility remains unverified. See `docs/x810-research/AUDIO-PIPEWIRE.md` and `tools/diagnose-x810-mic.sh`;
 - the Android `/vendor` mount has a shipped read-only logical-partition mapper;
   confirm the mount on-device after the next update (see below);
 - SELinux runs permissive;

@@ -1,0 +1,114 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Ensure the first-boot desktop account can access ALSA and refresh the
+# PipeWire/WirePlumber graph after the late-boot Qualcomm audio card appears.
+set -u
+
+log() { echo "gts9wifi-audio-session: $*"; }
+
+desktop_user=$(getent passwd 1000 | cut -d: -f1)
+if [ -z "$desktop_user" ]; then
+	log 'no UID-1000 desktop account; skipping'
+	exit 0
+fi
+
+for group in audio video input; do
+	if getent group "$group" >/dev/null 2>&1 &&
+		! id -nG "$desktop_user" | tr ' ' '\n' | grep -qx "$group"; then
+		usermod -a -G "$group" "$desktop_user" || log "could not add $desktop_user to $group"
+	fi
+done
+
+uid=1000
+runtime=/run/user/$uid
+bus=unix:path=$runtime/bus
+stamp=/run/gts9wifi/audio-session-refreshed-$uid
+
+# Don't hot-restart the ADSP: on this kernel ASoC does not reliably re-register
+# after remoteproc restart. This only waits for the card that the boot unit
+# already started, then refreshes the desktop user's session manager.
+attempt=0
+while [ ! -e /dev/snd/controlC0 ] && [ "$attempt" -lt 60 ]; do
+	sleep 1
+	attempt=$((attempt + 1))
+done
+if [ ! -e /dev/snd/controlC0 ]; then
+	log 'ALSA controlC0 did not appear; leaving the ADSP untouched'
+	exit 0
+fi
+
+install -d -m 0755 /var/lib/systemd/linger
+[ -e "/var/lib/systemd/linger/$desktop_user" ] ||
+	install -m 0644 /dev/null "/var/lib/systemd/linger/$desktop_user"
+loginctl enable-linger "$desktop_user" >/dev/null 2>&1 || true
+
+# ALSA restore can run before the card exists. Re-run it now, then reload UCM
+# after that saved state so HiFi re-applies the VA DMIC route on this boot.
+systemctl restart alsa-restore.service >/dev/null 2>&1 || true
+systemctl start "user@$uid.service" >/dev/null 2>&1 || true
+attempt=0
+while [ ! -S "$runtime/bus" ] && [ "$attempt" -lt 20 ]; do
+	sleep 1
+	attempt=$((attempt + 1))
+done
+if [ ! -S "$runtime/bus" ]; then
+	log "user bus for $desktop_user did not appear; ALSA remains available to the seat user"
+	exit 0
+fi
+
+as_user() {
+	runuser -u "$desktop_user" -- env \
+		XDG_RUNTIME_DIR="$runtime" \
+		DBUS_SESSION_BUS_ADDRESS="$bus" \
+		"$@"
+}
+
+if [ -e "$stamp" ]; then
+	log 'session already refreshed this boot'
+	exit 0
+fi
+
+if ! as_user systemctl --user restart wireplumber.service; then
+	log "could not restart WirePlumber for $desktop_user"
+	exit 0
+fi
+
+# Prefer WirePlumber's native control tool; resolve the profile index rather
+# than assuming it is fixed across kernel/ALSA card versions.
+attempt=0
+while [ "$attempt" -lt 20 ]; do
+	card_id=$(as_user pw-dump 2>/dev/null | python3 -c '
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+for obj in doc:
+    props = obj.get("info", {}).get("props", {})
+    if props.get("device.name") == "alsa_card.platform-sound":
+        print(obj.get("id", ""))
+        break
+' 2>/dev/null || true)
+	if [ -n "$card_id" ]; then
+		profile_id=$(as_user pw-cli enum-params "$card_id" EnumProfile 2>/dev/null | python3 -c '
+import re, sys
+text = sys.stdin.read()
+for block in re.split(r"(?=Object: size )", text):
+    name = re.search(r"Param:Profile:name.*?String \"([^\"]+)\"", block, re.S)
+    idx = re.search(r"Param:Profile:index.*?Int (\d+)", block, re.S)
+    if name and idx and name.group(1) == "HiFi":
+        print(idx.group(1))
+        break
+' 2>/dev/null || true)
+		if [ -n "$profile_id" ] && as_user wpctl set-profile "$card_id" "$profile_id" >/dev/null 2>&1; then
+			install -D -m 0644 /dev/null "$stamp"
+			log "selected the HiFi profile for $desktop_user (PipeWire card $card_id)"
+			exit 0
+		fi
+	fi
+	sleep 1
+	attempt=$((attempt + 1))
+done
+
+log 'PipeWire did not expose an available HiFi profile; left the ADSP and ALSA controls unchanged'
+exit 0
