@@ -29,8 +29,8 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 | GPU / rendering | 🟡 | Adreno 740 hardware acceleration works through Mesa Freedreno (OpenGL) and Turnip (Vulkan). GTK app/widget artifacts have appeared inconsistently in testing; a GTK/Vulkan setting removed them in one test, but the result was not a reproducible driver-level fix. |
 | Touchscreen | 🟡 | Touch and normal orientation work; the pointer remains about 1 cm offset and dragging can be finicky. |
 | S Pen | 🟡 | Pen input and kernel-level palm rejection work. Tilt and some dock/Bluetooth features are unimplemented or unverified. |
-| EF-DX815 keyboard cover | 🟡 | Keyboard input works but may stop intermittently. Tab Companion offers a controller reset; it is recovery, not a confirmed permanent fix. |
-| Cover touchpad | ❓ | Not separately qualified. |
+| EF-DX815 keyboard cover | ✅ | Keyboard input works |
+| Cover touchpad | ✅ | Keyboard touchpad works. |
 | Wi-Fi | ✅ | WCN6855/ath11k works with X810 firmware and board data. The port is pinned to kernel 7.2.0; later 7.2.1–7.2.6 stable kernels had a Wi-Fi regression. |
 | Bluetooth | ✅ | Controller and X810 radio firmware/coexistence configuration work. |
 | Speakers | ✅ | Stereo output works; the PipeWire/WirePlumber routing fix is packaged and owner-confirmed. The GNOME left/right test-button UI is not needed to validate playback. |
