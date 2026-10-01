@@ -178,20 +178,6 @@ static void samsung_pogo_power_off(void *data)
 	mutex_unlock(&pogo->power_lock);
 }
 
-/*
- * Samsung's cover-close path holds NRST asserted while VDDO is off.  Use the
- * same ordering for a physical disconnect so a rapid reconnect starts from a
- * known application-reset state rather than relying on rail discharge.
- */
-static void samsung_pogo_hold_reset_and_power_off(struct samsung_pogo *pogo)
-{
-	mutex_lock(&pogo->power_lock);
-	gpiod_set_value_cansleep(pogo->boot, 0);
-	gpiod_set_value_cansleep(pogo->reset, 1);
-	samsung_pogo_power_off_locked(pogo);
-	mutex_unlock(&pogo->power_lock);
-}
-
 static bool samsung_pogo_reset_application(struct samsung_pogo *pogo,
 					   unsigned int settle_ms)
 {
@@ -1441,12 +1427,14 @@ static irqreturn_t samsung_pogo_connection_irq_thread(int irq, void *data)
 		atomic64_inc(&pogo->connection_irq_high);
 	else {
 		atomic64_inc(&pogo->connection_irq_low);
-		WRITE_ONCE(pogo->reset_on_reconnect, true);
 		/*
-		 * The reset descriptor is active-low: logical 1 asserts NRST.  Hold
-		 * it before disabling VDDO, matching Samsung's cover-close order.
+		 * Samsung's physical-connection ISR only cuts VDDO here.  Holding
+		 * NRST asserted also suppresses the STM32's next GPIO62 connection
+		 * pulse, leaving the keyboard absent until reset is released.
+		 * A disconnect invalidates pending recovery of the old connection.
 		 */
-		samsung_pogo_hold_reset_and_power_off(pogo);
+		WRITE_ONCE(pogo->reset_on_reconnect, false);
+		samsung_pogo_power_off(pogo);
 		/*
 		 * The STM32 repeats GPIO62 pulses until the host acknowledges them by
 		 * dropping VDDO; deferring this cut produced hundreds of edges and no
@@ -1492,7 +1480,7 @@ static ssize_t diagnostics_show(struct device *dev,
 	 * a cat instead of grepping a boot-time dmesg line that rotates away.
 	 */
 	return sysfs_emit(buf,
-		"driver_revision=4 attached=%u powered=%u connected=%d data_ready=%d data_irq_enabled=%u reset_pending=%u model=%#04x caps=%u data_irq=%lld data_irq_deasserted=%lld connection_high=%lld connection_low=%lld manual_polls=%lld key_events=%lld keys_down=%u recoveries=%lld read_retry_releases=%lld event_read_errors=%lld last_event_error=%d recovery_gate_skips=%lld invalid_key_events=%lld bootloader=%u flash_version=%*phN app_version=%*phN init_attempts=%lld last_init_error=%d input=%u touchpad=%u touchpad_packets=%lld touchpad_bad_packets=%lld\n",
+		"driver_revision=5 attached=%u powered=%u connected=%d data_ready=%d data_irq_enabled=%u reset_pending=%u model=%#04x caps=%u data_irq=%lld data_irq_deasserted=%lld connection_high=%lld connection_low=%lld manual_polls=%lld key_events=%lld keys_down=%u recoveries=%lld read_retry_releases=%lld event_read_errors=%lld last_event_error=%d recovery_gate_skips=%lld invalid_key_events=%lld bootloader=%u flash_version=%*phN app_version=%*phN init_attempts=%lld last_init_error=%d input=%u touchpad=%u touchpad_packets=%lld touchpad_bad_packets=%lld\n",
 		READ_ONCE(pogo->attached), READ_ONCE(pogo->powered),
 		gpiod_get_value_cansleep(pogo->connected),
 		gpiod_get_value_cansleep(pogo->data_ready),
