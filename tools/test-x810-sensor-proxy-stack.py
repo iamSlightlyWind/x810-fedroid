@@ -53,15 +53,15 @@ def main() -> int:
             "SSC recovery may run before GNOME opens its sensor client")
     require("WantedBy=graphical.target" in sensor_proxy_unit,
             "SSC recovery must be started by the desktop target, not multi-user")
-    require("SSC QRTR service 400" in readme and
-            "Physical GNOME auto-rotation has not yet been verified" in readme,
-            "README must distinguish live SSC discovery from unverified physical rotation")
+    require("Motion sensors and SSC/SensorProxy are working" in readme and
+            "GNOME currently lacks the auto-rotate option/integration" in readme,
+            "README must distinguish working sensors from the missing GNOME integration")
     require("HasAccelerometer=true" in issues and
-            "Physical auto-rotation" in issues,
-            "known-issues page must record the current SensorProxy result and rotation-test gap")
+            "GNOME currently exposes no auto-rotate option" in issues,
+            "known-issues page must record working SensorProxy and open GNOME integration")
     require("QRTR service 400 was present" in hardware_notes and
-            "physical GNOME auto-rotation remains unverified" in hardware_notes,
-            "hardware notes must not claim SSC service 400 is absent")
+            "GNOME currently" in hardware_notes and "auto-rotate option/integration" in hardware_notes,
+            "hardware notes must distinguish working SSC from missing GNOME integration")
     require("After=display-manager.service" in sensor_pd_dropin,
             "sensor-PD can still attach before GNOME and miss delayed SSC failure")
     require("systemctl reenable gts9wifi-wait-sensor-proxy.service" in spec,

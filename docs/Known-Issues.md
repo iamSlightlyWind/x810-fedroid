@@ -12,7 +12,7 @@ reused, and a retired number is simply absent rather than reassigned
 | 3 | Bluetooth lag under 2.4 GHz Wi-Fi | fixed — Samsung NVM/rampatch substituted for the generic ones |
 | 4 | Rear camera (13 MP HI1337 + DW9808 lens) | works — manual focus only; a fixed focus of 384 ships |
 | 4b | Front camera (12 MP HI1337) | works |
-| 5 | No rotation sensor | partial — the latest live check found QRTR service 400 and SensorProxy's accelerometer property; physical GNOME auto-rotation remains unverified; see #25 |
+| 5 | GNOME auto-rotation option/integration | open — motion sensors and SSC/SensorProxy work, but GNOME currently exposes no auto-rotate option; see #25 |
 | 6 | USB debug link flaky | fixed — RNDIS gadget converted to ECM |
 | 7 | Weak 5 GHz Wi-Fi RX | fixed — board-data (BDF) substitution, ~47 dB improvement |
 | 9 | Discord/Roblox unreachable (DPI) | fixed — kernel rebuilt with `nfqueue` |
@@ -21,32 +21,31 @@ reused, and a retired number is simply absent rather than reassigned
 | 13 | Charging bypass on 25 W+ chargers | open — Linux driver/API support and verified hardware semantics are missing; not a GNOME-only patch |
 | 14 | Double tap to turn on the screen | fixed — with a GNOME extension UI |
 | 15 | Under-display fingerprint sensor (EgisTec EL721) | open — live EL721/K250A devices and kernel modules are present, but Fedora has no EL721 `libfprint` backend; X810 calibration, FTS1BA90A FOD integration, and safe SPSS/QTEE ownership remain unresolved ([audit](x810-research/FINGERPRINT-LIVE-STATUS.md)) |
-| 16 | Hardware video decode (iris / VPU 3.0) | exact owner-authorized X810 CYG1 firmware is now included in clean builds and support-RPM updates; Moonlight live-stream decoder selection still needs device verification |
+| 16 | Hardware video decode (iris / VPU 3.0) | fixed for supported stateful V4L2 clients — exact X810 CYG1 firmware is in clean builds and support-RPM updates; FFmpeg/GStreamer hardware decode works. Browser/VLC acceleration and Moonlight live-stream selection remain unsupported or unverified |
 | 17 | Speaker volume capped (~−19 dB) | fixed — Cirrus speaker-protection DSP firmware now loads |
 | 18 | `/`, `/etc`, `/usr` owned by the image build user | fixed — this had silently disabled *every* `tmpfiles.d` entry |
 | 19 | Kernel log flooded by ADSP handover messages | fixed — the repeat is logged at debug level now |
 | 20 | Wi-Fi dead on the 7.2.1–7.2.6 stable kernels | open — pinned to 7.2.0 |
 | 21 | PipeWire speaker streams fail to link | fixed — system-wide WirePlumber configuration is packaged, and the owner confirms stereo playback works |
-| 22 | GNOME camera clients cannot open `root:video` camera nodes | fixed in installer and support-RPM upgrade path; fresh-login/device validation pending |
+| 22 | GNOME camera clients cannot open `root:video` camera nodes | fixed in installer and support-RPM upgrade path; front/rear camera capture is confirmed working |
 | 23 | No 120 Hz display mode | fixed — user confirmed 120 Hz works on-device; 60 Hz remains the default |
-| 24 | ADSP/sensorspd start ordering around panel coldboot recovery | confirmed on the latest boot: installed ordering drop-ins match source, and ADSP/rootpd/sensorspd are active; see #25 for the separate physical rotation check |
-| 25 | SSC sensor discovery and tablet auto-rotation | partial — QRTR service 400 and SensorProxy's accelerometer/orientation properties are present on the latest boot; physical GNOME auto-rotation remains unverified |
+| 24 | ADSP/sensorspd start ordering around panel coldboot recovery | confirmed on the latest boot: installed ordering drop-ins match source, and ADSP/rootpd/sensorspd are active; see #25 for the separate GNOME auto-rotation integration issue |
+| 25 | SSC sensor discovery and tablet auto-rotation | sensor discovery is working, but GNOME auto-rotation remains open: the desktop currently has no auto-rotate option/integration |
 | 26 | No GNOME power-profile/governor switcher | live root cause fixed: explicitly load `icc_osm_l3` so CPUFreq policies exist; profile switching verified over D-Bus, persistent RPM/boot validation pending |
 | 27 | Kernel rejects optional module BTF after boot/module builds differ | mitigation added: allow the module to load without its mismatched BTF metadata; exact boot/module matching is still preferred |
 | 28 | Deep suspend can freeze and fail to wake | mitigated in the reproducible overlay: lid close ignores suspend and sleep targets are masked; root cause still needs X810 wake-source tracing |
-| 30 | Device-wide GPU startup/rendering on fresh install | exact X810 CYG1 Adreno firmware is now embedded in rootfs and vendor_boot; validate the new aggregate on-device |
-| 31 | Fine visual artifacts in GTK4 controls | global `GSK_GPU_DISABLE=merge` profile is in the rootfs and updater RPM; Vulkan/Turnip remains selected, fresh-install verification pending |
-| 32 | External-display transitions can leave both screens frozen/fading | DPU atomic-resource reassignment fix from the Tab S9 Ultra port is included in the kernel; user reports external display is working correctly on X810 |
+| 30 | Device-wide GPU startup/rendering | exact X810 CYG1 Adreno firmware is embedded in rootfs and vendor_boot; the current boot reports hardware-accelerated Freedreno FD740 through GLX |
+| 31 | Fine visual artifacts in GTK4 controls | mitigated by the global `GSK_GPU_DISABLE=merge` profile in rootfs/updater RPM; owner reported clean UI at normal speed with Vulkan/Turnip retained. This is a userspace workaround, not a driver fix |
+| 32 | External-display output/modesetting | open — current external-only mode shows a solid blue screen; the tablet panel works normally after disconnecting the monitor. Kernel DPU resource-reassignment patch is present, but does not fix this symptom |
 
 Haptics are enabled in the kernel source (stock-active-high GPIO18 plus
-`gpio-vibra`) and included in the latest standalone kernel release; the tablet
-still needs to be verified on that matching boot set with an on-device
-`FF_RUMBLE` check.
+`gpio-vibra`) and included in the kernel release; physical vibration is confirmed
+working on the tablet.
 
 Also outstanding, not in the numbered register:
 
 - S Pen tilt is exposed as `ABS_TILT_X/Y`; live vector orientation and drawing-app behavior remain unverified (see `docs/Hardware-Notes.md`);
-- built-in microphone now enumerates and captures environmental input. A late-ALSA-card session recovery, persistent `audio` group membership, and higher VA decimator gain (120/124) are installed live and in the Fedora port source; five-second captures showed stable nonzero signal without clipping and GNOME Settings was linked to the built-in mic. Natural speech level/intelligibility remains unverified. See `docs/x810-research/AUDIO-PIPEWIRE.md` and `tools/diagnose-x810-mic.sh`;
+- built-in microphone capture works with the VA-macro/DMIC configuration and current PipeWire setup. See `docs/x810-research/AUDIO-PIPEWIRE.md` and `tools/diagnose-x810-mic.sh`;
 - the Android `/vendor` mount has a shipped read-only logical-partition mapper;
   confirm the mount on-device after the next update (see below);
 - SELinux remains permissive, but first boot now requests Fedora's standard full
@@ -141,9 +140,10 @@ oneshot completed successfully after SSC responded on its first probe;
 reported `HasAccelerometer=true` with orientation `normal`. GNOME's
 `orientation-lock` setting was `false`. The live FastRPC udev database also
 contained the `ssc-accel` discovery tag and configured board mount matrix.
-Thus SSC discovery and the orientation API are present on this boot; this does
-not prove that GNOME visibly rotates with the tablet. Physical auto-rotation
-and suspend/resume recovery remain unverified. The proxy's log that the
+Thus SSC discovery and the orientation API are present and motion-sensor
+operation is confirmed. GNOME currently exposes no auto-rotate option, so
+desktop auto-rotation remains an integration/UI issue; suspend/resume recovery
+remains unverified. The proxy's log that the
 firmware matrix is all zero is its documented identity-matrix fallback before
 the configured udev matrix is applied, not evidence that the udev rule is
 missing.
@@ -153,9 +153,9 @@ builder as a clean image and adds an early-claim race guard in the proxy. It
 also replaces donor-model sensor inputs with a checked runtime composition of
 the tablet's own stock config and persist registry. The installed service and
 udev-rule files match repository source; the installed recovery helper differs
-only in its shell interpreter path. Do not manually restart remoteproc or
-sensorspd while the tablet is unattended, since a failed attach can interrupt
-audio.
+only in its shell interpreter path. GNOME auto-rotation UI/integration remains
+open. Do not manually restart remoteproc or sensorspd while the tablet is
+unattended, since a failed attach can interrupt audio.
 
 ### 13 — Charging bypass on 25 W+ chargers
 
@@ -286,15 +286,15 @@ Fixed by substituting Samsung's device-tuned WCN6855 NVM/rampatch for the
 generic `linux-firmware` ones, which keeps the BT keyboard and audio lag-free
 while 2.4 GHz Wi-Fi is active.
 
-### 5 — Rotation sensor
+### 5 — GNOME auto-rotation option/integration
 
-The SSC sensors are alive and ambient light is served to the desktop, but
-`iio-sensor-proxy`'s orientation property never turned true. This was an
-upstream proxy/libssc issue, not a configuration problem, and is fixed by a
-patched `iio-sensor-proxy` built with libssc.
+The SSC motion sensors and SensorProxy are working and expose orientation data.
+The remaining issue is desktop integration: GNOME currently has no auto-rotate
+option on this install. The old SensorProxy discovery failure was fixed by the
+patched libssc-enabled proxy; do not describe the sensor itself as absent.
 
-Note that **sensor rotation is invisible metadata** — a rotation matrix is not
-observable from the sensor values, so it has to be verified by eye.
+Sensor orientation still needs visual validation whenever the GNOME integration
+is changed.
 
 ### 6 — USB debug link flaky
 

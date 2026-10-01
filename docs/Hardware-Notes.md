@@ -117,9 +117,9 @@ The sensors live behind the ADSP's sensor core, not on an AP I2C bus. The port
 includes `hexagonrpcd` and a patched `iio-sensor-proxy`. On the 2026-09-29
 read-only live check, QRTR service 400 was present, the recovery oneshot
 completed successfully, and SensorProxy reported `HasAccelerometer=true` and
-an orientation property. This confirms SSC discovery and the orientation API,
-but **physical GNOME auto-rotation remains unverified**. See [Known Issues
-#25](Known-Issues.md#25-ssc-sensor-discovery-and-tablet-auto-rotation).
+an orientation property. Motion-sensor operation is confirmed. GNOME currently
+lacks an auto-rotate option/integration, so desktop auto-rotation remains an
+open UI integration issue. See [Known Issues #25](Known-Issues.md#25-ssc-sensor-discovery-and-tablet-auto-rotation).
 
 The installed boot's recovery path prepared the sensor-registry tree and
 ordered ADSP startup behind panel cold-boot recovery. Clean-boot sensor
@@ -420,7 +420,9 @@ their presence is not evidence of support.
 | Firmware | `qcom/vpu/vpu30_4v.mbn`, X810 CYG1 Samsung-signed image |
 
 The driver is in mainline and `/dev/video17` registers even when its firmware
-cannot initialize. The first attempted image used a similarly named
+cannot initialize. X810 CYG1 hardware decoding through stateful V4L2 is confirmed
+for supported clients such as FFmpeg/GStreamer; this does not imply browser or
+VLC acceleration. The first attempted image used a similarly named
 X710/X910-family blob whose loadable Xtensa segments match the X810 image, but
 whose PAS authentication tail is different. On this X810 it failed during
 TrustZone initialization with `-EINVAL`. The exact owner-supplied X810 CYG1
@@ -564,8 +566,9 @@ Type-C DP code returns `-EPROTO` when the port data role is not host at probe;
 this is a negotiation/role failure, not evidence of a GPU fault. Separately,
 the Tab S9 Ultra port reproduced a dual-display modeset wedge on the same
 SM8550 DPU family and fixed a DPU atomic resource-reassignment bug. The
-zero-fuzz port of that fix is now in the X810 kernel source, and the user has
-confirmed external-display operation is now working correctly on the X810.
+zero-fuzz port is in the X810 kernel source, but the current external-only mode
+still shows a solid blue screen. The tablet panel works normally when the
+monitor is disconnected, so external output remains an open issue.
 
 ---
 

@@ -26,7 +26,7 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 |---|:---:|---|
 | Display | ✅ | 2800×1752 AMOLED; 120 Hz is selectable and the owner has confirmed it works. 60 Hz remains the default. |
 | Desktop | ✅ | Fedora GNOME on Wayland/GDM boots and is usable. |
-| GPU / rendering | 🟡 | Adreno 740 hardware acceleration works through Mesa Freedreno (OpenGL) and Turnip (Vulkan). GTK app/widget artifacts have appeared inconsistently in testing; a GTK/Vulkan setting removed them in one test, but the result was not a reproducible driver-level fix. |
+| GPU / rendering | 🟡 | Adreno 740 hardware acceleration is active (current GLX reports Freedreno FD740, `Accelerated: yes`; Vulkan uses Mesa Turnip). GTK artifacts were mitigated by disabling GSK draw merging globally (`GSK_GPU_DISABLE=merge`); the owner reported clean UI at normal speed. This is a userspace workaround, not a driver fix. |
 | Touchscreen | 🟡 | Touch and normal orientation work; the pointer remains about 1 cm offset and dragging can be finicky. |
 | S Pen | 🟡 | Pen input and kernel-level palm rejection work. Tilt and some dock/Bluetooth features are unimplemented or unverified. |
 | EF-DX815 keyboard cover | ✅ | Keyboard input works |
@@ -34,14 +34,15 @@ specific validation · ❌ not working/unavailable · ❓ not tested.
 | Wi-Fi | ✅ | WCN6855/ath11k works with X810 firmware and board data. The port is pinned to kernel 7.2.0; later 7.2.1–7.2.6 stable kernels had a Wi-Fi regression. |
 | Bluetooth | ✅ | Controller and X810 radio firmware/coexistence configuration work. |
 | Speakers | ✅ | Stereo output works; the PipeWire/WirePlumber routing fix is packaged and owner-confirmed. The GNOME left/right test-button UI is not needed to validate playback. |
-| Microphones | 🟡 | A Linux candidate now uses the reference-backed VA-macro capture backend while retaining CYG1's physical DMIC3/1 recording pair. Short raw captures show nonzero signal, stronger on that mapping, but controlled speech and normal GNOME/PipeWire input remain unverified. |
-| Cameras | 🟡 | Front/rear sensors enumerate and libcamera support is integrated; a normal desktop capture flow still needs validation. Rear focus is fixed/manual, not autofocus. |
-| Hardware video decode | 🟡 | Stateful V4L2 decode was verified with owner-supplied X810 CYG1 firmware. Public releases omit that proprietary firmware; browser/VLC acceleration and encoding are not established. |
+| Microphones | ✅ | Built-in mic capture works with the X810 VA-macro/DMIC path and the current PipeWire configuration. |
+| Cameras | ✅ | Front and rear capture work through the integrated libcamera path. Rear focus is fixed/manual, not autofocus. |
+| Hardware video decode | ✅ | X810 CYG1 firmware enables stateful V4L2 hardware decode (verified with FFmpeg/GStreamer paths). Browser/VLC acceleration and encoding remain unsupported or unverified. |
 | Qualcomm NPU / HTP | ❌ | CDSP remains disabled and no Fedora QNN/HTP runtime is integrated. The port now preserves the X810 CDSP firmware carveouts, but inference has not been enabled or tested. |
-| Motion sensors / auto-rotation | 🟡 | The installed system now discovers SSC QRTR service 400, and SensorProxy reports an accelerometer/orientation property. Physical GNOME auto-rotation has not yet been verified on this boot. |
+| Motion sensors / auto-rotation | 🟡 | Motion sensors and SSC/SensorProxy are working, but GNOME currently lacks the auto-rotate option/integration; sensor availability alone does not rotate the desktop. |
 | Battery / charging | 🟡 | Battery telemetry and charging work; the prior 96% cap is fixed. Not all chargers and charge behaviors have been validated. |
 | USB-C / powered USB hub | ✅ | The owner has confirmed that a powered USB hub supplies power to the tablet. Data passthrough and other host, dock, and display combinations are not all tested. |
-| Haptics | 🟡 | Kernel/DTB support is in the latest standalone kernel release; physical vibration validation on that kernel is pending. |
+| External monitor | ❌ | Current external-only DisplayPort mode shows a solid blue screen; the tablet panel works normally after disconnecting the monitor. External display is not fixed. |
+| Haptics | ✅ | Physical tablet vibration works through the kernel haptics path. |
 | Suspend / resume | 🟡 | Resume is not qualified. The support update masks systemd sleep targets and ignores cover-close suspend as a freeze-prevention mitigation; it does not fix the kernel wake path. |
 | Fingerprint reader | ❌ | Authentication is unavailable. EL721/K250A nodes and kernel drivers are present on the running tablet, but there is no Fedora EL721 `libfprint` backend, verified X810 calibration set, or safe SPSS/QTEE owner lifecycle. |
 | Charging bypass | ❌ | No safe, verified Linux control is available. |
