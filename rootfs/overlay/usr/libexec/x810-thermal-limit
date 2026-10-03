@@ -1,0 +1,276 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: MIT
+"""Conservative, user-configurable X810 CPU temperature limiter."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import signal
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+THERMAL_ROOT = Path("/sys/class/thermal")
+CPUFREQ_ROOT = Path("/sys/devices/system/cpu/cpufreq")
+CONFIG = Path("/etc/x810-thermal-limit.json")
+RUN_DIR = Path("/run/x810-thermal-limit")
+STATUS = RUN_DIR / "status.json"
+BASELINES = RUN_DIR / "cpu-max-baselines.json"
+DEFAULT = {"enabled": True, "threshold_c": 55}
+SOC_ZONE = re.compile(
+    r"^(?:cpu(?:[0-9]+(?:-(?:top|middle|bottom))?)?|cpuss[0-9]+|"
+    r"gpuss-[0-9]+|aoss[0-9]+|video|mem|cdsp[0-9]+)-thermal$"
+)
+POLL_SECONDS = 1
+TRIGGER_SAMPLES = 2
+RELEASE_SAMPLES = 2
+LIMIT_RATIO = 0.80
+
+
+def atomic_json(path: Path, payload: object, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def read_config(path: Path = CONFIG) -> dict:
+    if not path.exists():
+        return dict(DEFAULT)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(value, dict) or set(value) != {"enabled", "threshold_c"}
+                or type(value["enabled"]) is not bool
+                or type(value["threshold_c"]) is not int
+                or not 50 <= value["threshold_c"] <= 85):
+            raise ValueError("invalid thermal-limit settings")
+        return value
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        # Fail open: malformed settings must never leave or initiate a CPU cap.
+        print(f"x810-thermal-limit: invalid settings; limiting disabled: {error}", file=sys.stderr)
+        return {"enabled": False, "threshold_c": DEFAULT["threshold_c"]}
+
+
+def read_soc_temperature(root: Path = THERMAL_ROOT) -> float | None:
+    values = []
+    for zone in root.glob("thermal_zone*"):
+        try:
+            name = (zone / "type").read_text(encoding="ascii").strip()
+            if not SOC_ZONE.fullmatch(name):
+                continue
+            raw = int((zone / "temp").read_text(encoding="ascii").strip())
+            if 0 < raw < 200_000:
+                values.append(raw / 1000.0)
+        except (OSError, UnicodeError, ValueError):
+            continue
+    return max(values) if values else None
+
+
+def _policy_paths(root: Path):
+    return sorted(root.glob("policy[0-9]*"), key=lambda path: path.name)
+
+
+def _read_int(path: Path) -> int:
+    return int(path.read_text(encoding="ascii").strip())
+
+
+def capture_baselines(root: Path = CPUFREQ_ROOT) -> dict[str, int]:
+    return {
+        policy.name: _read_int(policy / "scaling_max_freq")
+        for policy in _policy_paths(root)
+        if (policy / "scaling_max_freq").is_file()
+    }
+
+
+def read_control_state(path: Path, root: Path) -> tuple[dict[str, int], bool] | None:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(raw, dict) or set(raw) != {"version", "policies", "applied"}
+                or raw["version"] != 1 or type(raw["applied"]) is not bool
+                or not isinstance(raw["policies"], dict) or not raw["policies"]):
+            return None
+        valid = {}
+        for name, ceiling in raw["policies"].items():
+            if not re.fullmatch(r"policy[0-9]+", name) or type(ceiling) is not int or ceiling <= 0:
+                return None
+            policy = root / name
+            if not (policy / "scaling_max_freq").is_file():
+                continue
+            hardware_max = _read_int(policy / "cpuinfo_max_freq")
+            if ceiling > hardware_max:
+                return None
+            valid[name] = ceiling
+        return (valid, raw["applied"]) if valid else None
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def cap_for_policy(policy: Path, original_max: int) -> int:
+    target = max(_read_int(policy / "scaling_min_freq"), int(original_max * LIMIT_RATIO))
+    available = policy / "scaling_available_frequencies"
+    if available.is_file():
+        try:
+            choices = [int(item) for item in available.read_text(encoding="ascii").split()]
+            below = [item for item in choices if item <= target]
+            if below:
+                return max(below)
+        except (OSError, ValueError):
+            pass
+    return target
+
+
+def write_limits(root: Path, baselines: dict[str, int], limited: bool) -> None:
+    for policy in _policy_paths(root):
+        maximum = policy / "scaling_max_freq"
+        if not maximum.is_file():
+            continue
+        original = baselines.get(policy.name)
+        if original is None:
+            original = _read_int(maximum)
+            baselines[policy.name] = original
+        value = cap_for_policy(policy, original) if limited else original
+        if _read_int(maximum) != value:
+            maximum.write_text(f"{value}\n", encoding="ascii")
+
+
+class Limiter:
+    def __init__(self, thermal_root=THERMAL_ROOT, cpufreq_root=CPUFREQ_ROOT,
+                 config_path=CONFIG, run_dir=RUN_DIR):
+        self.thermal_root = Path(thermal_root)
+        self.cpufreq_root = Path(cpufreq_root)
+        self.config_path = Path(config_path)
+        self.run_dir = Path(run_dir)
+        self.status_path = self.run_dir / "status.json"
+        self.baseline_path = self.run_dir / "cpu-max-baselines.json"
+        saved = read_control_state(self.baseline_path, self.cpufreq_root)
+        self.baselines, was_applied = saved if saved is not None else ({}, False)
+        if not self.baselines:
+            self.baselines = capture_baselines(self.cpufreq_root)
+            self._save_control_state(False)
+        elif was_applied:
+            # Recover caps if the process was killed before its stop handler.
+            write_limits(self.cpufreq_root, self.baselines, False)
+            self._save_control_state(False)
+        self.limited = False
+        self.hot_count = self.cool_count = 0
+        self.last_config = None
+        self.sample_count = 0
+        self.sample_sum = 0.0
+        self.peak = None
+        self.started = time.monotonic()
+
+    def step(self) -> dict:
+        config = read_config(self.config_path)
+        if config != self.last_config:
+            self.hot_count = self.cool_count = 0
+            self.last_config = config
+        temp = read_soc_temperature(self.thermal_root)
+        if not config["enabled"] or temp is None or not self.baselines:
+            want_limit = False
+            self.hot_count = self.cool_count = 0
+        elif not self.limited:
+            self.hot_count = self.hot_count + 1 if temp >= config["threshold_c"] else 0
+            want_limit = self.hot_count >= TRIGGER_SAMPLES
+        else:
+            self.cool_count = self.cool_count + 1 if temp <= config["threshold_c"] - 3 else 0
+            want_limit = self.cool_count < RELEASE_SAMPLES
+
+        if want_limit:
+            if not self.limited:
+                # Persist intent before touching sysfs so an abrupt kill can
+                # restore every policy on the next service start.
+                self.limited = True
+                self._save_control_state(True)
+                self.cool_count = 0
+            write_limits(self.cpufreq_root, self.baselines, True)
+        elif self.limited:
+            # Keep the recovery marker until all original limits are restored.
+            write_limits(self.cpufreq_root, self.baselines, False)
+            self._save_control_state(False)
+            self.limited = False
+            self.hot_count = 0
+        else:
+            # Do not impose our captured values while idle. Track external
+            # limit changes so a later thermal cap restores the then-current
+            # policy rather than a stale startup value.
+            current = capture_baselines(self.cpufreq_root)
+            if current and current != self.baselines:
+                self.baselines = current
+                self._save_control_state(False)
+        if temp is not None:
+            self.sample_count += 1
+            self.sample_sum += temp
+            self.peak = temp if self.peak is None else max(self.peak, temp)
+        status = {
+            "enabled": config["enabled"],
+            "threshold_c": config["threshold_c"],
+            "limited": self.limited,
+            "current_c": round(temp, 1) if temp is not None else None,
+            "average_c": round(self.sample_sum / self.sample_count, 1) if self.sample_count else None,
+            "peak_c": round(self.peak, 1) if self.peak is not None else None,
+            "sample_count": self.sample_count,
+            "uptime_seconds": max(0, int(time.monotonic() - self.started)),
+            "cpu_policy_count": len(self.baselines),
+            "error": (
+                "No readable SoC thermal sensors" if temp is None
+                else "CPUFreq policies unavailable" if not self.baselines
+                else None
+            ),
+        }
+        atomic_json(self.status_path, status, 0o644)
+        return status
+
+    def restore(self) -> None:
+        if self.baselines and self.limited:
+            write_limits(self.cpufreq_root, self.baselines, False)
+            self._save_control_state(False)
+        for path in (self.status_path,):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _save_control_state(self, applied: bool) -> None:
+        atomic_json(
+            self.baseline_path,
+            {"version": 1, "policies": self.baselines, "applied": applied},
+            0o600,
+        )
+
+
+def main() -> int:
+    limiter = Limiter()
+    stopping = False
+
+    def stop(_signum, _frame):
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    try:
+        while not stopping:
+            limiter.step()
+            for _ in range(POLL_SECONDS * 10):
+                if stopping:
+                    break
+                time.sleep(0.1)
+    finally:
+        limiter.restore()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

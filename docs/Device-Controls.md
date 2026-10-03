@@ -1,5 +1,21 @@
 # Device controls
 
+## CPU temperature limit
+
+Tab Companion's **Performance** page includes an optional SoC temperature limiter. On
+Fedora X810 it is enabled by default at 55°C. The service samples named SoC thermal
+zones (not fixed zone numbers), and if the hottest readable sensor stays at or above
+the selected limit for two samples, it caps each CPUFreq policy maximum at 80% of
+its startup maximum, rounded down to a supported CPU frequency. It restores the
+original maxima after two samples at least 3°C below the limit. The page shows the
+current temperature and the average and peak since the service started.
+
+This is an extra performance policy, not a replacement for kernel thermal safety:
+it changes CPUFreq maximums only, and never edits kernel thermal trips, GPU limits,
+CPUFreq governors, or minimum frequencies. The daemon restores its captured limits
+when cleanly stopped; malformed settings or missing sensors fail open. Settings are
+saved through Tab Companion's normal administrator authorization.
+
 Two tablet settings live in the kernel and are exposed by a small helper,
 `/usr/libexec/gts9wifi-device-control`. The GNOME extension's settings page is built from
 that helper's table, so the GUI and a terminal drive exactly the same switches.

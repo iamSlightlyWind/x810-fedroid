@@ -1,0 +1,24 @@
+[Unit]
+Description=X810 temperature-based CPU frequency limiter
+After=systemd-modules-load.service
+ConditionPathExists=/sys/class/thermal
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/x810-thermal-limit
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=10s
+UMask=0022
+RuntimeDirectory=x810-thermal-limit
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=restart
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/sys/devices/system/cpu/cpufreq /run/x810-thermal-limit
+ReadOnlyPaths=/sys/class/thermal
+
+[Install]
+WantedBy=multi-user.target

@@ -131,6 +131,14 @@ if command -v systemctl >/dev/null 2>&1; then
     # can select power-saver/performance from GNOME's normal power menu.
     systemctl enable tuned.service tuned-ppd.service >/dev/null 2>&1 || :
     systemctl start tuned-ppd.service >/dev/null 2>&1 || :
+    # Keep the optional user-configurable CPU thermal cap active on existing
+    # installs as well as freshly installed images. It never edits kernel trips.
+    systemctl enable x810-thermal-limit.service >/dev/null 2>&1 || :
+    if systemctl is-active --quiet x810-thermal-limit.service; then
+        systemctl try-restart x810-thermal-limit.service >/dev/null 2>&1 || :
+    else
+        systemctl start x810-thermal-limit.service >/dev/null 2>&1 || :
+    fi
     # The Qualcomm ALSA card can register after WirePlumber's first scan. Run
     # the bounded user-session recovery now on updates and every boot; it only
     # restarts WirePlumber/reselects HiFi after ALSA is present, never the ADSP.

@@ -248,6 +248,7 @@ jobs:
       - name: Run lightweight planner and rootfs integrity contract tests
         run: |
           python3 tools/test-x810-build-fingerprint.py
+          python3 tools/test-x810-thermal-limit.py
           python3 tools/test-x810-release-manifest.py
           python3 tools/test-x810-gpu-firmware.py
           python3 tools/test-x810-vpu-firmware.py

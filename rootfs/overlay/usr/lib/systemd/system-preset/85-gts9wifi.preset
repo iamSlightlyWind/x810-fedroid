@@ -22,6 +22,7 @@ enable gts9wifi-wifi-recover.service
 enable gts9wifi-sensor-registry-perms.service
 enable gts9wifi-x11-dir-fix.path
 enable gts9wifi-device-control.service
+enable x810-thermal-limit.service
 enable gts9wifi-chronyd.service
 enable mnt-vendor-persist.mount
 enable gts9wifi-android-parts.service
