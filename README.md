@@ -1,61 +1,39 @@
-# Fedora on Samsung Galaxy Tab S9+ Wi-Fi (SM-X810)
+# Fedora on Samsung Galaxy Tab S9+ Wifi
 
-This project brings Fedora Workstation 44, GNOME, and a device-specific Linux
-kernel to the Wi-Fi-only Samsung Galaxy Tab S9+ (`SM-X810`, `gts9pwifi`,
-Qualcomm SM8550). Fedora runs from the tablet's internal UFS storage alongside
-One UI; this is **not** an Android replacement image.
+Fedora 44 AARCH64 for the Samsung Tab S9+ Wifi (SM-X810) with Linux kernel 7.2.0, with dual boot capability using [Tab Companion](https://github.com/iamSlightlyWind/tab-companion)
 
-> **Experimental / device-specific.** Use only on the exact **SM-X810**. Do not
-> use these images or instructions on the cellular SM-X816, Tab S9 Ultra, or
-> another device. Partitioning changes and a fresh dual-boot setup erase
-> Android `userdata`. Back up anything important and make sure you can reach
-> Download Mode and TWRP before proceeding.
+<img width="4000" height="3000" alt="20261004_092023" src="https://github.com/user-attachments/assets/906614a0-6dca-43f4-842e-93cd230166f1" />
 
-The tablet has booted both Fedora and Android, and switching between their boot
-sets has been exercised on hardware. The Linux-PC guided installer has host-side
-tests, but the complete stock-Android-to-Fedora install/recovery flow has **not**
-been validated end-to-end on the physical tablet. Read [`INSTALL.md`](INSTALL.md)
-before changing partitions.
 
 ## Hardware compatibility
 
-Status key: ✅ confirmed on the tablet · 🟡 partial, limited, or awaiting a
-specific validation · ❌ not working/unavailable · ❓ not tested.
+Status key: ✅ confirmed on the tablet · 🟡 partial, limited, or awaiting a specific validation · ❌ not working/unavailable · ❓ not tested.
 
 | Component | Status | X810 status |
 |---|:---:|---|
-| Display | ✅ | 2800×1752 AMOLED; 120 Hz is selectable and the owner has confirmed it works. 60 Hz remains the default. |
-| Desktop | ✅ | Fedora GNOME on Wayland/GDM boots and is usable. |
-| GPU / rendering | 🟡 | Adreno 740 hardware acceleration is active (current GLX reports Freedreno FD740, `Accelerated: yes`; Vulkan uses Mesa Turnip). GTK artifacts were mitigated by disabling GSK draw merging globally (`GSK_GPU_DISABLE=merge`); the owner reported clean UI at normal speed. This is a userspace workaround, not a driver fix. |
-| Touchscreen | 🟡 | Touch and normal orientation work; the pointer remains about 1 cm offset and dragging can be finicky. |
-| S Pen | 🟡 | Pen input and kernel-level palm rejection work. Tilt and some dock/Bluetooth features are unimplemented or unverified. |
-| EF-DX815 keyboard cover | ✅ | Keyboard input works |
-| Cover touchpad | ✅ | Keyboard touchpad works. |
-| Wi-Fi | ✅ | WCN6855/ath11k works with X810 firmware and board data. The port is pinned to kernel 7.2.0; later 7.2.1–7.2.6 stable kernels had a Wi-Fi regression. |
-| Bluetooth | ✅ | Controller and X810 radio firmware/coexistence configuration work. |
-| Speakers | ✅ | Stereo output works; the PipeWire/WirePlumber routing fix is packaged and owner-confirmed. The GNOME left/right test-button UI is not needed to validate playback. |
-| Microphones | ✅ | Built-in mic capture works with the X810 VA-macro/DMIC path and the current PipeWire configuration. |
-| Cameras | ✅ | Front and rear capture work through the integrated libcamera path. Rear focus is fixed/manual, not autofocus. |
-| Hardware video decode | ✅ | X810 CYG1 firmware enables stateful V4L2 hardware decode (verified with FFmpeg/GStreamer paths). Browser/VLC acceleration and encoding remain unsupported or unverified. |
-| Qualcomm NPU / HTP | ❌ | CDSP remains disabled and no Fedora QNN/HTP runtime is integrated. The port now preserves the X810 CDSP firmware carveouts, but inference has not been enabled or tested. |
-| Motion sensors / auto-rotation | 🟡 | Motion sensors and SSC/SensorProxy are working, but GNOME currently lacks the auto-rotate option/integration; sensor availability alone does not rotate the desktop. |
-| Battery / charging | 🟡 | Battery telemetry and charging work; the prior 96% cap is fixed. Not all chargers and charge behaviors have been validated. |
-| USB-C / powered USB hub | ✅ | The owner has confirmed that a powered USB hub supplies power to the tablet. Data passthrough and other host, dock, and display combinations are not all tested. |
-| External monitor | ❌ | Current external-only DisplayPort mode shows a solid blue screen; the tablet panel works normally after disconnecting the monitor. External display is not fixed. |
+| Display | ✅ | 2800×1752 AMOLED up at 120 Hz |
+| Desktop | ✅ | GDM, Gnome 50.5 on Wayland |
+| GPU / rendering | ✅ | Adreno 740 hardware acceleration |
+| Touchscreen | 🟡 | Still some touchscreen offset, up to 5mm |
+| S Pen | 🟡 | No S Pen to test |
+| Book keyboard cover | ✅ | EF-DX815 works |
+| Wi-Fi | ✅ | WCN6855/ath11k |
+| Bluetooth | ✅ | Mouse and Earbuds tested working |
+| Speakers | ✅ | All four speakers works |
+| Microphones | ✅ | Mic works |
+| Cameras | ✅ | Both cameras work |
+| Hardware video decode | ✅ | Verified working and recognizable by Moonlight |
+| Qualcomm NPU / HTP | ❌ | CDSP remains disabled and no Fedora QNN/HTP runtime is integrated |
+| Motion sensors / auto-rotation | ✅ | Works with auto rotation |
+| Battery / charging | 🟡 | Finicky. Direct charging works but usb hub power passthrough charges slowly and sometime doesnt charges |
+| USB-C / powered USB hub | ✅ | USB devices works |
+| External monitor | ✅ | HDMI/Type-C monitors work |
 | Haptics | ✅ | Physical tablet vibration works through the kernel haptics path. |
-| Suspend / resume | 🟡 | Resume is not qualified. The support update masks systemd sleep targets and ignores cover-close suspend as a freeze-prevention mitigation; it does not fix the kernel wake path. |
-| Fingerprint reader | ❌ | Authentication is unavailable. EL721/K250A nodes and kernel drivers are present on the running tablet, but there is no Fedora EL721 `libfprint` backend, verified X810 calibration set, or safe SPSS/QTEE owner lifecycle. |
+| Suspend / resume | 🟡 | Finicky, sometime refuses to wake |
+| Fingerprint reader | ❌ | Not working |
 | Charging bypass | ❌ | No safe, verified Linux control is available. |
 
-These statuses describe what has been observed on this device, not promises for
-other units or every build. See [`docs/Hardware-Notes.md`](docs/Hardware-Notes.md)
-and [`docs/Known-Issues.md`](docs/Known-Issues.md) for caveats and subsystem
-details.
-
-Moonlight V4L2 hints are available through an opt-in launcher. Flathub and
-Moonlight are not added automatically; install/update explicitly with
-`sudo x810-moonlight-install`. Live-stream hardware decoding remains
-unverified. See [the Moonlight V4L2 experiment](docs/x810-research/MOONLIGHT-V4L2-EXPERIMENT.md).
+See [`docs/Hardware-Notes.md`](docs/Hardware-Notes.md) and [`docs/Known-Issues.md`](docs/Known-Issues.md) for caveats and subsystem details. Updates via [Tab Companion](https://github.com/iamSlightlyWind/tab-companion) can resolves these issues if patches are available.
 
 ## Install Fedora
 
