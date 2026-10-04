@@ -1,0 +1,63 @@
+From: X810 Fedora contributors
+Subject: [PATCH] drm/bridge: avoid duplicate OOB connector hotplug events
+
+USB Type-C DisplayPort attention/status updates can repeat the same HPD
+connection state. The Type-C DP altmode driver reports each update through
+the connector OOB callback, and the bridge connector currently turns every
+report into a userspace hotplug uevent. Preserve bridge-chain notification
+for every report (including DP IRQ service) but only emit the userspace
+connector event for a state transition. Normal in-band bridge HPD callbacks
+retain their existing forced-event behavior.
+
+--- a/drivers/gpu/drm/display/drm_bridge_connector.c
++++ b/drivers/gpu/drm/display/drm_bridge_connector.c
+@@ -153,25 +153,37 @@
+ 	}
+ }
+ 
++static bool drm_bridge_connector_should_send_hotplug(
++		enum drm_connector_status old_status,
++		enum drm_connector_status new_status, bool force_hotplug)
++{
++	return force_hotplug || old_status != new_status;
++}
++
+ static void drm_bridge_connector_handle_hpd(struct drm_bridge_connector *drm_bridge_connector,
+-					    enum drm_connector_status status)
++					    enum drm_connector_status status,
++					    bool force_hotplug)
+ {
+ 	struct drm_connector *connector = &drm_bridge_connector->base;
+ 	struct drm_device *dev = connector->dev;
++	enum drm_connector_status old_status;
+ 
+ 	mutex_lock(&dev->mode_config.mutex);
++	old_status = connector->status;
+ 	connector->status = status;
+ 	mutex_unlock(&dev->mode_config.mutex);
+ 
+ 	drm_bridge_connector_hpd_notify(connector, status);
+ 
+-	drm_kms_helper_connector_hotplug_event(connector);
++	if (drm_bridge_connector_should_send_hotplug(old_status, status,
++						      force_hotplug))
++		drm_kms_helper_connector_hotplug_event(connector);
+ }
+ 
+ static void drm_bridge_connector_hpd_cb(void *cb_data,
+ 					enum drm_connector_status status)
+ {
+-	drm_bridge_connector_handle_hpd(cb_data, status);
++	drm_bridge_connector_handle_hpd(cb_data, status, true);
+ }
+ 
+ static void drm_bridge_connector_oob_hotplug_event(struct drm_connector *connector,
+@@ -180,7 +192,7 @@
+ 	struct drm_bridge_connector *bridge_connector =
+ 		to_drm_bridge_connector(connector);
+ 
+-	drm_bridge_connector_handle_hpd(bridge_connector, status);
++	drm_bridge_connector_handle_hpd(bridge_connector, status, false);
+ }
+ 
+ static void drm_bridge_connector_enable_hpd(struct drm_connector *connector)

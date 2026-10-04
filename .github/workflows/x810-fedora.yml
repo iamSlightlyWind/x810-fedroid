@@ -520,6 +520,8 @@ jobs:
               python3 /work/tools/test-dpu-color-resource-modeset.py \
                 drivers/gpu/drm/msm/disp/dpu1/dpu_crtc.c \
                 drivers/gpu/drm/msm/msm_atomic.c
+              python3 /work/tools/test-drm-bridge-oob-hotplug.py \
+                drivers/gpu/drm/display/drm_bridge_connector.c
               bash /work/kernel/prepare.sh .
               echo "-gts9wifi" > localversion-gts9wifi
               cd ..
