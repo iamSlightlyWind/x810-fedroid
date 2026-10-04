@@ -81,9 +81,12 @@ were absent: `qcom-cpufreq-hw` deferred until the SM8550 OSM L3 provider loaded.
 Manually loading `icc_osm_l3` on the running tablet created all three policies;
 a short D-Bus test switched them to `performance` and restored `balanced` /
 `schedutil`. The support RPM now loads the module during an update and at each
-boot through `modules-load.d`. Persistent startup and GNOME UI behavior remain
-to be checked after applying the update/reboot. This is CPUFreq-level control,
-not a Samsung power HAL; performance mode can increase heat and power draw.
+boot through `modules-load.d`. The generic TuneD `powersave` profile also
+prefers `schedutil` when available, so Power Saver could still allow high
+benchmark frequencies. The support RPM now maps Power Saver to an X810-specific
+profile forcing CPUFreq `powersave`. Verify all three active governors and
+benchmark/temperature behavior on-device. This is CPUFreq-level control, not a
+Samsung power HAL; performance mode can increase heat and power draw.
 
 ### 27 — Optional module BTF mismatches
 

@@ -1,0 +1,105 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: MIT
+"""Route TuneD's PPD power-saver profile to the X810-specific CPUFreq profile."""
+
+import argparse
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+
+
+TARGET = "x810-power-saver"
+AC_SECTION = "profiles"
+BATTERY_SECTION = "battery"
+
+
+def update_section(text: str, section: str, key: str, expected: set[str], value: str):
+    lines = text.splitlines(keepends=True)
+    section_re = re.compile(rf"^\s*\[{re.escape(section)}\]\s*(?:[#;].*)?$", re.I)
+    header = next((i for i, line in enumerate(lines) if section_re.match(line.rstrip("\r\n"))), None)
+    if header is None:
+        if section == BATTERY_SECTION:
+            return text, False
+        separator = "" if not text or text.endswith("\n") else "\n"
+        return text + separator + f"\n[{section}]\n{key}={value}\n", True
+
+    end = len(lines)
+    for i in range(header + 1, len(lines)):
+        if re.match(r"^\s*\[[^]]+\]", lines[i]):
+            end = i
+            break
+    key_re = re.compile(rf"^([ \t]*{re.escape(key)}[ \t]*=[ \t]*)([^#;\r\n]*?)([ \t]*(?:[#;].*)?)(\r?\n)?$", re.I)
+    found = False
+    for i in range(header + 1, end):
+        match = key_re.match(lines[i])
+        if not match:
+            continue
+        found = True
+        current = match.group(2).strip()
+        if current.lower() not in {candidate.lower() for candidate in expected}:
+            raise ValueError(f"{section}.{key} has custom value {current!r}; leaving it unchanged")
+        if current.lower() == value.lower():
+            return text, False
+        newline = match.group(4) or "\n"
+        replacement = match.group(1) + value + match.group(3) + newline
+        if lines[i] == replacement:
+            return text, False
+        lines[i] = replacement
+        return "".join(lines), True
+    if section == BATTERY_SECTION:
+        return text, False
+    lines.insert(end, f"{key}={value}\n")
+    return "".join(lines), True
+
+
+def configure(path: Path, state_dir: Path) -> bool:
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"TuneD PPD config is missing or not a regular file: {path}")
+    original = path.read_text(encoding="utf-8")
+    updated, changed = update_section(
+        original, AC_SECTION, "power-saver", {"powersave", TARGET}, TARGET
+    )
+    updated, battery_changed = update_section(
+        updated, BATTERY_SECTION, "power-saver", {"powersave", TARGET}, TARGET
+    )
+    changed = changed or battery_changed
+    if not changed:
+        return False
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    backup = state_dir / "tuned-ppd.conf.before-x810-profile"
+    if not backup.exists():
+        backup.write_text(original, encoding="utf-8")
+        backup.chmod(0o600)
+    fd, temp_name = tempfile.mkstemp(prefix=".ppd.conf.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(updated)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temp_name, path.stat().st_mode & 0o777)
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+    return True
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, default=Path("/etc/tuned/ppd.conf"))
+    parser.add_argument("--state-dir", type=Path, default=Path("/var/lib/x810-fedora"))
+    args = parser.parse_args(argv)
+    try:
+        changed = configure(args.config, args.state_dir)
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"x810 tuned profile setup: {exc}", file=sys.stderr)
+        return 1
+    print("updated power-saver mapping" if changed else "power-saver mapping already configured")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

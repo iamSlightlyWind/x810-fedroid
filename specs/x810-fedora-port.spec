@@ -126,9 +126,47 @@ if command -v systemctl >/dev/null 2>&1; then
         >/dev/null 2>&1 || :
     systemctl start gts9wifi-android-parts.service vendor.mount \
         >/dev/null 2>&1 || :
+    # Install CPUFreq's policy providers/governors before starting tuned-ppd.
+    # Otherwise the D-Bus profile can be selected before policies exist, then
+    # remain a no-op when qcom-cpufreq-hw appears later in the transaction.
+    if command -v modprobe >/dev/null 2>&1; then
+        modprobe cpufreq_powersave >/dev/null 2>&1 || :
+        modprobe icc_osm_l3 >/dev/null 2>&1 || :
+    fi
+    # The generic TuneD "powersave" profile prefers schedutil when available;
+    # on SM8550 that can still reach benchmark-boost frequencies. Route PPD's
+    # power-saver mode to the X810 profile that pins the powersave governor,
+    # preserving the upstream profile's non-CPU power-saving settings.
+    if [ -x /usr/libexec/x810-configure-tuned-profiles ]; then
+        if ! ppd_change=$(/usr/libexec/x810-configure-tuned-profiles 2>&1); then
+            echo "x810-fedora-port: could not configure TuneD power profiles: $ppd_change" >&2
+            ppd_change="configuration failed"
+        fi
+        case "$ppd_change" in
+            "updated power-saver mapping")
+                if systemctl is-active --quiet tuned-ppd.service; then
+                    active_profile=$(busctl --system get-property \
+                        net.hadess.PowerProfiles /net/hadess/PowerProfiles \
+                        net.hadess.PowerProfiles ActiveProfile 2>/dev/null \
+                        | sed -n 's/^s "\([^"]*\)"$/\1/p')
+                    systemctl try-restart tuned-ppd.service >/dev/null 2>&1 || :
+                    if [ -n "$active_profile" ]; then
+                        for attempt in 1 2 3 4 5; do
+                            systemctl is-active --quiet tuned-ppd.service && break
+                            sleep 1
+                        done
+                        busctl --system set-property net.hadess.PowerProfiles \
+                            /net/hadess/PowerProfiles net.hadess.PowerProfiles \
+                            ActiveProfile s "$active_profile" >/dev/null 2>&1 || :
+                    fi
+                fi
+                ;;
+            "power-saver mapping already configured") ;;
+            *) echo "x810-fedora-port: TuneD power-saver mapping not changed: $ppd_change" >&2 ;;
+        esac
+    fi
     # Install the GNOME power-profile API on Fedora 44 using TuneD's PPD
-    # compatibility daemon. The balanced profile remains the default; users
-    # can select power-saver/performance from GNOME's normal power menu.
+    # compatibility daemon. Balanced remains the default.
     systemctl enable tuned.service tuned-ppd.service >/dev/null 2>&1 || :
     systemctl start tuned-ppd.service >/dev/null 2>&1 || :
     # Keep the optional user-configurable CPU thermal cap active on existing
@@ -149,13 +187,6 @@ if command -v systemctl >/dev/null 2>&1; then
     # persistent system-scope sRGB fallback while preserving any custom ICC.
     systemctl enable gts9wifi-color-profile.service >/dev/null 2>&1 || :
     systemctl start gts9wifi-color-profile.service >/dev/null 2>&1 || :
-    # qcom-cpufreq-hw defers until the SM8550 OSM L3 interconnect provider
-    # registers. Load it now so an RPM update repairs an already-booted system;
-    # modules-load.d repeats this at every boot. Older/foreign kernels may not
-    # ship the module, so that case must not fail the support-RPM transaction.
-    if command -v modprobe >/dev/null 2>&1; then
-        modprobe icc_osm_l3 >/dev/null 2>&1 || :
-    fi
     # Migrate the enabled sensor-recovery unit from its previous
     # multi-user.target link to the new graphical.target ordering. Reenable
     # changes symlinks only; do not trigger a live sensorspd/ADSP restart.

@@ -16,8 +16,20 @@ when upgraded, and `/etc/modules-load.d/x810-cpufreq.conf` ensures it is loaded
 on subsequent boots. The kernel module's BTF metadata warning remains, but the
 module loaded and both CPUFreq policy creation and TuneD profile changes worked.
 
+There was a second, subtler problem: TuneD's generic `powersave` profile lists
+`schedutil` before `powersave` as its preferred governor. On this tablet,
+`schedutil` is available, so selecting GNOME's Power Saver can leave the CPU
+free to boost under load; a CPU benchmark can therefore score like Balanced
+while the tablet heats up. The port now adds an `x810-power-saver` profile
+which inherits the generic power-saving tunables but explicitly selects the
+CPUFreq `powersave` governor, and maps the standard PPD `power-saver` profile
+to it. The support RPM migrates the mapping idempotently, backs up the original
+PPD config once, and restarts `tuned-ppd` only if the mapping changed.
+
 This is CPUFreq-level control, not a Samsung power HAL or a complete SoC
 performance policy. It does not establish GPU boost behavior or thermal limits.
-The user-visible GNOME selector and persistence after a clean boot still need
-owner validation; use `balanced` by default and expect `performance` to use
-more power and produce more heat.
+The X810-specific saver mapping is source-tested but still needs validation on
+the tablet: confirm all three CPU policies report `powersave` in Power Saver,
+`schedutil` in Balanced, and `performance` in Performance, then compare
+frequency/temperature under the same benchmark. Use Balanced by default;
+Performance is expected to use more power and produce more heat.

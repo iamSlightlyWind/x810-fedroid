@@ -18,6 +18,7 @@ X810_VPU_SHA256 = "c02a4f1cb253f4b817994c00145dc9abbd59a10bfcd9fd5d0c2f223c0dc54
 PACKAGE_NAME = "x810-fedora-port"
 PPD_CONFIG = "/etc/tuned/ppd.conf"
 TUNED_PERFORMANCE_PROFILE = "/usr/lib/tuned/profiles/throughput-performance/tuned.conf"
+TUNED_X810_POWERSAVE_PROFILE = "/usr/lib/tuned/profiles/x810-power-saver/tuned.conf"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -48,10 +49,13 @@ def check_power_profile_mapping(rootfs):
     rootfs = Path(rootfs)
     ppd_path = rootfs / PPD_CONFIG.lstrip("/")
     tuned_path = rootfs / TUNED_PERFORMANCE_PROFILE.lstrip("/")
+    x810_powersave_path = rootfs / TUNED_X810_POWERSAVE_PROFILE.lstrip("/")
     if not ppd_path.is_file():
         fail("rootfs is missing tuned-ppd's PowerProfiles profile map")
     if not tuned_path.is_file():
         fail("rootfs is missing TuneD's throughput-performance profile")
+    if not x810_powersave_path.is_file():
+        fail("rootfs is missing the X810 explicit CPUFreq powersave profile")
 
     ppd = configparser.ConfigParser(interpolation=None, strict=False)
     ppd.read(ppd_path, encoding="utf-8")
@@ -59,7 +63,7 @@ def check_power_profile_mapping(rootfs):
         fail("tuned-ppd must default to the balanced profile")
     mappings = ppd["profiles"] if ppd.has_section("profiles") else {}
     expected_mappings = {
-        "power-saver": "powersave",
+        "power-saver": "x810-power-saver",
         "balanced": "balanced",
         "performance": "throughput-performance",
     }
@@ -72,6 +76,12 @@ def check_power_profile_mapping(rootfs):
         fail("TuneD throughput-performance profile does not request the performance governor")
     if profile.get("cpu", "min_perf_pct", fallback="") != "100":
         fail("TuneD throughput-performance profile does not request full CPU minimum performance")
+    powersave = configparser.ConfigParser(interpolation=None, strict=False)
+    powersave.read(x810_powersave_path, encoding="utf-8")
+    if powersave.get("main", "include", fallback="") != "powersave":
+        fail("X810 power-saver profile must inherit TuneD's generic powersave profile")
+    if powersave.get("cpu", "governor", fallback="") != "powersave":
+        fail("X810 power-saver profile must force CPUFreq's minimum-frequency governor")
 
 
 def check(rootfs, manifest_path, version, rpm_path=None):

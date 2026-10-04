@@ -76,16 +76,22 @@ class SupportRpmStagingTests(unittest.TestCase):
             rootfs = Path(temp)
             ppd = rootfs / "etc/tuned/ppd.conf"
             profile = rootfs / "usr/lib/tuned/profiles/throughput-performance/tuned.conf"
+            x810_powersave = rootfs / "usr/lib/tuned/profiles/x810-power-saver/tuned.conf"
             ppd.parent.mkdir(parents=True)
             profile.parent.mkdir(parents=True)
+            x810_powersave.parent.mkdir(parents=True)
             ppd.write_text(
                 "[main]\ndefault=balanced\n\n"
-                "[profiles]\npower-saver=powersave\nbalanced=balanced\n"
+                "[profiles]\npower-saver=x810-power-saver\nbalanced=balanced\n"
                 "performance=throughput-performance\n",
                 encoding="utf-8",
             )
             profile.write_text(
                 "[cpu]\ngovernor=performance\nmin_perf_pct=100\n",
+                encoding="utf-8",
+            )
+            x810_powersave.write_text(
+                "[main]\ninclude=powersave\n[cpu]\ngovernor=powersave\n",
                 encoding="utf-8",
             )
             check_mapping(rootfs)
@@ -379,6 +385,10 @@ class SupportRpmStagingTests(unittest.TestCase):
         spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
         self.assertIn("Requires:       tuned-ppd", spec)
         self.assertIn("systemctl start tuned-ppd.service", spec)
+        self.assertLess(spec.index("modprobe icc_osm_l3"), spec.index("systemctl start tuned-ppd.service"))
+        modules_load = (ROOT / "rootfs/overlay/etc/modules-load.d/x810-cpufreq.conf").read_text(encoding="utf-8")
+        self.assertIn("cpufreq_powersave", modules_load)
+        self.assertIn("icc_osm_l3", modules_load)
 
         build_contract = (ROOT / "tools/test-port-build-contract.py").read_text(
             encoding="utf-8"
@@ -386,7 +396,9 @@ class SupportRpmStagingTests(unittest.TestCase):
         self.assertIn("check_power_profile_mapping(rootfs)", build_contract)
         self.assertIn('"performance": "throughput-performance"', build_contract)
         self.assertIn('"balanced": "balanced"', build_contract)
-        self.assertIn('"power-saver": "powersave"', build_contract)
+        self.assertIn('"power-saver": "x810-power-saver"', build_contract)
+        self.assertIn("x810-configure-tuned-profiles", spec)
+        self.assertIn('governor=powersave', (ROOT / "rootfs/overlay/usr/lib/tuned/profiles/x810-power-saver/tuned.conf").read_text(encoding="utf-8"))
         self.assertIn('"governor", fallback="") != "performance"', build_contract)
         self.assertIn('"min_perf_pct", fallback="") != "100"', build_contract)
 
@@ -398,6 +410,41 @@ class SupportRpmStagingTests(unittest.TestCase):
             "CONFIG_CPU_FREQ_GOV_PERFORMANCE=y",
         ):
             self.assertIn(governor, kernel_config)
+
+    def test_tuned_power_saver_migration_is_idempotent_and_preserves_custom_maps(self):
+        helper = ROOT / "rootfs/overlay/usr/libexec/x810-configure-tuned-profiles"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / "etc/tuned/ppd.conf"
+            state = root / "var/lib/x810-fedora"
+            config.parent.mkdir(parents=True)
+            original = (
+                "[main]\ndefault=balanced\n\n[profiles]\n"
+                "power-saver=powersave # vendor default\n"
+                "balanced=balanced\nperformance=throughput-performance\n"
+            )
+            config.write_text(original, encoding="utf-8")
+            command = [
+                "python3", str(helper), "--config", str(config),
+                "--state-dir", str(state),
+            ]
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            configured = config.read_text(encoding="utf-8")
+            self.assertIn("power-saver=x810-power-saver # vendor default", configured)
+            self.assertEqual(
+                (state / "tuned-ppd.conf.before-x810-profile").read_text(), original
+            )
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            self.assertIn("already configured", result.stdout)
+            self.assertEqual(config.read_text(encoding="utf-8"), configured)
+
+            config.write_text(
+                configured.replace("x810-power-saver", "my-custom-profile"),
+                encoding="utf-8",
+            )
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("leaving it unchanged", result.stderr)
 
     def test_sensor_startup_stages_the_exact_x810_registry_before_hexagonrpcd(self):
         builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")
