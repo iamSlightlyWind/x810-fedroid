@@ -8,6 +8,7 @@ BuildArch:      aarch64
 # sources are in the repository and no compiled debugsource package is needed.
 %global debug_package %{nil}
 Requires:       systemd
+Requires:       dconf
 Requires:       policycoreutils
 Requires:       python3
 Requires:       device-mapper
@@ -107,12 +108,20 @@ if command -v systemctl >/dev/null 2>&1; then
         fi
     fi
     systemctl daemon-reload >/dev/null 2>&1 || :
+    # Compile system-wide GNOME defaults before enabling the single power-key
+    # owner. It suppresses GNOME's direct suspend action so the key-wake event
+    # can be consumed rather than triggering an immediate second suspend.
+    if command -v dconf >/dev/null 2>&1; then
+        dconf update >/dev/null 2>&1 || :
+    fi
     # Apply the X810 no-suspend lid policy immediately on already-running
     # systems; logind reloads logind.conf on SIGHUP. Sleep-target masks above
     # take effect after daemon-reload even if logind is not yet running.
     if systemctl is-active --quiet systemd-logind.service; then
         systemctl kill --signal=HUP systemd-logind.service >/dev/null 2>&1 || :
     fi
+    systemctl enable x810-powerkey.service >/dev/null 2>&1 || :
+    systemctl start x810-powerkey.service >/dev/null 2>&1 || :
     # The support RPM owns the pinned SSC-linked iio-sensor-proxy binary and
     # service files. Refresh an already-running proxy after replacement so
     # GNOME reclaims the sensor and receives the corrected startup properties.

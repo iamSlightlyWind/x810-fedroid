@@ -240,7 +240,8 @@ if [ "$desktop" = "gnome" ]; then
         --use-host-config "${dnf_repo_args[@]}" \
         --setopt=install_weak_deps=False --setopt=tsflags=nodocs install \
         '@^workstation-product-environment' snapshot \
-        pipewire wireplumber pipewire-pulseaudio pipewire-alsa pipewire-utils
+        pipewire wireplumber pipewire-pulseaudio pipewire-alsa pipewire-utils \
+        dconf
     # The first-login welcome wizard has nothing to offer in a pre-provisioned
     # image; drop it so the first boot goes straight to the gdm login.
     dnf -y --installroot="$rootfs" --use-host-config "${dnf_repo_args[@]}" -q remove \
@@ -582,6 +583,7 @@ for unit in \
     gts9wifi-wait-sensor-proxy.timer \
     gts9wifi-bt-provision gts9wifi-bt-address bluetooth gts9wifi-mem-reclaim \
     gts9wifi-panel-coldboot-recover \
+    x810-powerkey \
     gts9wifi-grow-rootfs \
     gts9wifi-usb-net gts9wifi-wifi-recover gts9wifi-sensor-registry-perms \
     gts9wifi-x11-dir-fix.path gts9wifi-chronyd \
@@ -592,6 +594,12 @@ do
     systemctl --root="$rootfs" enable "$unit" >/dev/null 2>&1 \
         || echo "    WARN: unit not found (check name after hexagonrpcd patch): $unit"
 done
+# Compile the system GNOME defaults staged in /etc/dconf/db/local.d. In
+# particular, power-button-action=nothing lets x810-powerkey filter the event
+# which woke from suspend instead of GNOME immediately suspending again.
+if [ -x "$rootfs/usr/bin/dconf" ]; then
+    chroot "$rootfs" dconf update
+fi
 # Keep ADSP and sensorspd out of standalone enablement even if a package
 # preset or earlier image enabled them. The sensor-proxy recovery unit starts
 # them on demand after panel coldboot recovery and after the FastRPC node and

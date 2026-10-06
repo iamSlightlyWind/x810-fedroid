@@ -1,0 +1,3 @@
+# Let x810-powerkey.service filter the wake press before assigning actions.
+[org/gnome/settings-daemon/plugins/power]
+power-button-action='nothing'

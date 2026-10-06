@@ -264,6 +264,8 @@ jobs:
           python3 tools/test-x810-sensor-registry-runtime-tree.py
           python3 tools/test-x810-install.py
           python3 tools/test-x810-pd-limits.py
+          python3 tools/test-x810-device-control-wakeup.py
+          python3 tools/test-x810-powerkey-wakeup.py
           python3 tools/test-x810-npu-memory-policy.py
           python3 tools/test-x810-suspend-candidate.py
           python3 tools/test-x810-fingerprint-kernel-contract.py
@@ -494,7 +496,7 @@ jobs:
                 --setopt=x810-fedora-snapshot.gpgcheck=1 \
                 --setopt=x810-updates-snapshot.gpgcheck=1 \
                 --enablerepo=x810-fedora-snapshot --enablerepo=x810-updates-snapshot)
-              dnf -y "${repo_args[@]}" install make gcc clang lld llvm bc flex bison perl \
+              dnf -y "${repo_args[@]}" install make gcc clang lld llvm bc flex bison perl git \
                   openssl openssl-devel elfutils-libelf-devel python3 tar xz \
                   zstd rpm-build ccache dtc findutils dwarves dracut \
                   cpio lz4 iproute >/dev/null

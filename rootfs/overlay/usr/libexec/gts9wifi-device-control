@@ -20,13 +20,48 @@
 # nothing.
 set -u
 
-state_dir=/var/lib/gts9wifi
+state_dir=${GTS9WIFI_STATE_DIR:-/var/lib/gts9wifi}
+sysfs_root=${GTS9WIFI_SYSFS_ROOT:-/sys}
 
 # name|group|label|description|default|sysfs path
 CONTROLS='
-double-tap-to-wake|Touchscreen|Double tap to wake|Wake the tablet from suspend by double tapping the screen.|1|/sys/bus/i2c/devices/10-0049/double_tap_to_wake
+double-tap-to-wake|Touchscreen|Double tap to wake|Wake the tablet from suspend by double tapping the screen.|0|@fts/double_tap_to_wake
 fast-charge|Power|Fast charging|Charges faster with a PPS adapter, up to the tablet 3 A input limit.|0|/sys/bus/i2c/devices/6-0049/fast_charge
 '
+
+resolve_path() { # resolve_path <table path>
+	case "$1" in
+	@fts/*)
+		for node in "$sysfs_root"/bus/i2c/devices/*; do
+			[ -r "$node/name" ] || continue
+			[ "$(cat "$node/name" 2>/dev/null)" = fts1ba90a ] || continue
+			printf '%s/%s\n' "$node" "${1#@fts/}"
+			return 0
+		done
+		return 1
+		;;
+	*) printf '%s\n' "$1" ;;
+	esac
+}
+
+set_wakeup_policy() { # set_wakeup_policy <control> <value>
+	[ "$1" = double-tap-to-wake ] || return 0
+	local_node=${node%/double_tap_to_wake}
+	if [ "$2" = 1 ]; then wake=enabled; else wake=disabled; fi
+	printf '%s\n' "$wake" >"$local_node/power/wakeup" 2>/dev/null || true
+}
+
+migrate_legacy_default() {
+	marker="$state_dir/device-control-schema"
+	[ -e "$marker" ] && return 0
+	# Earlier builds persisted the old default (1), even when the setting was
+	# never selected by the user. That default causes immediate wakeups on this
+	# FTS panel. Migrate the ambiguous legacy default to the safe default (off).
+	if [ "$(cat "$state_dir/double-tap-to-wake" 2>/dev/null)" = 1 ]; then
+		printf '0\n' >"$state_dir/double-tap-to-wake" 2>/dev/null || true
+	fi
+	printf '2\n' >"$marker" 2>/dev/null || true
+}
 
 usage() {
 	echo "usage: gts9wifi-device-control list|apply|get NAME|set NAME 0|1" >&2
@@ -71,6 +106,9 @@ command=${1:-list}
 name_arg=${2:-}
 value_arg=${3:-}
 
+ensure_state_dir
+migrate_legacy_default
+
 case "$command" in
 list|apply|get|set) ;;
 *) usage ;;
@@ -83,15 +121,17 @@ while IFS='|' read -r name group label description default path; do
 		continue
 	fi
 	matched=1
+	node=$(resolve_path "$path") || node=""
+	[ -n "$node" ] || node="$sysfs_root/.__missing__/$name"
 
 	case "$command" in
 	list)
 		printf '%s\t%s\t%s\t%s\t%s\n' \
 			"$name" "$group" "$label" "$description" \
-			"$(live_value "$path" "$default")"
+			"$(live_value "$node" "$default")"
 		;;
 	get)
-		live_value "$path" "$default"
+		live_value "$node" "$default"
 		;;
 	set)
 		case "$value_arg" in
@@ -101,10 +141,11 @@ while IFS='|' read -r name group label description default path; do
 			exit 2
 			;;
 		esac
-		if ! printf '%s\n' "$value_arg" >"$path" 2>/dev/null; then
-			echo "gts9wifi-device-control: cannot write $path" >&2
+		if ! printf '%s\n' "$value_arg" >"$node" 2>/dev/null; then
+			echo "gts9wifi-device-control: cannot write $node" >&2
 			exit 1
 		fi
+		set_wakeup_policy "$name" "$value_arg"
 		ensure_state_dir
 		printf '%s\n' "$value_arg" >"$state_dir/$name" 2>/dev/null || true
 		chmod 0664 "$state_dir/$name" 2>/dev/null || true
@@ -114,19 +155,21 @@ while IFS='|' read -r name group label description default path; do
 		# given optional control. Do not hold up the display manager for twenty
 		# seconds waiting for a device that is not present. Allow only a short
 		# probe grace period when the I2C device itself has appeared.
-		if [ ! -e "$path" ] && [ -d "${path%/*}" ]; then
+		if [ ! -e "$node" ] && [ -d "${node%/*}" ]; then
 			tries=0
-			while [ ! -e "$path" ] && [ "$tries" -lt 2 ]; do
+			while [ ! -e "$node" ] && [ "$tries" -lt 2 ]; do
 				sleep 1
 				tries=$((tries + 1))
 			done
 		fi
 		ensure_state_file "$name" "$default"
 		value=$(saved_value "$name" "$default")
-		if [ ! -e "$path" ]; then
+		if [ ! -e "$node" ]; then
 			echo "gts9wifi-device-control: $name is not exposed by this kernel; skipped"
-		elif ! printf '%s\n' "$value" >"$path" 2>/dev/null; then
-			echo "gts9wifi-device-control: cannot write $path" >&2
+		elif ! printf '%s\n' "$value" >"$node" 2>/dev/null; then
+			echo "gts9wifi-device-control: cannot write $node" >&2
+		else
+			set_wakeup_policy "$name" "$value"
 		fi
 		;;
 	esac

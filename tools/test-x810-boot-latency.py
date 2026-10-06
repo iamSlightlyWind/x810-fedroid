@@ -19,7 +19,7 @@ def main() -> None:
 
     # Missing optional sysfs controls must be skipped; waiting for absent I2C
     # devices used to add a full 20 seconds before GNOME could start.
-    assert 'if [ ! -e "$path" ] && [ -d "${path%/*}" ]; then' in device_control
+    assert 'if [ ! -e "$node" ] && [ -d "${node%/*}" ]; then' in device_control
     assert '[ "$tries" -lt 2 ]' in device_control
     assert 'is not exposed by this kernel; skipped' in device_control
     assert '[ "$tries" -lt 20 ]' not in device_control

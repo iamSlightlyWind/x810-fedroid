@@ -16,6 +16,7 @@ enable gts9wifi-mem-reclaim.service
 disable gts9wifi-wait-sensor-proxy.service
 enable gts9wifi-wait-sensor-proxy.timer
 enable gts9wifi-panel-coldboot-recover.service
+enable x810-powerkey.service
 enable gts9wifi-grow-rootfs.service
 enable gts9wifi-usb-net.service
 enable gts9wifi-wifi-recover.service

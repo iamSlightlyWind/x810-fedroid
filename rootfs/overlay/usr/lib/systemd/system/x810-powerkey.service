@@ -1,0 +1,21 @@
+[Unit]
+Description=Consume X810 power-key wake press and manage short/long presses
+Documentation=file:///usr/libexec/x810-powerkey
+After=systemd-logind.service
+Wants=systemd-logind.service
+ConditionPathExists=/proc/bus/input/devices
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/x810-powerkey
+Restart=always
+RestartSec=5
+ProtectSystem=strict
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target
