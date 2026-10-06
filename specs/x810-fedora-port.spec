@@ -180,20 +180,26 @@ if command -v systemctl >/dev/null 2>&1; then
     # The Qualcomm ALSA card can register after WirePlumber's first scan. Run
     # the bounded user-session recovery now on updates and every boot; it only
     # restarts WirePlumber/reselects HiFi after ALSA is present, never the ADSP.
-    systemctl enable gts9wifi-audio-session.service >/dev/null 2>&1 || :
-    systemctl start gts9wifi-audio-session.service >/dev/null 2>&1 || :
+    # Audio recovery waits for the late ADSP/card. Schedule it independently
+    # so neither it nor the ADSP's safe startup delay blocks graphical.target.
+    systemctl disable gts9wifi-audio-session.service >/dev/null 2>&1 || :
+    systemctl disable pd-mapper.service >/dev/null 2>&1 || :
+    systemctl disable hexagonrpcd-adsp-rootpd.service >/dev/null 2>&1 || :
+    systemctl enable gts9wifi-audio-session.timer >/dev/null 2>&1 || :
+    systemctl start gts9wifi-audio-session.timer >/dev/null 2>&1 || :
     # This panel has no EDID and no assigned profile by default. Mutter then
     # reports Night Light as supported but leaves GAMMA_LUT unset. Create a
     # persistent system-scope sRGB fallback while preserving any custom ICC.
     systemctl enable gts9wifi-color-profile.service >/dev/null 2>&1 || :
     systemctl start gts9wifi-color-profile.service >/dev/null 2>&1 || :
-    # Migrate the enabled sensor-recovery unit from its previous
-    # multi-user.target link to the new graphical.target ordering. Reenable
-    # changes symlinks only; do not trigger a live sensorspd/ADSP restart.
-    systemctl reenable gts9wifi-wait-sensor-proxy.service \
+    # Sensor recovery waits for late ADSP/SSC discovery and can take tens of
+    # seconds. Remove its old graphical.target link and schedule it separately;
+    # the service still waits for GDM and panel recovery before touching SSC.
+    systemctl disable gts9wifi-wait-sensor-proxy.service \
         >/dev/null 2>&1 || :
+    systemctl enable gts9wifi-wait-sensor-proxy.timer >/dev/null 2>&1 || :
     # Keep ADSP and sensorspd out of standalone preset enablement. The
-    # graphical sensor-recovery unit requests them after GNOME and panel
+    # timer-triggered sensor-recovery unit requests them after GNOME and panel
     # recovery, with FastRPC ownership and HexagonFS permissions prepared.
     systemctl enable gts9wifi-sensor-registry-perms.service \
         >/dev/null 2>&1 || :

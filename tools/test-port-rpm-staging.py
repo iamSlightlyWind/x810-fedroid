@@ -324,9 +324,10 @@ class SupportRpmStagingTests(unittest.TestCase):
         self.assertIn("audio-session-refreshed-$uid", helper)
         self.assertNotRegex(helper, r"remoteproc.*/state|echo\s+restart")
         self.assertIn("gts9wifi-adsp-boot.service", unit)
-        self.assertIn("Before=display-manager.service", unit)
-        self.assertIn("systemctl enable gts9wifi-audio-session.service", spec)
-        self.assertIn("systemctl start gts9wifi-audio-session.service", spec)
+        self.assertIn("After=display-manager.service", unit)
+        self.assertNotIn("Before=display-manager.service", unit)
+        self.assertIn("systemctl enable gts9wifi-audio-session.timer", spec)
+        self.assertIn("systemctl start gts9wifi-audio-session.timer", spec)
 
         result = subprocess.run(
             ["bash", "-n", str(ROOT / "rootfs/overlay/usr/libexec/gts9wifi-audio-session")],
@@ -450,7 +451,7 @@ class SupportRpmStagingTests(unittest.TestCase):
         builder = (ROOT / "rootfs/build-rootfs.sh").read_text(encoding="utf-8")
         enabled_units = builder.split("for unit in \\\n", 1)[1].split("\ndo\n", 1)[0]
         self.assertNotIn("gts9wifi-adsp-boot", enabled_units)
-        self.assertIn("gts9wifi-wait-sensor-proxy", enabled_units)
+        self.assertIn("gts9wifi-wait-sensor-proxy.timer", enabled_units)
         self.assertIn("gts9wifi-sensor-registry-perms", enabled_units)
 
         cache_fix = (ROOT / "rootfs/overlay/usr/libexec/"

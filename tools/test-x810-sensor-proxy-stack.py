@@ -43,6 +43,8 @@ def main() -> int:
     hardware_notes = (ROOT / "docs/Hardware-Notes.md").read_text(encoding="utf-8")
     sensor_proxy_unit = (ROOT / "rootfs/overlay/usr/lib/systemd/system/"
                          "gts9wifi-wait-sensor-proxy.service").read_text(encoding="utf-8")
+    sensor_proxy_timer = (ROOT / "rootfs/overlay/usr/lib/systemd/system/"
+                          "gts9wifi-wait-sensor-proxy.timer").read_text(encoding="utf-8")
     sensor_pd_dropin = (ROOT / "rootfs/overlay/etc/systemd/system/"
                         "hexagonrpcd-adsp-sensorspd.service.d/"
                         "10-gts9wifi-hexagonfs.conf").read_text(encoding="utf-8")
@@ -51,10 +53,15 @@ def main() -> int:
     # SSC client exists; retain that ordering in both the image and updates.
     require("After=display-manager.service" in sensor_proxy_unit,
             "SSC recovery may run before GNOME opens its sensor client")
-    require("WantedBy=graphical.target" in sensor_proxy_unit,
-            "SSC recovery must be started by the desktop target, not multi-user")
-    require("Motion sensors and SSC/SensorProxy are working" in readme and
-            "GNOME currently lacks the auto-rotate option/integration" in readme,
+    require("WantedBy=graphical.target" not in sensor_proxy_unit,
+            "SSC recovery must not hold graphical.target open")
+    require("After=display-manager.service" in sensor_proxy_unit,
+            "SSC recovery may run before GNOME opens its sensor client")
+    require("OnBootSec=15s" in sensor_proxy_timer and
+            "WantedBy=timers.target" in sensor_proxy_timer,
+            "SSC recovery must be timer-triggered outside the boot target transaction")
+    require("Motion sensors and SensorProxy work" in readme and
+            "GNOME currently has no auto-rotate option/integration" in readme,
             "README must distinguish working sensors from the missing GNOME integration")
     require("HasAccelerometer=true" in issues and
             "GNOME currently exposes no auto-rotate option" in issues,
@@ -64,8 +71,9 @@ def main() -> int:
             "hardware notes must distinguish working SSC from missing GNOME integration")
     require("After=display-manager.service" in sensor_pd_dropin,
             "sensor-PD can still attach before GNOME and miss delayed SSC failure")
-    require("systemctl reenable gts9wifi-wait-sensor-proxy.service" in spec,
-            "RPM update does not migrate the old multi-user enablement link")
+    require("systemctl disable gts9wifi-wait-sensor-proxy.service" in spec and
+            "systemctl enable gts9wifi-wait-sensor-proxy.timer" in spec,
+            "RPM update does not migrate sensor recovery to its asynchronous timer")
     require("systemctl try-restart gts9wifi-wait-sensor-proxy.service" not in spec,
             "RPM update must not start/restart the sensor recovery in a live session")
 

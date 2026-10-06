@@ -25,7 +25,7 @@ state_dir=/var/lib/gts9wifi
 # name|group|label|description|default|sysfs path
 CONTROLS='
 double-tap-to-wake|Touchscreen|Double tap to wake|Wake the tablet from suspend by double tapping the screen.|1|/sys/bus/i2c/devices/10-0049/double_tap_to_wake
-fast-charge|Power|Fast charging|Charges the battery faster by drawing more power from your charger. A 5 A USB-C cable is recommended.|0|/sys/bus/i2c/devices/6-0049/fast_charge
+fast-charge|Power|Fast charging|Charges faster with a PPS adapter, up to the tablet 3 A input limit.|0|/sys/bus/i2c/devices/6-0049/fast_charge
 '
 
 usage() {
@@ -109,17 +109,23 @@ while IFS='|' read -r name group label description default path; do
 		printf '%s\n' "$value_arg" >"$state_dir/$name" 2>/dev/null || true
 		chmod 0664 "$state_dir/$name" 2>/dev/null || true
 		;;
-	apply)
-		# The device the control lives on may still be probing at boot, so
-		# give it a bounded moment to appear before giving up on it.
-		tries=0
-		while [ ! -e "$path" ] && [ "$tries" -lt 20 ]; do
-			sleep 1
-			tries=$((tries + 1))
+		apply)
+		# A missing sysfs attribute is common on kernels that do not expose a
+		# given optional control. Do not hold up the display manager for twenty
+		# seconds waiting for a device that is not present. Allow only a short
+		# probe grace period when the I2C device itself has appeared.
+		if [ ! -e "$path" ] && [ -d "${path%/*}" ]; then
+			tries=0
+			while [ ! -e "$path" ] && [ "$tries" -lt 2 ]; do
+				sleep 1
+				tries=$((tries + 1))
 			done
+		fi
 		ensure_state_file "$name" "$default"
 		value=$(saved_value "$name" "$default")
-		if ! printf '%s\n' "$value" >"$path" 2>/dev/null; then
+		if [ ! -e "$path" ]; then
+			echo "gts9wifi-device-control: $name is not exposed by this kernel; skipped"
+		elif ! printf '%s\n' "$value" >"$path" 2>/dev/null; then
 			echo "gts9wifi-device-control: cannot write $path" >&2
 		fi
 		;;

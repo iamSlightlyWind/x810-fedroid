@@ -19,12 +19,16 @@ def main() -> None:
 
     assert 'mount -o ro,noload "$efs" "$mountpoint"' in script
     assert 'umount "$mountpoint"' in script
-    assert "btmgmt_() { printf '' | timeout 8 btmgmt \"$@\"" in script
+    assert "btmgmt_() { printf '' | timeout 3 btmgmt \"$@\"" in script
     assert 'btmgmt_ --index 0 public-addr "$address"' in script
     assert "controller is not in the configurable list" in script
     assert "After=bluetooth.service" in unit
     assert "Wants=bluetooth.service" in unit
     assert "TimeoutStartSec=90" in unit
+    assert "deadline=3" in script
+    assert "timeout 3 btmgmt" in script
+    assert "while [ \"$i\" -lt \"$deadline\" ]; do" not in script
+    assert "while [ \"$i\" -lt 3 ]; do" in script
     assert "enable gts9wifi-bt-address.service" in preset
     assert "gts9wifi-bt-address bluetooth" in builder
     # This unit may read the EFS address but must never write it or patch boot

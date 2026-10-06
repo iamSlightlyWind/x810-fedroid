@@ -1,14 +1,11 @@
 [Unit]
 Description=Recover the X810 PipeWire HiFi microphone and speaker profile
-Wants=gts9wifi-adsp-boot.service alsa-restore.service
-After=systemd-logind.service systemd-user-sessions.service gts9wifi-adsp-boot.service alsa-restore.service
-Before=display-manager.service
+Wants=gts9wifi-adsp-boot.service hexagonrpcd-adsp-rootpd.service pd-mapper.service alsa-restore.service
+After=systemd-logind.service systemd-user-sessions.service gts9wifi-adsp-boot.service hexagonrpcd-adsp-rootpd.service pd-mapper.service alsa-restore.service
+After=display-manager.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/libexec/gts9wifi-audio-session
 TimeoutStartSec=120
-
-[Install]
-WantedBy=multi-user.target

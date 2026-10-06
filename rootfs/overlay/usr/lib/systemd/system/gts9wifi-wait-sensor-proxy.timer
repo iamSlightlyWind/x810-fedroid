@@ -1,0 +1,13 @@
+[Unit]
+Description=Start X810 SSC sensor recovery asynchronously after boot
+
+[Timer]
+# SensorProxy and sensorspd depend on the late ADSP/SSC handoff. Do not let
+# those device-specific probes hold graphical.target; the service still waits
+# for GDM and panel recovery before attaching its sensor-PD client.
+OnBootSec=15s
+AccuracySec=1s
+Unit=gts9wifi-wait-sensor-proxy.service
+
+[Install]
+WantedBy=timers.target

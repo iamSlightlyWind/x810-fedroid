@@ -6,14 +6,16 @@ set -u
 
 efs=/dev/disk/by-partlabel/efs
 mountpoint=/run/gts9wifi-efs-bt-ro
-deadline=30
+# This is best-effort metadata setup, not a boot prerequisite. Keep every
+# probe short: the WCN controller may not expose public-address programming.
+deadline=3
 
 log() { echo "gts9wifi-bt-address: $*" >&2; }
 
 # systemd services have stdin=/dev/null; btmgmt needs a pipe to avoid a
 # silent no-op. Each call is bounded so a missing/unconfigured HCI cannot
 # stall boot indefinitely.
-btmgmt_() { printf '' | timeout 8 btmgmt "$@" 2>/dev/null; }
+btmgmt_() { printf '' | timeout 3 btmgmt "$@" 2>/dev/null; }
 
 current_address() {
 	btmgmt_ info | awk '
@@ -67,16 +69,8 @@ if [ "$current" = "$address" ]; then
 	exit 0
 fi
 
-# Some first-boot controller states expose hci0 in the config list before it
-# has an address. Only that supported state may receive the one-shot value.
-i=0
-while [ "$i" -lt "$deadline" ]; do
-	if btmgmt_ config | grep -q '^hci0:'; then
-		break
-	fi
-	sleep 1
-	i=$((i + 1))
-done
+# Some controllers do not expose public-address programming at all. Check
+# once and skip instead of polling for thirty seconds while holding boot.
 if ! btmgmt_ config | grep -q '^hci0:'; then
 	log 'controller is not in the configurable list; address was not changed'
 	exit 0
@@ -88,7 +82,7 @@ if ! btmgmt_ --index 0 public-addr "$address"; then
 fi
 
 i=0
-while [ "$i" -lt 15 ]; do
+while [ "$i" -lt 3 ]; do
 	current=$(current_address)
 	[ "$current" = "$address" ] && break
 	sleep 1

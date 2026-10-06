@@ -579,7 +579,7 @@ for unit in \
     sshd NetworkManager \
     hexagonrpcd-adsp-rootpd \
     pd-mapper \
-    gts9wifi-wait-sensor-proxy \
+    gts9wifi-wait-sensor-proxy.timer \
     gts9wifi-bt-provision gts9wifi-bt-address bluetooth gts9wifi-mem-reclaim \
     gts9wifi-panel-coldboot-recover \
     gts9wifi-grow-rootfs \
@@ -598,9 +598,9 @@ done
 # writable HexagonFS sensor cache have been prepared.
 systemctl --root="$rootfs" disable gts9wifi-adsp-boot.service \
     hexagonrpcd-adsp-sensorspd.service >/dev/null 2>&1 || true
-# Do not add either ADSP unit to the enable list above: the wait-sensor-proxy
-# unit is the sole, panel-ordered path that requests sensorspd and its ADSP
-# dependency.
+# Do not add either ADSP unit to the enable list above: the timer-triggered
+# wait-sensor-proxy service requests sensorspd after the desktop is up, without
+# making sensor discovery a graphical.target prerequisite.
 # - gts9wifi-bt-revive.service: started by hand when the WCN sequencer
 #   takes hci0 down.
 # The preset in overlay/usr/lib/systemd/system-preset/85-gts9wifi.preset

@@ -1,0 +1,13 @@
+[Unit]
+Description=Start X810 audio profile recovery asynchronously after boot
+
+[Timer]
+# The audio helper waits on the Qualcomm ADSP and PipeWire card. Trigger it
+# separately so neither that firmware delay nor profile discovery gates GDM
+# or graphical.target. Its service still orders after GDM and ADSP.
+OnBootSec=5s
+AccuracySec=1s
+Unit=gts9wifi-audio-session.service
+
+[Install]
+WantedBy=timers.target

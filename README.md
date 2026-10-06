@@ -24,7 +24,7 @@ Status key: ✅ confirmed on the tablet · 🟡 partial, limited, or awaiting a 
 | Cameras | ✅ | Both cameras work |
 | Hardware video decode | ✅ | Verified working and recognizable by Moonlight |
 | Qualcomm NPU / HTP | ❌ | CDSP remains disabled and no Fedora QNN/HTP runtime is integrated |
-| Motion sensors / auto-rotation | ✅ | Works with auto rotation |
+| Motion sensors / auto-rotation | 🟡 | Motion sensors and SensorProxy work; GNOME currently has no auto-rotate option/integration |
 | Battery / charging | 🟡 | Finicky. Direct charging works but usb hub power passthrough charges slowly and sometime doesnt charges |
 | USB-C / powered USB hub | ✅ | USB devices works |
 | External monitor | ✅ | HDMI/Type-C monitors work |
