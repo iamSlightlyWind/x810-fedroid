@@ -28,10 +28,10 @@ Status key: ✅ confirmed on the tablet · 🟡 partial, limited, or awaiting a 
 | Battery / charging | 🟡 | Finicky. Direct charging works but usb hub power passthrough charges slowly and sometime doesnt charges |
 | USB-C / powered USB hub | ✅ | USB devices works |
 | External monitor | ✅ | HDMI/Type-C monitors work |
-| Haptics | ✅ | Physical tablet vibration works through the kernel haptics path. |
-| Suspend / resume | 🟡 | Finicky, sometime refuses to wake |
+| Haptics | ✅ | Physical tablet vibration works through the kernel haptics path |
+| Suspend / resume | ✅ | Suspend and waking up works |
 | Fingerprint reader | ❌ | Not working |
-| Charging bypass | ❌ | No safe, verified Linux control is available. |
+| Charging bypass | ❌ | No safe, verified Linux control is available |
 
 See [`docs/Hardware-Notes.md`](docs/Hardware-Notes.md) and [`docs/Known-Issues.md`](docs/Known-Issues.md) for caveats and subsystem details. Updates via [Tab Companion](https://github.com/iamSlightlyWind/tab-companion) can resolves these issues if patches are available.
 
