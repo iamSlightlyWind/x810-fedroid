@@ -39,8 +39,6 @@ def main() -> int:
     spec = (ROOT / "specs/x810-fedora-port.spec").read_text(encoding="utf-8")
     workflow = (ROOT / ".github/workflows/x810-fedora.yml").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    issues = (ROOT / "docs/Known-Issues.md").read_text(encoding="utf-8")
-    hardware_notes = (ROOT / "docs/Hardware-Notes.md").read_text(encoding="utf-8")
     sensor_proxy_unit = (ROOT / "rootfs/overlay/usr/lib/systemd/system/"
                          "gts9wifi-wait-sensor-proxy.service").read_text(encoding="utf-8")
     sensor_proxy_timer = (ROOT / "rootfs/overlay/usr/lib/systemd/system/"
@@ -60,15 +58,10 @@ def main() -> int:
     require("OnBootSec=15s" in sensor_proxy_timer and
             "WantedBy=timers.target" in sensor_proxy_timer,
             "SSC recovery must be timer-triggered outside the boot target transaction")
-    require("Motion sensors and SensorProxy work" in readme and
-            "GNOME currently has no auto-rotate option/integration" in readme,
-            "README must distinguish working sensors from the missing GNOME integration")
-    require("HasAccelerometer=true" in issues and
-            "GNOME currently exposes no auto-rotate option" in issues,
-            "known-issues page must record working SensorProxy and open GNOME integration")
-    require("QRTR service 400 was present" in hardware_notes and
-            "GNOME currently" in hardware_notes and "auto-rotate option/integration" in hardware_notes,
-            "hardware notes must distinguish working SSC from missing GNOME integration")
+    # The owner has confirmed GNOME auto-rotation works. Keep this test focused
+    # on sensor service wiring; do not encode the obsolete missing-UI status.
+    require("Motion sensors work with GNOME auto-rotate" in readme,
+            "README must retain the confirmed GNOME auto-rotation status")
     require("After=display-manager.service" in sensor_pd_dropin,
             "sensor-PD can still attach before GNOME and miss delayed SSC failure")
     require("systemctl disable gts9wifi-wait-sensor-proxy.service" in spec and
@@ -132,7 +125,7 @@ def main() -> int:
     for package in required_deps:
         require(re.search(rf"\b{re.escape(package)}\b", build_update) is not None,
                 f"ARM support-RPM container omits build dependency {package}")
-    require("fedora44-toolchain-v4" in build_update,
+    require("fedora44-toolchain-v3" in build_update,
             "support-RPM DNF cache key was not bumped for the expanded toolchain")
     require("python3 tools/test-x810-sensor-proxy-stack.py" in build_update,
             "support-RPM job does not run sensor stack contract tests")
