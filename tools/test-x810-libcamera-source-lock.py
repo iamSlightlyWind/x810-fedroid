@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     lock = json.loads((ROOT / "specs/libcamera-hi1337/fedora-44-libcamera.lock.json").read_text())
+    spec = (ROOT / "specs/x810-fedora-port.spec").read_text()
     expected_path = (
         f"/packages/{lock['name']}/{lock['version']}/{lock['release']}/src/"
         f"{lock['name']}-{lock['version']}-{lock['release']}.src.rpm"
@@ -21,6 +22,7 @@ def main():
     assert parsed.path == expected_path
     assert len(lock["srpm_sha256"]) == 64
     int(lock["srpm_sha256"], 16)
+    assert f"Requires:       libcamera-ipa%{{?_isa}} = {lock['version']}-{lock['release']}" in spec
     print("X810 libcamera source-lock tests passed")
 
 

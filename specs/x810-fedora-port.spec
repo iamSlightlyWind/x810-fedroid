@@ -12,7 +12,7 @@ Requires:       dconf
 Requires:       policycoreutils
 Requires:       python3
 Requires:       device-mapper
-Requires:       libcamera-ipa%{?_isa} = 0.7.1-1.fc44
+Requires:       libcamera-ipa%{?_isa} = 0.7.0-1.fc44
 Requires:       tuned-ppd
 Requires:       libssc.so.2()(64bit)
 # The port's GNOME profile and UCM route require a live PipeWire graph.  The
@@ -35,7 +35,7 @@ Source2:        port-license.txt
 Port-owned Fedora device integration for the Samsung Galaxy Tab S9+ Wi-Fi
 (SM-X810), including its SSC-backed sensor proxy and the HI1337 libcamera
 software-IPA helper. The helper is built for Fedora 44 aarch64 against the
-exact Fedora libcamera 0.7.1 build. It includes only the owner-authorized,
+exact Fedora libcamera 0.7.0 build. It includes only the owner-authorized,
 SHA-256-pinned X810 CYG1 VPU firmware required for in-place hardware decode;
 kernel and boot images are deliberately excluded.
 
