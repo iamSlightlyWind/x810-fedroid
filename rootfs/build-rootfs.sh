@@ -578,8 +578,6 @@ if [ "$desktop" = "gnome" ]; then
 fi
 for unit in \
     sshd NetworkManager \
-    hexagonrpcd-adsp-rootpd \
-    pd-mapper \
     gts9wifi-wait-sensor-proxy.timer \
     gts9wifi-bt-provision gts9wifi-bt-address bluetooth gts9wifi-mem-reclaim \
     gts9wifi-panel-coldboot-recover \

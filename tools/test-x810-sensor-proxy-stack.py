@@ -132,7 +132,7 @@ def main() -> int:
     for package in required_deps:
         require(re.search(rf"\b{re.escape(package)}\b", build_update) is not None,
                 f"ARM support-RPM container omits build dependency {package}")
-    require("fedora44-toolchain-v3" in build_update,
+    require("fedora44-toolchain-v4" in build_update,
             "support-RPM DNF cache key was not bumped for the expanded toolchain")
     require("python3 tools/test-x810-sensor-proxy-stack.py" in build_update,
             "support-RPM job does not run sensor stack contract tests")

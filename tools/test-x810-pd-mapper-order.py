@@ -9,6 +9,8 @@ DROPIN = ROOT / "rootfs/overlay/etc/systemd/system/pd-mapper.service.d/10-gts9wi
 ADSP_ORDER = ROOT / "rootfs/overlay/etc/systemd/system/gts9wifi-adsp-boot.service.d/10-ordering.conf"
 ADSP_UNIT = ROOT / "rootfs/overlay/usr/lib/systemd/system/gts9wifi-adsp-boot.service"
 BUILDER = ROOT / "rootfs/build-rootfs.sh"
+AUDIO_SESSION = ROOT / "rootfs/overlay/usr/lib/systemd/system/gts9wifi-audio-session.service"
+SYSTEMD_PRESET = ROOT / "rootfs/overlay/usr/lib/systemd/system-preset/85-gts9wifi.preset"
 
 
 def main() -> None:
@@ -16,6 +18,8 @@ def main() -> None:
     adsp_order = ADSP_ORDER.read_text(encoding="utf-8")
     adsp_unit = ADSP_UNIT.read_text(encoding="utf-8")
     builder = BUILDER.read_text(encoding="utf-8")
+    audio_session = AUDIO_SESSION.read_text(encoding="utf-8")
+    preset = SYSTEMD_PRESET.read_text(encoding="utf-8")
 
     assert "[Unit]" in dropin
     assert "After=gts9wifi-adsp-boot.service" in dropin
@@ -30,7 +34,12 @@ def main() -> None:
     assert "After=gts9wifi-panel-coldboot-recover.service" in adsp_order
     assert "ExecStartPre=/bin/sleep 25" in adsp_unit
     assert "TimeoutStartSec=110" in adsp_unit
-    assert "pd-mapper" in builder.split("for unit in \\\n", 1)[1].split("\ndo\n", 1)[0]
+    # ADSP clients are pulled in only by the delayed audio-session trigger,
+    # not by multi-user enablement; otherwise they can hold first boot open.
+    assert "Wants=gts9wifi-adsp-boot.service hexagonrpcd-adsp-rootpd.service pd-mapper.service" in audio_session
+    assert "disable pd-mapper.service" in preset
+    enable_block = builder.split("for unit in \\\n", 1)[1].split("\ndo", 1)[0]
+    assert "pd-mapper" not in enable_block
 
     print("PASS: pd-mapper waits for the panel-ordered, late X810 ADSP and retries failures")
 
