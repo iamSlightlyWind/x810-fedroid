@@ -1,0 +1,14 @@
+[Unit]
+Description=Restore the saved X810 battery charge limit
+After=local-fs.target systemd-modules-load.service
+Before=display-manager.service
+ConditionPathExists=/var/lib/x810-fedora/charge-limit.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/x810-charge-limit apply
+TimeoutStartSec=35s
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

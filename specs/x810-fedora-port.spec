@@ -186,6 +186,11 @@ if command -v systemctl >/dev/null 2>&1; then
     else
         systemctl start x810-thermal-limit.service >/dev/null 2>&1 || :
     fi
+    # Restore a user-selected battery charge cap after the SM5714 sysfs ABI is
+    # available. The helper is a no-op until the user saves a cap; on older
+    # kernels with no threshold ABI the service is not armed by any setting.
+    systemctl enable x810-charge-limit.service >/dev/null 2>&1 || :
+    systemctl start x810-charge-limit.service >/dev/null 2>&1 || :
     # The Qualcomm ALSA card can register after WirePlumber's first scan. Run
     # the bounded user-session recovery now on updates and every boot; it only
     # restarts WirePlumber/reselects HiFi after ALSA is present, never the ADSP.

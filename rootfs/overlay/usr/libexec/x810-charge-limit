@@ -1,0 +1,220 @@
+#!/usr/bin/python3
+"""Manage the X810 battery charge cap through the standard power-supply ABI."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+import tempfile
+import time
+
+
+SUPPLY = Path("/sys/class/power_supply/sm5714-battery")
+START = SUPPLY / "charge_control_start_threshold"
+END = SUPPLY / "charge_control_end_threshold"
+STATE = Path("/var/lib/x810-fedora/charge-limit.conf")
+MIN_END = 50
+MAX_END = 100
+HYSTERESIS = 10
+
+
+class ChargeLimitError(Exception):
+    pass
+
+
+def read_int(path: Path) -> int:
+    try:
+        raw = path.read_text(encoding="ascii").strip()
+    except OSError as exc:
+        raise ChargeLimitError(f"cannot read {path.name}: {exc.strerror}") from exc
+    try:
+        value = int(raw, 10)
+    except ValueError as exc:
+        raise ChargeLimitError(f"invalid integer in {path.name}") from exc
+    if not 0 <= value <= 100:
+        raise ChargeLimitError(f"out-of-range value in {path.name}")
+    return value
+
+
+def read_saved() -> int | None:
+    try:
+        info = STATE.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ChargeLimitError(f"cannot inspect saved setting: {exc.strerror}") from exc
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise ChargeLimitError("saved setting is not a root-owned, non-writable regular file")
+    try:
+        value = int(STATE.read_text(encoding="ascii").strip(), 10)
+    except (OSError, ValueError) as exc:
+        raise ChargeLimitError("saved charge cap is invalid") from exc
+    if not MIN_END <= value <= MAX_END:
+        raise ChargeLimitError("saved charge cap is outside 50–100 percent")
+    return value
+
+
+def write_one(path: Path, value: int) -> None:
+    try:
+        path.write_text(f"{value}\n", encoding="ascii")
+    except OSError as exc:
+        raise ChargeLimitError(f"cannot write {path.name}: {exc.strerror}") from exc
+    actual = read_int(path)
+    if actual != value:
+        raise ChargeLimitError(f"{path.name} read-back was {actual}, expected {value}")
+
+
+def apply_pair(start: int, end: int) -> None:
+    """Change thresholds in an order that keeps start < end throughout."""
+    if not 0 <= start < end <= 100:
+        raise ChargeLimitError("threshold pair is invalid")
+    old_start, old_end = read_int(START), read_int(END)
+    if not 0 <= old_start < old_end <= 100:
+        raise ChargeLimitError("kernel currently reports an invalid threshold pair")
+    if (old_start, old_end) == (start, end):
+        return
+
+    if end <= old_start:
+        order = ((START, start), (END, end))
+    elif start >= old_end:
+        order = ((END, end), (START, start))
+    else:
+        order = ((START, start), (END, end))
+
+    completed: list[Path] = []
+    try:
+        for path, value in order:
+            write_one(path, value)
+            completed.append(path)
+    except ChargeLimitError as original:
+        # Restore only values already changed, using another valid transition.
+        try:
+            now_start, now_end = read_int(START), read_int(END)
+            if now_start != old_start or now_end != old_end:
+                if old_end <= now_start:
+                    rollback = ((START, old_start), (END, old_end))
+                elif old_start >= now_end:
+                    rollback = ((END, old_end), (START, old_start))
+                else:
+                    rollback = ((START, old_start), (END, old_end))
+                for path, value in rollback:
+                    if path in completed:
+                        write_one(path, value)
+        except ChargeLimitError as rollback_error:
+            raise ChargeLimitError(f"{original}; rollback also failed: {rollback_error}") from original
+        raise
+
+
+def save(end: int) -> None:
+    if os.geteuid() != 0:
+        raise ChargeLimitError("must be run as root")
+    if not MIN_END <= end <= MAX_END:
+        raise ChargeLimitError("end threshold must be between 50 and 100 percent")
+    if not START.is_file() or not END.is_file():
+        raise ChargeLimitError("charge limit is unavailable; install the X810 kernel update first")
+
+    read_saved()  # Refuse to replace a malformed or untrusted existing setting.
+    old_pair = (read_int(START), read_int(END))
+    start = 0 if end == 100 else max(0, end - HYSTERESIS)
+    apply_pair(start, end)
+
+    # The kernel write/read-back succeeded. Atomically persist the same policy;
+    # if persistence fails, restore the previously active thresholds.
+    try:
+        STATE.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        parent_info = STATE.parent.stat()
+        if parent_info.st_uid != 0 or parent_info.st_mode & 0o022:
+            raise OSError("charge-limit state directory is not root-owned and protected")
+        fd, temporary = tempfile.mkstemp(prefix=".charge-limit.", dir=STATE.parent)
+        try:
+            # The value is not sensitive; read-only access lets the desktop
+            # show the saved setting without granting it sysfs write access.
+            os.fchmod(fd, 0o644)
+            with os.fdopen(fd, "w", encoding="ascii") as stream:
+                stream.write(f"{end}\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, STATE)
+            dirfd = os.open(STATE.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(dirfd)
+            finally:
+                os.close(dirfd)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+    except OSError as exc:
+        try:
+            apply_pair(*old_pair)
+        except ChargeLimitError as rollback_error:
+            raise ChargeLimitError(f"cannot save setting: {exc}; threshold rollback failed: {rollback_error}") from exc
+        raise ChargeLimitError(f"cannot save setting: {exc}") from exc
+
+
+def get_status() -> dict[str, object]:
+    saved = read_saved()
+    supported = START.is_file() and END.is_file()
+    start, end = 0, 100
+    if supported:
+        try:
+            start, end = read_int(START), read_int(END)
+        except ChargeLimitError:
+            supported = False
+    return {
+        "supported": bool(supported),
+        "start_percent": start,
+        "end_percent": end,
+        "saved_percent": saved,
+        "enabled": bool(supported and end < 100),
+    }
+
+
+def apply_saved() -> None:
+    saved = read_saved()
+    if saved is None:
+        return
+    deadline = time.monotonic() + 30
+    while not (START.is_file() and END.is_file()) and time.monotonic() < deadline:
+        time.sleep(1)
+    if not START.is_file() or not END.is_file():
+        raise ChargeLimitError("saved charge cap cannot be applied: kernel attributes are unavailable")
+    start = 0 if saved == 100 else max(0, saved - HYSTERESIS)
+    apply_pair(start, saved)
+
+
+def main(argv: list[str]) -> int:
+    if argv == ["get"]:
+        try:
+            print(json.dumps(get_status(), separators=(",", ":")))
+            return 0
+        except ChargeLimitError as exc:
+            print(json.dumps({"supported": False, "start_percent": 0,
+                              "end_percent": 100, "saved_percent": None,
+                              "enabled": False, "error": str(exc)}))
+            return 0
+    if argv == ["apply"]:
+        apply_saved()
+        return 0
+    if len(argv) == 2 and argv[0] == "set":
+        try:
+            end = int(argv[1], 10)
+        except ValueError:
+            raise ChargeLimitError("usage: x810-charge-limit set END_PERCENT")
+        save(end)
+        print(json.dumps(get_status(), separators=(",", ":")))
+        return 0
+    print("usage: x810-charge-limit get|apply|set END_PERCENT", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except ChargeLimitError as exc:
+        print(f"x810-charge-limit: {exc}", file=sys.stderr)
+        raise SystemExit(1)
