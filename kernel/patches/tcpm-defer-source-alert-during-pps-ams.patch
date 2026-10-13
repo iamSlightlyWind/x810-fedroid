@@ -1,0 +1,79 @@
+--- a/drivers/usb/typec/tcpm/tcpm.c
++++ b/drivers/usb/typec/tcpm/tcpm.c
+@@ -622,6 +622,12 @@
+ 	enum tcpm_ams ams;
+ 	enum tcpm_ams next_ams;
+ 	bool in_ams;
++	/* A source Alert may arrive while a sink-initiated PPS AMS is in flight.
++	 * Preserve its latched ADO and service it once that non-interruptible AMS
++	 * reaches SNK_READY rather than resetting the explicit power contract.
++	 */
++	u32 pending_pps_alert;
++	bool pending_pps_alert_valid;
+ 
+ 	/* Auto vbus discharge status */
+ 	bool auto_vbus_discharge_enabled;
+@@ -3525,12 +3531,32 @@
+ 		tcpm_pd_handle_state(port, BIST_RX, BIST, 0);
+ 		break;
+ 	case PD_DATA_ALERT:
+-		if (port->state != SRC_READY && port->state != SNK_READY)
+-			tcpm_pd_handle_state(port, port->pwr_role == TYPEC_SOURCE ?
+-					     SRC_SOFT_RESET_WAIT_SNK_TX : SNK_SOFT_RESET,
+-					     NONE_AMS, 0);
+-		else
++		if (port->state != SRC_READY && port->state != SNK_READY) {
++			/* A PPS request is a non-interruptible sink AMS. Some partners
++			 * send a status Alert during that exchange (for example when
++			 * their CV/CL operating condition changes). The PHY has already
++			 * GoodCRC'd it; defer the ADO until SNK_READY so TCPM can finish
++			 * the request instead of tearing down the PPS contract.
++			 */
++			if (port->pwr_role == TYPEC_SINK &&
++			    port->state == SNK_NEGOTIATE_PPS_CAPABILITIES &&
++			    port->ams == POWER_NEGOTIATION &&
++			    port->pps_data.active && cnt == 1) {
++				port->pending_pps_alert |=
++					le32_to_cpu(msg->payload[0]);
++				port->pending_pps_alert_valid = true;
++				tcpm_log(port,
++					 "Deferring source Alert until sink PPS AMS completes");
++			} else {
++				tcpm_pd_handle_state(port,
++						     port->pwr_role == TYPEC_SOURCE ?
++						     SRC_SOFT_RESET_WAIT_SNK_TX :
++						     SNK_SOFT_RESET,
++						     NONE_AMS, 0);
++			}
++		} else {
+ 			tcpm_handle_alert(port, msg->payload, cnt);
++		}
+ 		break;
+ 	case PD_DATA_BATT_STATUS:
+ 	case PD_DATA_GET_COUNTRY_INFO:
+@@ -4951,6 +4977,8 @@
+ 	tcpm_enable_auto_vbus_discharge(port, false);
+ 	port->in_ams = false;
+ 	port->ams = NONE_AMS;
++	port->pending_pps_alert = 0;
++	port->pending_pps_alert_valid = false;
+ 	port->vdm_sm_running = false;
+ 	tcpm_unregister_altmodes(port);
+ 	tcpm_typec_disconnect(port);
+@@ -5836,6 +5864,16 @@
+ 			break;
+ 		}
+ 
++		if (port->pending_pps_alert_valid) {
++			__le32 alert = cpu_to_le32(port->pending_pps_alert);
++
++			port->pending_pps_alert = 0;
++			port->pending_pps_alert_valid = false;
++			tcpm_log(port, "Handling deferred source Alert after PPS AMS");
++			tcpm_handle_alert(port, &alert, 1);
++			break;
++		}
++
+ 		/*
+ 		 * 6.4.4.3.1 Discover Identity
+ 		 * "The Discover Identity Command Shall only be sent to SOP when there is an

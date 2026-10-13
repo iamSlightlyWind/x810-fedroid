@@ -34,6 +34,8 @@
 #include <linux/power_supply.h>
 #include <linux/workqueue.h>
 
+#include "x810_sm5714_fg_current.h"
+
 #include "x810_pd_limits.h"
 #include "x810_charge_thresholds.h"
 
@@ -127,6 +129,7 @@ struct sm5714_battery {
 	unsigned int typec_ma;
 	enum sm5714_charge_thermal_state thermal_state;
 	bool direct_charging;
+	bool direct_passthrough;
 	bool otg_active;
 	/*
 	 * Draw the board's whole 9 V / 3 A input budget instead of the stock
@@ -149,10 +152,13 @@ static struct sm5714_battery *sm5714_primary;
 static int sm5714_get_online_raw(struct sm5714_battery *sm);
 static int sm5714_get_online(struct sm5714_battery *sm);
 static int sm5714_get_capacity(struct sm5714_battery *sm, int *val);
+static int sm5714_get_current(struct sm5714_battery *sm, u8 sram_addr, int *val);
 static int sm5714_get_temp(struct sm5714_battery *sm, int *val);
+static int sm5714_get_status(struct sm5714_battery *sm);
 int sm5714_battery_set_pd_contract(unsigned int mv, unsigned int ma);
 bool sm5714_battery_fast_charge_enabled(void);
 int sm5714_battery_set_direct_charge(bool active);
+int sm5714_battery_set_direct_passthrough(bool active);
 bool sm5714_battery_charge_limit_reached(int capacity);
 int sm5714_battery_set_otg(bool active);
 bool sm5714_battery_is_otg_active(void);
@@ -179,7 +185,7 @@ static int sm5714_chg_update_bits(struct sm5714_battery *sm, u8 reg,
  * 3.70-3.85 V in 50 mV steps, 3.90/4.00 V, then 4.05-4.62 V in 10 mV steps.
  * The chip's OTP default is 4.38 V; the stock board data for this pack asks
  * for 4.44 V (battery,chg_float_voltage = 0x1158), and the vendor charger
- * driver programs that value from its platform data at init.  Leaving the
+ * driver programs that value from its platform data at init. Leaving the
  * OTP default in place charges the pack ~60 mV short and keeps the fuel
  * gauge from ever reaching its 100 % point.
  */
@@ -515,9 +521,9 @@ out_unlock:
 }
 
 /*
- * TCPM calls this only after it has selected a Type-C current limit or a PD
- * contract.  Keep the board-specific charger coupling here rather than in the
- * transport driver: the SM5714 USB-PD block is on a different I2C adapter.
+ * TCPM calls this after selecting a Type-C current limit or PD contract. Keep
+ * board charger coupling here rather than in the transport driver: the SM5714
+ * USB-PD block is on a different I2C adapter.
  */
 int sm5714_battery_set_pd_contract(unsigned int mv, unsigned int ma)
 {
@@ -533,9 +539,8 @@ int sm5714_battery_set_pd_contract(unsigned int mv, unsigned int ma)
 	/*
 	 * Fixed-PD operation is limited to the board's 5/9 V, 3 A sink PDOs.
 	 * While the SM5440 has Q4 open, also record its negotiated PPS point up
-	 * to the pump's 10.5 V OVP margin and its supported 5 A ceiling.  The
-	 * default requester remains 3 A and TCPM rejects values above the source
-	 * APDO before transmitting a Request.
+	 * to the pump's 10.5 V OVP margin and the board's advertised 3 A sink cap.
+	 * TCPM rejects values above the source APDO before transmitting a Request.
 	 */
 	if (!x810_pd_contract_is_valid(sm->direct_charging, mv, ma)) {
 		ret = -ERANGE;
@@ -561,7 +566,8 @@ EXPORT_SYMBOL_GPL(sm5714_battery_set_pd_contract);
  * arbitration in the SM5714 driver prevents its one-second recovery poll (or
  * a later TCPM PPS update) from closing Q4 behind the direct charger.
  */
-int sm5714_battery_set_direct_charge(bool active)
+static int sm5714_battery_set_direct_charge_mode(bool active,
+						 bool passthrough)
 {
 	struct sm5714_battery *sm;
 	int temp;
@@ -577,6 +583,11 @@ int sm5714_battery_set_direct_charge(bool active)
 	}
 
 	if (active) {
+		if (READ_ONCE(sm->direct_charging) ||
+		    READ_ONCE(sm->otg_active)) {
+			ret = -EBUSY;
+			goto out;
+		}
 		ret = sm5714_get_capacity(sm, &capacity);
 		if (ret)
 			goto out;
@@ -585,10 +596,22 @@ int sm5714_battery_set_direct_charge(bool active)
 				READ_ONCE(sm->charge_limit_active),
 				READ_ONCE(sm->charge_control_start_threshold),
 				READ_ONCE(sm->charge_control_end_threshold), capacity));
-		if (READ_ONCE(sm->charge_limit_active)) {
-			ret = sm5714_configure_charging(sm);
-			if (!ret)
-				ret = -EAGAIN;
+		if (READ_ONCE(sm->charge_limit_active) != passthrough) {
+			/* Ordinary direct charging is disallowed while the cap is
+			 * holding. Manual CV_MAN pass-through is only allowed while an
+			 * explicitly configured charge cap is actively holding.
+			 */
+			if (!passthrough && READ_ONCE(sm->charge_limit_active)) {
+				ret = sm5714_configure_charging(sm);
+				if (!ret)
+					ret = -EAGAIN;
+			} else {
+				ret = -EPERM;
+			}
+			goto out;
+		}
+		if (passthrough && READ_ONCE(sm->fast_charge)) {
+			ret = -EBUSY;
 			goto out;
 		}
 		ret = sm5714_get_temp(sm, &temp);
@@ -606,6 +629,8 @@ int sm5714_battery_set_direct_charge(bool active)
 		mutex_unlock(&sm->chg_lock);
 		if (ret)
 			WRITE_ONCE(sm->direct_charging, false);
+		else
+			WRITE_ONCE(sm->direct_passthrough, passthrough);
 	} else {
 		WRITE_ONCE(sm->direct_charging, false);
 		online = sm5714_get_online(sm);
@@ -616,6 +641,8 @@ int sm5714_battery_set_direct_charge(bool active)
 		/* Keep ownership if the switching path could not be restored. */
 		if (ret)
 			WRITE_ONCE(sm->direct_charging, true);
+		else
+			WRITE_ONCE(sm->direct_passthrough, false);
 	}
 
 	power_supply_changed(sm->psy_usb);
@@ -624,7 +651,21 @@ out:
 	mutex_unlock(&sm5714_global_lock);
 	return ret;
 }
+
+int sm5714_battery_set_direct_charge(bool active)
+{
+	return sm5714_battery_set_direct_charge_mode(active, false);
+}
 EXPORT_SYMBOL_GPL(sm5714_battery_set_direct_charge);
+
+/* Same single SM5714/SM5440 ownership path, but only when the configured
+ * charge-limit hysteresis is already holding.
+ */
+int sm5714_battery_set_direct_passthrough(bool active)
+{
+	return sm5714_battery_set_direct_charge_mode(active, true);
+}
+EXPORT_SYMBOL_GPL(sm5714_battery_set_direct_passthrough);
 
 /*
  * The SM5440 worker calls this before starting or continuing direct charging.
@@ -866,16 +907,14 @@ static int sm5714_get_ocv(struct sm5714_battery *sm, int *val)
 static int sm5714_get_current(struct sm5714_battery *sm, u8 sram_addr, int *val)
 {
 	int raw = sm5714_fg_read_sram(sm, sram_addr);
-	int ma;
 
 	if (raw < 0)
 		return raw;
 
-	ma = ((raw & 0x7fff) * 1000) / 2044;
-	if (raw & 0x8000)
-		ma = -ma;
-
-	*val = ma * 1000;
+	/* Keep the power_supply API's µA resolution; the pass-through controller
+	 * must distinguish positive sub-mA charge from zero current.
+	 */
+	*val = x810_sm5714_fg_current_ua(raw);
 	return 0;
 }
 
@@ -1352,6 +1391,10 @@ static ssize_t fast_charge_store(struct device *dev,
 	/* Serialize policy transitions with direct-charge ownership handoffs. */
 	mutex_lock(&sm5714_global_lock);
 	old_enabled = READ_ONCE(sm->fast_charge);
+	if (enabled && READ_ONCE(sm->direct_charging)) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
 	if (old_enabled == enabled) {
 		ret = count;
 		goto out_unlock;
@@ -1495,6 +1538,10 @@ static int sm5714_probe(struct i2c_client *client)
 		return dev_err_probe(dev, PTR_ERR(sm->psy_usb),
 				     "cannot register charger\n");
 
+	INIT_DELAYED_WORK(&sm->poll_work, sm5714_poll_work);
+	ret = devm_add_action_or_reset(dev, sm5714_cancel_poll, sm);
+	if (ret)
+		return ret;
 	ret = devm_device_add_group(dev, &sm5714_attr_group);
 	if (ret)
 		return dev_err_probe(dev, ret, "cannot add sysfs attributes\n");
@@ -1541,10 +1588,6 @@ static int sm5714_probe(struct i2c_client *client)
 			sm->last_status = sm5714_get_status(sm);
 	}
 
-	INIT_DELAYED_WORK(&sm->poll_work, sm5714_poll_work);
-	ret = devm_add_action_or_reset(dev, sm5714_cancel_poll, sm);
-	if (ret)
-		return ret;
 	schedule_delayed_work(&sm->poll_work,
 			      msecs_to_jiffies(SM5714_POLL_INTERVAL_MS));
 

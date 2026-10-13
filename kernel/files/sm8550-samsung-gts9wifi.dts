@@ -1191,10 +1191,10 @@
 			 * the gnome-gts9wifi settings page drives through
 			 * gts9wifi-device-control).
 			 *
-			 * Nothing above 9 V is offered.  The fast path on this board is
-			 * the SM5440 2:1 pump on a PPS contract -- what the vendor's
-			 * own direct charger drives once Q4 is open -- and the vendor
-			 * never asks for more than its 11 V VBUS OVP minus 500 mV.
+				 * The SM5440 2:1 pump uses a PPS point derived from twice the
+				 * pack voltage plus cable headroom. The exact X810 CYG1 board
+				 * allows an 11 V APDO; cap this Linux sink at the pump's 11 V
+				 * VBUS OVP minus 500 mV, matching x810_pd_limits.h.
 			 * op-sink-microwatt stays at the stock 15 W because tcpm
 			 * applies it only to programmable (PPS/AVS) operating points:
 			 * it sets the floor the pump may request, not the fixed
@@ -1206,7 +1206,9 @@
 					       PDO_FIXED_DATA_SWAP |
 					       PDO_FIXED_USB_COMM)
 				     PDO_FIXED(9000, 3000,
-					       PDO_FIXED_USB_COMM)>;
+					       PDO_FIXED_USB_COMM)
+				     /* Match CYG1's 11 V APDO; leave OVP margin for SM5440. */
+				     PDO_PPS_APDO(5000, 10500, 3000)>;
 			source-pdos = <PDO_FIXED(5000, 900,
 						 PDO_FIXED_DUAL_ROLE |
 						 PDO_FIXED_DATA_SWAP |

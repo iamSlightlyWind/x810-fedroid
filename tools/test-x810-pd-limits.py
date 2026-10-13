@@ -2,6 +2,7 @@
 """Check X810 PD limits and static charger-owner handoff invariants."""
 
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -10,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 HEADER = ROOT / "kernel/files/x810_pd_limits.h"
 BATTERY_DRIVER = ROOT / "kernel/files/sm5714_battery.c"
 DIRECT_DRIVER = ROOT / "kernel/files/sm5440_direct.c"
+DTS = ROOT / "kernel/files/sm8550-samsung-gts9wifi.dts"
+TCPM_ALERT_PATCH = ROOT / "kernel/patches/tcpm-defer-source-alert-during-pps-ams.patch"
 
 
 def function_body(source: str, signature: str) -> str:
@@ -32,26 +35,100 @@ def check_charger_arbitration() -> None:
     direct = DIRECT_DRIVER.read_text()
 
     negotiate = function_body(direct, "static int sm5440_negotiate_pps(")
+    target = function_body(direct, "static int sm5440_pps_target_mv(")
+    eligible = function_body(
+        direct, "static bool sm5440_eligible(struct sm5440_direct *sm)\n{")
     assert "#define SM5440_PPS_STEP_MA\t\tX810_PPS_CURRENT_STEP_MA" in direct
-    assert "ma -= SM5440_PPS_STEP_MA" in negotiate, (
-        "PPS APDO discovery must walk the complete advertised 50 mA current grid"
+    assert "#define SM5440_MAX_PPS_MA\t\tX810_PPS_DEFAULT_MA" in direct
+    assert "x810_pd_pps_current_limit(manual_pt ? SM5440_MAX_PPS_MA" in negotiate
+    assert "x810_pd_pps_intersect_current(" in negotiate
+    assert "POWER_SUPPLY_PROP_ONLINE, 2" in negotiate
+    for prop in ("POWER_SUPPLY_PROP_VOLTAGE_MIN",
+                 "POWER_SUPPLY_PROP_VOLTAGE_MAX",
+                 "POWER_SUPPLY_PROP_CURRENT_MAX"):
+        assert prop in negotiate, f"PPS request must use negotiated cap {prop}"
+    assert "x810_pd_pps_intersect_voltage(" in negotiate
+    activate_pps = negotiate.index("POWER_SUPPLY_PROP_ONLINE, 2")
+    read_active_min = negotiate.index("POWER_SUPPLY_PROP_VOLTAGE_MIN")
+    read_active_max = negotiate.index("POWER_SUPPLY_PROP_VOLTAGE_MAX")
+    assert activate_pps < read_active_min < read_active_max, (
+        "TCPM's active source-APDO bounds must be read only after PPS activation"
+    )
+    assert "max_uv > X810_PPS_MAX_MV * 1000" not in negotiate, (
+        "a source APDO wider than the board sink range must be intersected, not rejected"
+    )
+    for prop in ("POWER_SUPPLY_PROP_ONLINE", "POWER_SUPPLY_PROP_USB_TYPE",
+                 "POWER_SUPPLY_PROP_VOLTAGE_NOW", "POWER_SUPPLY_PROP_CURRENT_NOW"):
+        assert prop in negotiate, f"PPS transition must read back {prop} after request"
+    assert negotiate.index("POWER_SUPPLY_PROP_CURRENT_NOW, ma * 1000") < \
+        negotiate.index("POWER_SUPPLY_PROP_VOLTAGE_NOW,\n\t\t\t       mv * 1000"), (
+            "after activation, request operating current at the safe initial PPS voltage before the target voltage"
+        )
+    assert "max(pump_target_mv, power_floor_mv)" in target
+    assert "max(mv, 8200)" in target
+    assert "x810_pd_pps_fixed_entry_ready(online, contract_uv / 1000" in eligible, (
+        "fixed-contract USB_TYPE must not prevent a PPS-capable source from being tried"
+    )
+    assert "POWER_SUPPLY_PROP_USB_TYPE" not in eligible
+    assert "sm5440_psy_set" not in eligible, (
+        "the preflight must remain read-only"
+    )
+    worker = function_body(direct, "static void sm5440_work(")
+    assert "sm5440_pt_eligible(sm, false)" in worker
+    assert "sm5440_start(sm, manual_pt)" in worker
+    assert worker.index("sm5440_pt_eligible(sm, false)") < \
+        worker.index("sm5440_start(sm, manual_pt)"), (
+            "pass-through source/SOC/temp/cap preflight must run before Q4 handoff"
+        )
+    assert "sm->passthrough_active != READ_ONCE(manual_pass_through)" in worker
+    assert "sm5440_manual_pt_adjust(sm, status2)" in worker
+    pt_eligible = function_body(
+        direct, "static bool sm5440_pt_eligible(struct sm5440_direct *sm, bool active)\n{")
+    assert "(!active && !x810_pd_pps_fixed_entry_ready(" in pt_eligible, (
+        "CV_MAN preflight uses fixed PD, but active monitoring must require ONLINE=2 PPS"
+    )
+    assert "active && (online != 2" in pt_eligible
+    assert "type != POWER_SUPPLY_USB_TYPE_PD_PPS" in pt_eligible
+    assert "online, contract_uv / 1000, contract_ua / 1000" in pt_eligible, (
+        "inactive pass-through preflight must verify fixed-PD voltage/current"
+    )
+    assert "return true;" in pt_eligible, (
+        "after common checks, both valid preflight and active PPS states must remain eligible"
     )
 
-    # TCPM rejects a request above an APDO's max current locally, before any PD
-    # exchange. The driver's descending probe must therefore be able to land on
-    # every legal 50 mA APDO ceiling, while retaining its 1.8 A minimum.
-    def highest_probe_at_or_below(apdo_max_ma: int) -> int:
-        candidate = 3000
-        while candidate >= 1800:
-            if candidate <= apdo_max_ma:
-                return candidate
-            candidate -= 50
-        return 0
-
-    for apdo_max_ma, expected in ((1850, 1850), (1900, 1900),
-                                  (1999, 1950), (1750, 0)):
-        assert highest_probe_at_or_below(apdo_max_ma) == expected, (
-            f"PPS APDO current search for {apdo_max_ma} mA must yield {expected}"
+    # The 2026-10-04 live trace reached 9.38 V/1.8 A but then sagged to 8.803 V
+    # and latched REVBLK. Check only that the candidate's *requested* normal
+    # direct-charge setpoint includes its configured margin and remains inside
+    # the board limit. This arithmetic is not evidence that the revised point
+    # prevents another transient: the 525 mV setting has not been validated
+    # live, and these assertions do not model adapter dynamics or pump startup.
+    extra_headroom = int(re.search(
+        r"#define\s+SM5440_EXTRA_HEADROOM_MV\s+(\d+)", direct).group(1))
+    ttl_milliohm = int(re.search(
+        r"#define\s+SM5440_R_TTL_MILLIOHM\s+(\d+)", direct).group(1))
+    measured_vbat_mv, measured_ibus_ma = 4310, 1800
+    measured_target_mv = (
+        2 * measured_vbat_mv
+        + (measured_ibus_ma * ttl_milliohm + 999) // 1000
+        + extra_headroom
+    )
+    measured_target_mv = ((measured_target_mv + 19) // 20) * 20
+    assert measured_target_mv == 9740, (
+        f"candidate arithmetic changed unexpectedly: {measured_target_mv} mV"
+    )
+    assert measured_target_mv <= 10500, (
+        f"candidate start point {measured_target_mv} mV exceeds the board limit"
+    )
+    start = function_body(direct, "static int sm5440_start(")
+    assert "manual_pt ? !sm5440_pt_eligible(sm, false)" in start
+    assert start.index("sm5440_pt_eligible(sm, false)") < start.index(
+        "sm5714_battery_set_direct_passthrough(true)"), (
+            "recheck the read-only preflight immediately before Q4 ownership changes"
+        )
+    assert "goto fixed;" in negotiate and \
+        "sm5440_restore_fixed_pd_if_online(sm, &handoff)" in negotiate and \
+        "sm5440_psy_retry(sm, POWER_SUPPLY_PROP_ONLINE, 1)" not in negotiate, (
+            "failed PPS setup must use the source-aware fixed-PDO fallback"
         )
 
     configure = function_body(battery, "static int sm5714_configure_charging(")
@@ -91,6 +168,23 @@ def check_charger_arbitration() -> None:
         "failed sysfs updates must try to restore the previous charger policy"
     )
 
+    # The exact active vendor_boot DTB must advertise the board's PPS sink
+    # APDO, not just the concatenated DTB in boot.img. The build bundle uses
+    # this source DTS to create vendor_boot. Also guard the TCPM compatibility
+    # fix for the observed source Alert arriving during the sink PPS AMS.
+    dts = DTS.read_text()
+    assert "PDO_PPS_APDO(5000, 10500, 3000)" in dts, (
+        "the board sink capabilities must advertise the 5-10.5 V/3 A PPS APDO"
+    )
+    tcpm_alert_patch = TCPM_ALERT_PATCH.read_text()
+    assert "port->pwr_role == TYPEC_SINK" in tcpm_alert_patch
+    assert "port->state == SNK_NEGOTIATE_PPS_CAPABILITIES" in tcpm_alert_patch
+    assert "port->ams == POWER_NEGOTIATION" in tcpm_alert_patch
+    assert "port->pps_data.active && cnt == 1" in tcpm_alert_patch
+    assert "port->pending_pps_alert |=" in tcpm_alert_patch
+    assert "Handling deferred source Alert after PPS AMS" in tcpm_alert_patch
+    assert "port->pending_pps_alert_valid = false;" in tcpm_alert_patch
+
     pump_off = function_body(direct, "static int sm5440_pump_off(")
     assert "SM5440_CNTL5_OP_MODE_MASK, 0" in pump_off
     assert "i2c_smbus_read_byte_data(sm->client, SM5440_REG_CNTL5)" in pump_off
@@ -101,10 +195,10 @@ def check_charger_arbitration() -> None:
     restore = function_body(direct, "static int sm5440_restore_switching(")
     park = restore.index("ret = sm5440_pump_off(sm);")
     assert "if (ret)\n\t\tgoto failed;" in restore[park:]
-    fixed_pd = restore.index("POWER_SUPPLY_PROP_ONLINE, 1")
+    fixed_pd = restore.index("sm5440_restore_fixed_pd_if_online(sm, &handoff)")
     release_owner = restore.index("sm5714_battery_set_direct_charge(false)")
     assert park < fixed_pd < release_owner, (
-        "handoff must park SM5440, request fixed PD, then release SM5714 ownership"
+        "handoff must park SM5440, run source-aware PD/offline fallback, then release SM5714 ownership"
     )
     assert "if (ret)\n\t\tgoto failed;" in restore[fixed_pd:release_owner], (
         "a failed fixed-PD request must retain charger ownership"
@@ -136,14 +230,25 @@ def check_charger_arbitration() -> None:
     )
 
     release = function_body(
-        battery, "int sm5714_battery_set_direct_charge(bool active)\n{")
+        battery, "static int sm5714_battery_set_direct_charge_mode(")
+    vbus_check = release.index("online = sm5714_get_online(sm);")
+    switching_restore = release.index(
+        "ret = sm5714_configure_charging(sm);", vbus_check)
+    assert vbus_check < switching_restore
+    assert "else if (online > 0)" in release[vbus_check:switching_restore], (
+        "an ONLINE=0 TCPM fallback may restore SM5714 only after its independent VBUS_POK check"
+    )
     assert "\t\tif (ret)\n\t\t\tWRITE_ONCE(sm->direct_charging, true);" in release, (
         "a failed switching-path reconfiguration must retain direct ownership"
     )
+    assert "READ_ONCE(sm->charge_limit_active) != passthrough" in release
+    assert "if (passthrough && READ_ONCE(sm->fast_charge))" in release
+    assert "WRITE_ONCE(sm->direct_passthrough, passthrough);" in release
 
 
 def main() -> None:
     source = r'''#include <stdio.h>
+#include <assert.h>
 #include "x810_pd_limits.h"
 struct test_case { int direct; unsigned int mv, ma; int valid; };
 static const struct test_case cases[] = {
@@ -157,17 +262,44 @@ static const struct test_case cases[] = {
     { 0, 9000, 3001, 0 },
     { 1, 0, 3000, 1 },
     { 1, 0, 3001, 0 },
-    { 1, 5000, 5000, 1 },
-    { 1, 10500, 5000, 1 },
+    { 1, 5000, 3000, 1 },
+    { 1, 10500, 3000, 1 },
+    { 1, 10500, 3050, 0 },
     { 1, 10501, 3000, 0 },
-    { 1, 10500, 5001, 0 },
 };
 int main(void) {
     unsigned int i;
+    assert(x810_pd_pps_fixed_entry_ready(1, 9000, 3000, 1800));
+    assert(!x810_pd_pps_fixed_entry_ready(1, 5000, 3000, 1800));
+    assert(!x810_pd_pps_fixed_entry_ready(0, 9000, 3000, 1800));
+    assert(!x810_pd_pps_fixed_entry_ready(1, 9000, 1799, 1800));
     static const struct { unsigned int requested, expected; } pps_limits[] = {
-        { 0, 1800 }, { 1799, 1800 }, { 1800, 1800 }, { 1849, 1800 },
-        { 1850, 1850 }, { 2425, 2400 }, { 4999, 4950 }, { 5000, 5000 },
-        { 5001, 5000 },
+        { 0, 0 }, { 1799, 0 }, { 1800, 1800 }, { 1849, 1800 },
+        { 1850, 1850 }, { 2425, 2400 }, { 2999, 2950 }, { 3000, 3000 },
+        { 3001, 3000 }, { 4999, 3000 }, { 5000, 3000 },
+    };
+    static const struct { unsigned int requested, apdo, expected; } pps_intersections[] = {
+        { 3000, 3000, 3000 }, { 3000, 1850, 1850 },
+        { 3000, 1799, 0 }, { 5000, 5000, 3000 },
+        { 1700, 3000, 0 }, { 2999, 1999, 1950 },
+    };
+    static const struct {
+        unsigned int source_min, source_max, expected_min, expected_max;
+    } voltage_intersections[] = {
+        /* Linux 7.2 reports active source APDO bounds. Clamp those to the
+         * X810 sink/pump envelope (5.0..10.5 V). */
+        { 5000, 11000, 5000, 10500 },
+        { 3300, 11000, 5000, 10500 },
+        { 5000, 10500, 5000, 10500 },
+        { 7000, 10500, 7000, 10500 },
+        { 5010, 10000, 5010, 10000 },
+        /* Disjoint/malformed ranges must fail closed. */
+        { 3300, 4999, 0, 0 },
+        { 10501, 21000, 0, 0 },
+        { 11000, 3300, 0, 0 },
+        { 0, 0, 0, 0 },
+        { 10500, 10499, 0, 0 },
+        { 0xffffffffU, 0xffffffffU, 0, 0 },
     };
     for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         int got = x810_pd_contract_is_valid(cases[i].direct,
@@ -188,6 +320,41 @@ int main(void) {
             return 1;
         }
     }
+    for (i = 0; i < sizeof(pps_intersections) / sizeof(pps_intersections[0]); i++) {
+        unsigned int got = x810_pd_pps_intersect_current(
+            pps_intersections[i].requested, pps_intersections[i].apdo);
+        if (got != pps_intersections[i].expected ||
+            (got && got % X810_PPS_CURRENT_STEP_MA)) {
+            fprintf(stderr,
+                    "PPS intersection request=%u APDO=%u mA: got %u, want %u\n",
+                    pps_intersections[i].requested, pps_intersections[i].apdo,
+                    got, pps_intersections[i].expected);
+            return 1;
+        }
+    }
+    for (i = 0; i < sizeof(voltage_intersections) /
+                    sizeof(voltage_intersections[0]); i++) {
+        unsigned int min_mv = 0xaaaaU, max_mv = 0xbbbbU;
+        unsigned int expected_min = voltage_intersections[i].expected_min;
+        unsigned int expected_max = voltage_intersections[i].expected_max;
+        int got = x810_pd_pps_intersect_voltage(
+            voltage_intersections[i].source_min,
+            voltage_intersections[i].source_max, &min_mv, &max_mv);
+        int expected = expected_max != 0;
+
+        if (got != expected ||
+            (got && (min_mv != expected_min || max_mv != expected_max)) ||
+            (!got && (min_mv != 0xaaaaU || max_mv != 0xbbbbU))) {
+            fprintf(stderr,
+                    "PPS voltage board clamp source=%u..%u mV: got %d (%u..%u), want %d (%u..%u)\n",
+                    voltage_intersections[i].source_min,
+                    voltage_intersections[i].source_max, got, min_mv,
+                    max_mv, expected,
+                    voltage_intersections[i].expected_min,
+                    voltage_intersections[i].expected_max);
+            return 1;
+        }
+    }
     return 0;
 }
 '''
@@ -202,6 +369,76 @@ int main(void) {
             check=True,
         )
         subprocess.run([str(binary)], check=True)
+    header = HEADER.read_text()
+    dts = DTS.read_text()
+
+    def define_value(name: str) -> int:
+        match = re.search(rf"^#define\s+{name}\s+(\d+)U?\s*$", header, re.M)
+        assert match, f"missing numeric define {name}"
+        return int(match.group(1))
+
+    pps_match = re.search(
+        r"PDO_PPS_APDO\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)", dts
+    )
+    assert pps_match, "X810 Type-C node must advertise its PPS sink APDO"
+    sink_min_mv, sink_max_mv, sink_max_ma = map(int, pps_match.groups())
+    assert define_value("X810_PPS_MIN_MV") == sink_min_mv == 5000
+    assert define_value("X810_PPS_MAX_MV") == sink_max_mv == 10500
+    assert define_value("X810_PPS_MAX_MA") == sink_max_ma == 3000
+    assert define_value("X810_PPS_DEFAULT_MA") <= sink_max_ma
+    assert define_value("X810_PPS_MIN_MA") <= sink_max_ma
+    assert define_value("X810_PPS_MAX_MV") % 20 == 0
+    assert define_value("X810_PPS_MAX_MA") % 50 == 0
+    assert "SM5440_OPERATING_SNK_MW\t\t15000" in DIRECT_DRIVER.read_text()
+    direct = DIRECT_DRIVER.read_text()
+    headroom_match = re.search(
+        r"^#define\s+SM5440_EXTRA_HEADROOM_MV\s+(\d+)\s*$", direct, re.M
+    )
+    resistance_match = re.search(
+        r"^#define\s+SM5440_R_TTL_MILLIOHM\s+(\d+)\s*$", direct, re.M
+    )
+    assert headroom_match and resistance_match, "missing SM5440 PPS headroom tuning"
+    extra_mv = int(headroom_match.group(1))
+    r_ttl_mohm = int(resistance_match.group(1))
+
+    def target_mv(current_ma: int, battery_mv: int) -> int:
+        # Keep this calculation in step with sm5440_pps_target_mv(): current
+        # dependent cable drop + fixed startup margin, rounded up to 20 mV.
+        headroom = (current_ma * r_ttl_mohm + 999) // 1000 + extra_mv
+        pump = ((2 * battery_mv + headroom + 19) // 20) * 20
+        power_floor = ((15000 * 1000 // current_ma + 19) // 20) * 20
+        return max(pump, power_floor, 8200)
+
+    # The live 1.8 A attempt requested 9.38 V with a 4.31 V pack, then
+    # measured 8.80 V at the pump before REVBLK.  The X910's empirically
+    # stable SM5440 setting was ~1100 mV initial headroom.  This candidate
+    # gives 1101 mV and requests 9.74 V, while the worst allowed 3 A / 4.35 V
+    # point stays inside this board's 10.5 V sink ceiling.
+    assert extra_mv == 525, "normal PPS startup margin should reflect measured REVBLK evidence"
+    assert target_mv(1800, 4310) == 9740
+    assert target_mv(3000, 4350) == 10200
+    assert 2 * 4350 < target_mv(3000, 4350) <= sink_max_mv
+    # A brief on-device PPS run (2026-10-13) reached an ADC VBAT sample of
+    # 3908 mV while the battery current was about 4.3 A. The input side was
+    # sampled near 2.1 A; normal PPS still requests its configured 3 A ceiling.
+    # Validate the candidate's representative setpoint against the X810's
+    # 10.5 V sink limit. Arithmetic does not prove transient stability.
+    live_vbat_mv, live_target_ma = 3908, 3000
+    live_target_mv = target_mv(live_target_ma, live_vbat_mv)
+    assert live_target_mv == 9320, (
+        f"recent live-state candidate arithmetic changed: {live_target_mv} mV"
+    )
+    assert 2 * live_vbat_mv < live_target_mv <= sink_max_mv
+    assert "mv > max_uv / 1000" in function_body(
+        direct, "static int sm5440_negotiate_pps("
+    ), "PPS target must be rejected when source/board APDO cannot supply it"
+    assert "op-sink-microwatt = <15000000>" in dts
+    assert re.findall(r"PDO_FIXED\s*\(\s*(\d+)\s*,\s*(\d+)", dts)[:2] == [
+        ("5000", "3000"), ("9000", "3000")
+    ], "fixed-PDO advertisement must match the documented 5/9 V, 3 A limits"
+    assert "default/max 3000" in DIRECT_DRIVER.read_text(), (
+        "kernel parameter documentation must reflect the board's 3 A cap"
+    )
     check_charger_arbitration()
     print("X810 PD/PPS limits and charger-owner handoff invariants passed")
 
