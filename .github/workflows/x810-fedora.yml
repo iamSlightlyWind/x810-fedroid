@@ -20,7 +20,7 @@ on:
         default: false
 
 permissions:
-  actions: read
+  actions: write
   contents: write
 
 env:
@@ -599,6 +599,53 @@ jobs:
         with:
           path: ${{ runner.temp }}/x810-kernel-cache
           key: x810-kernel-${{ runner.arch }}-linux72-${{ hashFiles('kernel/**') }}
+
+      - name: Prune superseded X810 kernel caches
+        if: success() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_KEY: x810-kernel-${{ runner.arch }}-linux72-${{ hashFiles('kernel/**') }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          repo = os.environ["REPOSITORY"]
+          current_key = os.environ["CURRENT_KEY"]
+          prefix = current_key.rsplit("-", 1)[0] + "-"
+
+          try:
+              result = subprocess.run(
+                  ["gh", "cache", "list", "--repo", repo, "--limit", "1000",
+                   "--json", "id,key,ref"],
+                  check=True, capture_output=True, text=True,
+              )
+              caches = json.loads(result.stdout)
+          except Exception as exc:
+              print(f"::warning::Could not list Actions caches; leaving them untouched: {exc}")
+              sys.exit(0)
+
+          stale = [
+              item for item in caches
+              if item.get("ref") == "refs/heads/main"
+              and item.get("key", "").startswith(prefix)
+              and item.get("key") != current_key
+          ]
+          print(f"Retaining current kernel cache: {current_key}")
+          print(f"Pruning {len(stale)} superseded main-branch kernel cache(s); other caches are untouched.")
+          for item in stale:
+              try:
+                  subprocess.run(
+                      ["gh", "cache", "delete", str(item["id"]), "--repo", repo],
+                      check=True, capture_output=True, text=True,
+                  )
+                  print(f"Deleted {item['key']} (ID {item['id']})")
+              except Exception as exc:
+                  print(f"::warning::Could not delete cache {item.get('key')}: {exc}")
+          PY
 
       - name: Save Fedora DNF cache
         if: success() && steps.restore_kernel_dnf.outputs.cache-hit != 'true'
