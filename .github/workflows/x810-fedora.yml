@@ -554,6 +554,9 @@ jobs:
                 --initramfs /tmp/initramfs.img \
                 --cmdline /work/boot/cmdline.txt \
                 --bootconfig /work/boot/bootconfig.txt --out out-bundle
+              python3 /work/tools/verify-x810-kernel-payload.py \
+                "/boot/vmlinuz-$KVER" \
+                drivers/input/keyboard/samsung_stm32_pogo.c
               python3 /work/tools/x810-gpu-firmware.py check-vendor-boot out-bundle/vendor_boot.img
               shopt -s nullglob
               kernel_rpms=(out-kernel/linux-x810-*.rpm)
