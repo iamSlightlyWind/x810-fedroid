@@ -45,6 +45,21 @@
  */
 #define X810_SM5440_PPS_REFRESH_INTERVAL_MS	2500UL
 
+/* A same-point PPS keep-alive need not park the pump: only allow the
+ * uninterrupted path when the calculated voltage is unchanged at the
+ * adapter's 20 mV resolution. Any real voltage step still uses the proven
+ * park / request / settle / re-arm sequence.
+ */
+static inline bool
+x810_sm5440_pps_voltage_change_required(int target_mv, int current_mv,
+				       int step_mv)
+{
+	int delta = target_mv >= current_mv ? target_mv - current_mv :
+		current_mv - target_mv;
+
+	return step_mv <= 0 || delta >= step_mv;
+}
+
 /* `now - last` is intentionally unsigned: it remains wrap-safe for intervals
  * much shorter than half the unsigned-long counter range (as this one is).
  */

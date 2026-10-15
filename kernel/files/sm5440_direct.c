@@ -36,12 +36,26 @@
 #define SM5440_REG_INT4			0x03
 #define  SM5440_INT1_VOUTOVP		BIT(4)
 #define  SM5440_INT1_VBATOVP		BIT(3)
+#define  SM5440_INT1_REVBPOCP		BIT(1)
+#define  SM5440_INT1_REVBSTOCP		BIT(0)
 #define  SM5440_INT3_VBUSOVP		BIT(7)
 #define  SM5440_INT3_VBUSUVLO		BIT(6)
+#define  SM5440_INT3_THEMSHDN_ALM	BIT(4)
 #define  SM5440_INT3_THEMSHDN		BIT(3)
 #define  SM5440_INT3_STUP_FAIL		BIT(2)
 #define  SM5440_INT3_REVBLK		BIT(1)
 #define  SM5440_INT3_CFLY_SHORT		BIT(0)
+#define  SM5440_INT1_REFRESH_FAULTS	(SM5440_INT1_VOUTOVP | \
+					 SM5440_INT1_VBATOVP | \
+					 SM5440_INT1_REVBPOCP | \
+					 SM5440_INT1_REVBSTOCP)
+#define  SM5440_INT3_REFRESH_FAULTS	(SM5440_INT3_VBUSOVP | \
+					 SM5440_INT3_VBUSUVLO | \
+					 SM5440_INT3_THEMSHDN_ALM | \
+					 SM5440_INT3_THEMSHDN | \
+					 SM5440_INT3_STUP_FAIL | \
+					 SM5440_INT3_REVBLK | \
+					 SM5440_INT3_CFLY_SHORT)
 #define SM5440_REG_STATUS1		0x08
 #define SM5440_REG_STATUS2		0x09
 #define  SM5440_STATUS2_IBUSLIM		BIT(7)
@@ -196,6 +210,7 @@ struct sm5440_direct {
 	unsigned int fails;
 	bool active;
 	bool passthrough_active;
+	bool live_refresh_available;
 	bool pps_request_valid;
 	int passthrough_reference_soc;
 	unsigned int passthrough_positive_samples;
@@ -568,26 +583,32 @@ fixed:
  * Every power_supply property write is its own Power Negotiation and each one
  * re-applies the source's output voltage, so the refresh sends as few of them as
  * it can: the voltage only when the pack has moved the operating point by a step
- * (the only way it changes), the current every time.  The pump is parked across
- * whichever negotiation happens -- see sm5440_renegotiate_pps().
+ * (the only way it changes), the current every time.  A same-voltage keep-alive
+ * is attempted with the pump running and checked for hardware faults; actual
+ * voltage steps retain the pump-park sequence below.
  */
+static int sm5440_next_pps_target_mv(struct sm5440_direct *sm)
+{
+	int battery_uv;
+
+	if (sm->passthrough_active)
+		return sm->passthrough_target_mv;
+
+	battery_uv = sm5440_psy_get(sm->battery, POWER_SUPPLY_PROP_VOLTAGE_NOW);
+	if (battery_uv < 0)
+		return battery_uv;
+
+	return sm5440_pps_target_mv(sm->target_ma, battery_uv);
+}
+
 static int sm5440_refresh_pps(struct sm5440_direct *sm)
 {
-	int battery_uv, target_mv, online, type, min_uv, max_uv, max_ua;
+	int target_mv, online, type, min_uv, max_uv, max_ua;
 	int ret;
 
-	if (sm->passthrough_active) {
-		/* Pass-through uses the CV_MAN current loop's selected PPS voltage;
-		 * don't overwrite it with the normal direct-charge target formula.
-		 */
-		target_mv = sm->passthrough_target_mv;
-	} else {
-		battery_uv = sm5440_psy_get(sm->battery,
-					    POWER_SUPPLY_PROP_VOLTAGE_NOW);
-		if (battery_uv < 0)
-			return battery_uv;
-		target_mv = sm5440_pps_target_mv(sm->target_ma, battery_uv);
-	}
+	target_mv = sm5440_next_pps_target_mv(sm);
+	if (target_mv < 0)
+		return target_mv;
 
 	/* Check the currently negotiated source APDO immediately before every PPS
 	 * write. The board-specific ceiling below supplies the other half of the
@@ -616,6 +637,35 @@ static int sm5440_refresh_pps(struct sm5440_direct *sm)
 		/* Only a completed TCPM Request moves the deadline. In particular,
 		 * validation/property-write errors must leave the old deadline intact
 		 * so callers take the existing fail-closed handoff path. */
+		sm->last_pps_request = jiffies;
+		sm->pps_request_valid = true;
+	}
+	return ret;
+}
+
+/* Same-point keep-alives must not recalculate or write a voltage. Doing so
+ * could turn a supposedly uninterrupted refresh into a live voltage step if
+ * the battery ADC crossed a rounding boundary after sm5440_renegotiate_pps()
+ * made its decision. */
+static int sm5440_refresh_pps_current_only(struct sm5440_direct *sm,
+					   int target_mv)
+{
+	int online, type, min_uv, max_uv, max_ua;
+	int ret;
+
+	online = sm5440_psy_get(sm->tcpm, POWER_SUPPLY_PROP_ONLINE);
+	type = sm5440_psy_get(sm->tcpm, POWER_SUPPLY_PROP_USB_TYPE);
+	min_uv = sm5440_psy_get(sm->tcpm, POWER_SUPPLY_PROP_VOLTAGE_MIN);
+	max_uv = sm5440_psy_get(sm->tcpm, POWER_SUPPLY_PROP_VOLTAGE_MAX);
+	max_ua = sm5440_psy_get(sm->tcpm, POWER_SUPPLY_PROP_CURRENT_MAX);
+	if (!x810_sm5440_pps_point_valid(online,
+			type == POWER_SUPPLY_USB_TYPE_PD_PPS,
+			min_uv, max_uv, max_ua, target_mv, sm->target_ma))
+		return -ERANGE;
+
+	ret = sm5440_psy_retry(sm, POWER_SUPPLY_PROP_CURRENT_NOW,
+			       sm->target_ma * 1000);
+	if (!ret) {
 		sm->last_pps_request = jiffies;
 		sm->pps_request_valid = true;
 	}
@@ -722,20 +772,92 @@ static int sm5440_wait_vbus_settled(struct sm5440_direct *sm, int target_mv)
 
 static int sm5440_pt_rearm_check(struct sm5440_direct *sm, const char *stage);
 
+/* If a PPS keep-alive repeats the exact operating voltage, avoid stopping the
+ * pump for the request. The SM5440 itself remains the safety boundary: verify
+ * CHG_ON/VBUSPOK and inspect the read-to-clear fault latches immediately after
+ * the synchronous TCPM request. Any fault takes the existing verified
+ * fixed-PD handback path. A voltage change still follows the parked sequence.
+ */
+static int sm5440_refresh_pps_without_park(struct sm5440_direct *sm,
+					  int target_mv)
+{
+	int mode, status3, int1, int3, ret;
+
+	ret = sm5440_refresh_pps_current_only(sm, target_mv);
+	if (ret)
+		goto failed;
+
+	mode = i2c_smbus_read_byte_data(sm->client, SM5440_REG_CNTL5);
+	if (mode < 0) {
+		ret = mode;
+		goto failed;
+	}
+	status3 = i2c_smbus_read_byte_data(sm->client, SM5440_REG_STATUS3);
+	if (status3 < 0) {
+		ret = status3;
+		goto failed;
+	}
+	int1 = i2c_smbus_read_byte_data(sm->client, SM5440_REG_INT1);
+	if (int1 < 0) {
+		ret = int1;
+		goto failed;
+	}
+	int3 = i2c_smbus_read_byte_data(sm->client, SM5440_REG_INT3);
+	if (int3 < 0) {
+		ret = int3;
+		goto failed;
+	}
+
+	if (!(mode & SM5440_CNTL5_CHG_ON) ||
+	    !(status3 & SM5440_STATUS3_VBUSPOK) ||
+	    (int1 & SM5440_INT1_REFRESH_FAULTS) ||
+	    (int3 & SM5440_INT3_REFRESH_FAULTS)) {
+		dev_warn(sm->dev,
+			 "same-point PPS refresh faulted with pump running: mode=%#x status3=%#x INT1=%#x INT3=%#x\n",
+			 mode, status3, int1, int3);
+		ret = -EIO;
+		goto failed;
+	}
+
+	dev_dbg(sm->dev, "same-point PPS keep-alive completed without parking pump\n");
+	return 0;
+
+failed:
+	/* One failed live refresh disables this optimization for the rest of the
+	 * boot. The worker performs the normal fixed-PD handoff before its guarded
+	 * retry, which then uses the established pump-park sequence.
+	 */
+	sm->live_refresh_available = false;
+	dev_warn(sm->dev,
+		 "disabling uninterrupted PPS refresh for this boot (%d); reverting to pump-park refreshes\n",
+		 ret);
+	return ret;
+}
+
 /*
- * Keep the programmable contract alive without killing the pump.
+ * Keep the programmable contract alive while minimizing pump interruptions.
  *
  * A PPS source re-applies its output voltage on every Request, and that step is
  * enough to drive the 2:1 pump's output above its input for an instant.  The
  * chip then latches REVBLK and clears CHG_ON by itself, so the keep-alive used
  * to end direct charging every couple of seconds and hand the battery back to
- * the 9 V switching charger until the retry.  Park the pump across the
- * re-negotiation and re-arm it once the bus has settled again -- the same rule
- * sm5440_start() applies to the first contract.
+ * the 9 V switching charger until the retry.  Park it for a voltage-changing
+ * request, then re-arm once the bus settles. For a same-point keep-alive, leave
+ * it running and immediately check the SM5440 status/fault latches; any fault
+ * fails closed through the normal fixed-PD handoff.
  */
 static int sm5440_renegotiate_pps(struct sm5440_direct *sm)
 {
-	int ret;
+	int target_mv, ret;
+
+	target_mv = sm5440_next_pps_target_mv(sm);
+	if (target_mv < 0)
+		return target_mv;
+	if (sm->live_refresh_available &&
+	    !x810_sm5440_pps_voltage_change_required(target_mv,
+							 sm->target_mv,
+							 SM5440_PPS_V_STEP_MV))
+		return sm5440_refresh_pps_without_park(sm, target_mv);
 
 	ret = sm5440_pump_off(sm);
 	if (ret)
@@ -1618,6 +1740,7 @@ static int sm5440_probe(struct i2c_client *client)
 		return -ENOMEM;
 	sm->dev = &client->dev;
 	sm->client = client;
+	sm->live_refresh_available = true;
 	i2c_set_clientdata(client, sm);
 
 	id = i2c_smbus_read_byte_data(client, SM5440_REG_DEVICEID);

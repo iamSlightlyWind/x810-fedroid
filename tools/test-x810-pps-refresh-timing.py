@@ -45,6 +45,11 @@ int main(void)
     int pump_parked, accepted_request, pump_on;
 
     assert(interval == 2500);
+    assert(!x810_sm5440_pps_voltage_change_required(9500, 9500, 20));
+    assert(!x810_sm5440_pps_voltage_change_required(9519, 9500, 20));
+    assert(x810_sm5440_pps_voltage_change_required(9520, 9500, 20));
+    assert(x810_sm5440_pps_voltage_change_required(9480, 9500, 20));
+    assert(x810_sm5440_pps_voltage_change_required(9500, 9500, 0));
     assert(!x810_sm5440_pps_refresh_due(last + interval - 1, last,
                                         interval));
     assert(x810_sm5440_pps_refresh_due(last + interval, last, interval));
@@ -152,11 +157,28 @@ def test_driver_anchors_only_success_and_keeps_park_sequence() -> None:
         assert text in rearm
     renegotiate = driver[driver.index("static int sm5440_renegotiate_pps("):]
     renegotiate = renegotiate[:renegotiate.index("\nstatic void ", 1)]
+    same_point = renegotiate.index("sm5440_refresh_pps_without_park(sm, target_mv)")
+    park = renegotiate.index("sm5440_pump_off(sm)")
+    assert same_point < park
+    assert "if (sm->live_refresh_available &&" in renegotiate
     order = [renegotiate.index("sm5440_pump_off(sm)"),
              renegotiate.index("sm5440_refresh_pps(sm)"),
              renegotiate.index("sm5440_wait_vbus_settled(sm, sm->target_mv)"),
              renegotiate.index("sm5440_pump_on(sm)")]
     assert order == sorted(order)
+    live_refresh = driver[driver.index("static int sm5440_refresh_pps_without_park("):]
+    live_refresh = live_refresh[:live_refresh.index("\nstatic int ", 1)]
+    for text in ("SM5440_REG_CNTL5", "SM5440_REG_STATUS3",
+                 "SM5440_REG_INT1", "SM5440_REG_INT3",
+                 "SM5440_CNTL5_CHG_ON", "SM5440_STATUS3_VBUSPOK",
+                 "ret = -EIO", "goto failed", "live_refresh_available = false",
+                 "reverting to pump-park refreshes"):
+        assert text in live_refresh
+    current_only = driver[driver.index("static int sm5440_refresh_pps_current_only("):]
+    current_only = current_only[:current_only.index("\nstatic int ", 1)]
+    assert "POWER_SUPPLY_PROP_CURRENT_NOW" in current_only
+    assert "POWER_SUPPLY_PROP_VOLTAGE_NOW" not in current_only
+    assert "sm5440_next_pps_target_mv" not in current_only
     assert renegotiate.count("sm5440_pt_rearm_check(sm,") == 2
     assert "X810_SM5440_PPS_REFRESH_INTERVAL_MS\t2500UL" in policy
 
