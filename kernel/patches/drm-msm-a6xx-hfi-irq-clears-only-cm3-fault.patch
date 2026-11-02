@@ -1,0 +1,33 @@
+From: gennro <gennro2004@gmail.com>
+Subject: [PATCH] drm/msm/a6xx: the HFI IRQ clears only the CM3 fault bit
+
+a6xx_hfi_irq() clears every bit it reads from GMU2HOST_INTR_INFO, though
+it only handles CM3_FAULT, the one bit the HFI interrupt is unmasked for.
+The other bits there are polled for under gmu->lock: MSGQ by
+a6xx_hfi_wait_for_msg_interrupt() and the OOB acks by a6xx_gmu_set_oob().
+When the handler runs between the GMU setting one of them and the poll
+seeing it, the answer is lost: the poll times out although the GMU
+answered.
+
+On the Adreno 740 (SM8550) with GPU runtime PM, the HFI interrupt can fire
+without a CM3 fault while the GPU wakes and sleeps. If it lands in that
+window, the HFI response or OOB acknowledgement is cleared before its
+waiter sees it. A missed GX_BW_PERF_VOTE response can stall rendering;
+a missed GPU_SET acknowledgement can leave the GPU uninitialized and hang
+the display.
+
+Clear only CM3_FAULT, the only status this handler processes.
+
+Source: https://github.com/kettlelinux/kettlelinux/blob/d379ae1d0efeb8dd282647a1598efd719c6ecd4d/kernel/patches/40-kettle/1350-drm-msm-a6xx-hfi-irq-clears-only-the-cm3-fault.patch
+---
+--- a/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
++++ b/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
+@@ -67 +67,7 @@ static irqreturn_t a6xx_hfi_irq(int irq, void *data)
+-	status = gmu_read(gmu, REG_A6XX_GMU_GMU2HOST_INTR_INFO);
++	/*
++	 * Only clear what this handler deals with: the HFI response (MSGQ) and
++	 * OOB ack bits are polled for, and clearing them here loses the GMU's
++	 * answer to whoever is waiting for it.
++	 */
++	status = gmu_read(gmu, REG_A6XX_GMU_GMU2HOST_INTR_INFO) &
++		 A6XX_GMU_GMU2HOST_INTR_INFO_CM3_FAULT;

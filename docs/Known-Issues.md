@@ -37,6 +37,7 @@ reused, and a retired number is simply absent rather than reassigned
 | 30 | Device-wide GPU startup/rendering | exact X810 CYG1 Adreno firmware is embedded in rootfs and vendor_boot; the current boot reports hardware-accelerated Freedreno FD740 through GLX |
 | 31 | Fine visual artifacts in GTK4 controls | mitigated by the global `GSK_GPU_DISABLE=merge` profile in rootfs/updater RPM; owner reported clean UI at normal speed with Vulkan/Turnip retained. This is a userspace workaround, not a driver fix |
 | 32 | External-display output/modesetting | open — current external-only mode shows a solid blue screen; the tablet panel works normally after disconnecting the monitor. Kernel DPU resource-reassignment patch is present, but does not fix this symptom |
+| 33 | Adreno 740 GMU HFI timeouts can stall the desktop | candidate fix added; kernel build and device verification pending |
 
 Haptics are enabled in the kernel source (stock-active-high GPIO18 plus
 `gpio-vibra`) and included in the kernel release; physical vibration is confirmed
@@ -432,3 +433,17 @@ real diagnostics within seconds. The handover interrupt is level-triggered and
 the remote keeps it asserted after the first handover, so the repeat is
 expected and harmless. Fixed by logging it at debug level
 (`quiet-adsp-handover-already-happened.patch`); no behaviour change.
+
+
+### 33 — Adreno 740 GMU HFI timeouts can stall the desktop
+
+The recent boot log recorded GX_BW_PERF_VOTE timing out, and GNOME Shell
+was subsequently reported unresponsive while the pointer could still move.
+That points to a display-rendering stall rather than a complete machine lockup.
+
+The kernel HFI interrupt handler read and cleared every bit in
+GMU2HOST_INTR_INFO, although it only handles the CM3 fault bit. The HFI
+response and GPU power acknowledgement bits are polled by other code; clearing
+one before its waiter sees it loses the response. The new kernel patch limits
+the clear to CM3_FAULT. The candidate still needs a remote kernel build and
+on-device verification before this issue can be marked fixed.
