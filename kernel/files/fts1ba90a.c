@@ -93,8 +93,8 @@
 #define FTS_TTYPE_WET			6
 
 #define FTS_MAX_FINGERS			10
-#define FTS_MAX_X			1599
-#define FTS_MAX_Y			2559
+#define FTS_MAX_X			1751
+#define FTS_MAX_Y			2799
 #define FTS_MAX_PRESSURE		63
 
 struct fts1ba90a {

@@ -48,26 +48,25 @@ class SupportRpmStagingTests(unittest.TestCase):
         self.assertIn("systemctl enable gts9wifi-color-profile.service", spec)
         self.assertIn("systemctl start gts9wifi-color-profile.service", spec)
 
-    def test_measured_x810_touch_calibration_is_in_fresh_image_and_update(self):
+    def test_x810_touch_geometry_matches_the_2800x1752_panel(self):
+        dts = (
+            ROOT
+            / "kernel/files/sm8550-samsung-gts9wifi.dts"
+        ).read_text(encoding="utf-8")
+        self.assertIn("touchscreen-size-x = <1752>;", dts)
+        self.assertIn("touchscreen-size-y = <2800>;", dts)
+        self.assertIn("touchscreen-inverted-x;", dts)
+        self.assertIn("touchscreen-swapped-x-y;", dts)
+
+        driver = (ROOT / "kernel/files/fts1ba90a.c").read_text(encoding="utf-8")
+        self.assertRegex(driver, r"(?m)^#define FTS_MAX_X\s+1751$")
+        self.assertRegex(driver, r"(?m)^#define FTS_MAX_Y\s+2799$")
+
         rule_path = (
             ROOT
             / "rootfs/overlay/usr/lib/udev/rules.d/72-gts9wifi-touch-calibration.rules"
         )
-        self.assertTrue(rule_path.is_file())
-        rule = rule_path.read_text(encoding="utf-8")
-        self.assertIn('ATTRS{name}=="FTS1BA90A Touchscreen"', rule)
-        self.assertIn(
-            'ENV{LIBINPUT_CALIBRATION_MATRIX}="0.94655 0 -0.02330 0 0.94728 0.06605"',
-            rule,
-        )
-
-        # Both install paths stage the complete rootfs overlay, so this one
-        # measured device rule reaches clean installs and support-RPM updates.
-        for builder in ("rootfs/build-rootfs.sh", "tools/build-port-support-rpm.sh"):
-            self.assertIn(
-                'cp -a "$repo_dir/rootfs/overlay/."',
-                (ROOT / builder).read_text(encoding="utf-8"),
-            )
+        self.assertFalse(rule_path.exists())
 
     def test_ppd_profile_map_targets_a_real_tuned_performance_profile(self):
         contract = runpy.run_path(str(ROOT / "tools/test-port-build-contract.py"))

@@ -1306,8 +1306,8 @@
 		interrupts-extended = <&tlmm 25 IRQ_TYPE_LEVEL_LOW>;
 		avdd-supply = <&vreg_l14b_3p3>;
 		vddio-supply = <&vreg_l12b_1p8>;
-		touchscreen-size-x = <1600>;
-		touchscreen-size-y = <2560>;
+		touchscreen-size-x = <1752>;
+		touchscreen-size-y = <2800>;
 		touchscreen-inverted-x;
 		touchscreen-swapped-x-y;
 		/* The driver arms a double-tap gesture while suspended. */

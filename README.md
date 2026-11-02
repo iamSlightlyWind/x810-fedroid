@@ -14,7 +14,7 @@ Status key: ✅ confirmed on the tablet · 🟡 partial, limited, or awaiting a 
 | Display | ✅ | 2800×1752 AMOLED up at 120 Hz |
 | Desktop | ✅ | GDM, Gnome 50.5 on Wayland |
 | GPU / rendering | ✅ | Adreno 740 hardware acceleration |
-| Touchscreen | 🟡 | Still some touchscreen offset, up to 5mm |
+| Touchscreen | ✅ | FTS1BA90A touch aligns across the 2800×1752 panel; confirmed on SM-X810 after reboot |
 | S Pen | 🟡 | No S Pen to test |
 | Book keyboard cover | ✅ | EF-DX815 works |
 | Wi-Fi | ✅ | WCN6855/ath11k |
@@ -33,6 +33,15 @@ Status key: ✅ confirmed on the tablet · 🟡 partial, limited, or awaiting a 
 | Suspend / resume | ✅ | Suspend and waking up works |
 | Fingerprint reader | ❌ | Not working |
 | Charging bypass | ❌ | No safe, verified Linux control is available |
+
+Touch coordinate mapping uses the panel's full 2800×1752 landscape range. The
+FTS1BA90A device tree describes the controller's 1752×2800 range and swaps the
+axes; Linux then reports X=0–2799 and Y=0–1751. The old, smaller bounds caused
+the offset, so the fixed libinput calibration matrix has been removed. Samsung
+ABL uses the active device tree from `vendor_boot`; releases with this fix must
+include the matching updated `vendor_boot.img` as well as `boot.img`. Flashing
+only `boot.img` leaves the old touch ranges active. The corrected ranges and
+identity libinput matrix were verified on the tablet after reboot.
 
 See [`docs/Hardware-Notes.md`](docs/Hardware-Notes.md) and [`docs/Known-Issues.md`](docs/Known-Issues.md) for caveats and subsystem details. Updates via [Tab Companion](https://github.com/iamSlightlyWind/tab-companion) can resolves these issues if patches are available.
 
