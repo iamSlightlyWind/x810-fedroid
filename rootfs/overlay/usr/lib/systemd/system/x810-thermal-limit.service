@@ -1,5 +1,5 @@
 [Unit]
-Description=X810 temperature-based CPU frequency limiter
+Description=X810 profile-aware CPU/GPU performance and temperature limiter
 After=systemd-modules-load.service
 ConditionPathExists=/sys/class/thermal
 
@@ -17,7 +17,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/sys/devices/system/cpu/cpufreq /run/x810-thermal-limit
+ReadWritePaths=/sys/devices/system/cpu/cpufreq /sys/class/devfreq/3d00000.gpu /sys/devices/platform/soc@0/3d00000.gpu/devfreq /run/x810-thermal-limit
 ReadOnlyPaths=/sys/class/thermal
 
 [Install]

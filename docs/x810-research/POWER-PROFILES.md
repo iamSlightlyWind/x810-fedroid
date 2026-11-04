@@ -26,10 +26,17 @@ CPUFreq `powersave` governor, and maps the standard PPD `power-saver` profile
 to it. The support RPM migrates the mapping idempotently, backs up the original
 PPD config once, and restarts `tuned-ppd` only if the mapping changed.
 
-This is CPUFreq-level control, not a Samsung power HAL or a complete SoC
-performance policy. It does not establish GPU boost behavior or thermal limits.
-The X810-specific saver mapping is source-tested but still needs validation on
-the tablet: confirm all three CPU policies report `powersave` in Power Saver,
-`schedutil` in Balanced, and `performance` in Performance, then compare
-frequency/temperature under the same benchmark. Use Balanced by default;
+Tab Companion and `x810-thermal-limit` now add bounded per-profile CPU/GPU
+frequency ceilings and boost controls. The initial Balanced ceiling is 75%
+with CPU and GPU boost disabled; Power Saver starts at 55%, and Performance at
+100% with both boosts enabled. The thermal service applies a further 20% CPU
+and GPU ceiling reduction after the selected SoC threshold is exceeded for two
+samples, and restores the selected profile ceiling after the temperature stays
+at least 3°C below that threshold for two samples. This remains CPUFreq and
+devfreq control, not a Samsung power HAL or a complete SoC performance policy.
+
+The X810-specific saver mapping and new limits need validation on the tablet:
+confirm all three CPU policies report `powersave` in Power Saver, `schedutil`
+in Balanced, and `performance` in Performance, verify the GPU max changes with
+the selected profile, and compare frequency/temperature under the same load.
 Performance is expected to use more power and produce more heat.

@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: MIT
-"""Conservative, user-configurable X810 CPU temperature limiter."""
+"""Apply X810 per-profile CPU/GPU limits and a temperature safety cap."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -15,19 +16,41 @@ from pathlib import Path
 
 THERMAL_ROOT = Path("/sys/class/thermal")
 CPUFREQ_ROOT = Path("/sys/devices/system/cpu/cpufreq")
+CPU_BOOST = CPUFREQ_ROOT / "boost"
+GPU_ROOT = Path("/sys/class/devfreq/3d00000.gpu")
 CONFIG = Path("/etc/x810-thermal-limit.json")
+PERFORMANCE_CONFIG = Path("/etc/x810-power-profile-tuning.json")
 RUN_DIR = Path("/run/x810-thermal-limit")
 STATUS = RUN_DIR / "status.json"
 BASELINES = RUN_DIR / "cpu-max-baselines.json"
 DEFAULT = {"enabled": True, "threshold_c": 55}
+PROFILE_IDS = ("power-saver", "balanced", "performance")
+DEFAULT_PERFORMANCE = {
+    "version": 1,
+    "profiles": {
+        "power-saver": {"max_percent": 55, "cpu_boost": False, "gpu_boost": False},
+        "balanced": {"max_percent": 75, "cpu_boost": False, "gpu_boost": False},
+        "performance": {"max_percent": 100, "cpu_boost": True, "gpu_boost": True},
+    },
+}
 SOC_ZONE = re.compile(
     r"^(?:cpu(?:[0-9]+(?:-(?:top|middle|bottom))?)?|cpuss[0-9]+|"
     r"gpuss-[0-9]+|aoss[0-9]+|video|mem|cdsp[0-9]+)-thermal$"
+)
+PROFILE_OUTPUT = re.compile(r'\s*s\s+"(power-saver|balanced|performance)"\s*')
+BUSCTL = "/usr/bin/busctl"
+PROFILE_QUERY = (
+    "--system", "get-property", "net.hadess.PowerProfiles",
+    "/net/hadess/PowerProfiles", "net.hadess.PowerProfiles", "ActiveProfile",
 )
 POLL_SECONDS = 1
 TRIGGER_SAMPLES = 2
 RELEASE_SAMPLES = 2
 LIMIT_RATIO = 0.80
+GPU_LIMIT_RATIO = 0.80
+GPU_NO_BOOST_RATIO = 0.70
+MIN_MAX_PERCENT = 30
+MAX_MAX_PERCENT = 100
 
 
 def atomic_json(path: Path, payload: object, mode: int = 0o644) -> None:
@@ -58,9 +81,58 @@ def read_config(path: Path = CONFIG) -> dict:
             raise ValueError("invalid thermal-limit settings")
         return value
     except (OSError, ValueError, json.JSONDecodeError) as error:
-        # Fail open: malformed settings must never leave or initiate a CPU cap.
-        print(f"x810-thermal-limit: invalid settings; limiting disabled: {error}", file=sys.stderr)
+        # Fail open for the thermal cap; profile settings still retain their
+        # bounded defaults and kernel thermal protection remains active.
+        print(f"x810-thermal-limit: invalid settings; thermal cap disabled: {error}", file=sys.stderr)
         return {"enabled": False, "threshold_c": DEFAULT["threshold_c"]}
+
+
+def valid_performance_settings(value: object) -> dict | None:
+    if (not isinstance(value, dict) or set(value) != {"version", "profiles"}
+            or type(value["version"]) is not int or value["version"] != 1
+            or not isinstance(value["profiles"], dict)
+            or set(value["profiles"]) != set(PROFILE_IDS)):
+        return None
+    profiles = {}
+    for name in PROFILE_IDS:
+        settings = value["profiles"][name]
+        if (not isinstance(settings, dict)
+                or set(settings) != {"max_percent", "cpu_boost", "gpu_boost"}
+                or type(settings["max_percent"]) is not int
+                or not MIN_MAX_PERCENT <= settings["max_percent"] <= MAX_MAX_PERCENT
+                or type(settings["cpu_boost"]) is not bool
+                or type(settings["gpu_boost"]) is not bool):
+            return None
+        profiles[name] = dict(settings)
+    return {"version": 1, "profiles": profiles}
+
+
+def read_performance_settings(path: Path = PERFORMANCE_CONFIG) -> dict:
+    try:
+        parsed = valid_performance_settings(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, json.JSONDecodeError):
+        parsed = None
+    if parsed is None:
+        return {
+            "version": 1,
+            "profiles": {
+                name: dict(settings)
+                for name, settings in DEFAULT_PERFORMANCE["profiles"].items()
+            },
+        }
+    return parsed
+
+
+def read_active_profile() -> str:
+    try:
+        result = subprocess.run(
+            [BUSCTL, *PROFILE_QUERY], check=True, capture_output=True,
+            text=True, timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "balanced"
+    match = PROFILE_OUTPUT.fullmatch(result.stdout)
+    return match.group(1) if match else "balanced"
 
 
 def read_soc_temperature(root: Path = THERMAL_ROOT) -> float | None:
@@ -87,11 +159,16 @@ def _read_int(path: Path) -> int:
 
 
 def capture_baselines(root: Path = CPUFREQ_ROOT) -> dict[str, int]:
-    return {
-        policy.name: _read_int(policy / "scaling_max_freq")
-        for policy in _policy_paths(root)
-        if (policy / "scaling_max_freq").is_file()
-    }
+    """Record hardware ceilings, not ceilings from a previous profile pass."""
+    values = {}
+    for policy in _policy_paths(root):
+        maximum = policy / "cpuinfo_max_freq"
+        if (policy / "scaling_max_freq").is_file() and maximum.is_file():
+            try:
+                values[policy.name] = _read_int(maximum)
+            except (OSError, ValueError):
+                continue
+    return values
 
 
 def read_control_state(path: Path, root: Path) -> tuple[dict[str, int], bool] | None:
@@ -117,13 +194,18 @@ def read_control_state(path: Path, root: Path) -> tuple[dict[str, int], bool] | 
         return None
 
 
-def cap_for_policy(policy: Path, original_max: int) -> int:
-    target = max(_read_int(policy / "scaling_min_freq"), int(original_max * LIMIT_RATIO))
+def cap_for_policy(policy: Path, hardware_max: int, max_percent: int = 100,
+                   limited: bool = False) -> int:
+    target = int(hardware_max * max_percent / 100)
+    if limited:
+        target = int(target * LIMIT_RATIO)
+    minimum = _read_int(policy / "scaling_min_freq")
+    target = max(minimum, target)
     available = policy / "scaling_available_frequencies"
     if available.is_file():
         try:
             choices = [int(item) for item in available.read_text(encoding="ascii").split()]
-            below = [item for item in choices if item <= target]
+            below = [item for item in choices if minimum <= item <= target]
             if below:
                 return max(below)
         except (OSError, ValueError):
@@ -131,26 +213,99 @@ def cap_for_policy(policy: Path, original_max: int) -> int:
     return target
 
 
-def write_limits(root: Path, baselines: dict[str, int], limited: bool) -> None:
+def write_limits(root: Path, baselines: dict[str, int], limited: bool,
+                 max_percent: int = 100) -> None:
     for policy in _policy_paths(root):
         maximum = policy / "scaling_max_freq"
         if not maximum.is_file():
             continue
-        original = baselines.get(policy.name)
-        if original is None:
-            original = _read_int(maximum)
-            baselines[policy.name] = original
-        value = cap_for_policy(policy, original) if limited else original
+        hardware_max = baselines.get(policy.name)
+        if hardware_max is None:
+            try:
+                hardware_max = _read_int(policy / "cpuinfo_max_freq")
+            except (OSError, ValueError):
+                continue
+            baselines[policy.name] = hardware_max
+        value = cap_for_policy(policy, hardware_max, max_percent, limited)
         if _read_int(maximum) != value:
             maximum.write_text(f"{value}\n", encoding="ascii")
 
 
+def available_gpu_frequencies(root: Path) -> list[int]:
+    try:
+        values = [int(value) for value in (root / "available_frequencies").read_text(encoding="ascii").split()]
+    except (OSError, ValueError):
+        try:
+            values = [_read_int(root / "max_freq")]
+        except (OSError, ValueError):
+            return []
+    return sorted(set(value for value in values if value > 0))
+
+
+def gpu_frequency_target(root: Path, max_percent: int, boost: bool,
+                         limited: bool = False) -> int | None:
+    frequencies = available_gpu_frequencies(root)
+    if not frequencies:
+        return None
+    hardware_max = max(frequencies)
+    target = int(hardware_max * max_percent / 100)
+    if not boost:
+        unboosted = [value for value in frequencies if value <= int(hardware_max * GPU_NO_BOOST_RATIO)]
+        if unboosted:
+            target = min(target, max(unboosted))
+    if limited:
+        target = int(target * GPU_LIMIT_RATIO)
+    try:
+        minimum = _read_int(root / "min_freq")
+    except (OSError, ValueError):
+        minimum = min(frequencies)
+    target = max(minimum, target)
+    available = [value for value in frequencies if minimum <= value <= target]
+    return max(available) if available else min(frequencies)
+
+
+def write_gpu_limit(root: Path, max_percent: int, boost: bool,
+                    limited: bool = False) -> int | None:
+    maximum = root / "max_freq"
+    if not maximum.is_file():
+        return None
+    target = gpu_frequency_target(root, max_percent, boost, limited)
+    if target is None:
+        return None
+    try:
+        if _read_int(maximum) != target:
+            maximum.write_text(f"{target}\n", encoding="ascii")
+        return _read_int(maximum)
+    except (OSError, ValueError):
+        return None
+
+
+def write_cpu_boost(path: Path, root: Path, enabled: bool) -> bool | None:
+    value = "1" if enabled else "0"
+    targets = [path] if path.is_file() else [policy / "boost" for policy in _policy_paths(root) if (policy / "boost").is_file()]
+    if not targets:
+        return None
+    try:
+        for target in targets:
+            if target.read_text(encoding="ascii").strip() != value:
+                target.write_text(value + "\n", encoding="ascii")
+        return all(target.read_text(encoding="ascii").strip() == value for target in targets)
+    except (OSError, UnicodeError):
+        return False
+
+
 class Limiter:
     def __init__(self, thermal_root=THERMAL_ROOT, cpufreq_root=CPUFREQ_ROOT,
-                 config_path=CONFIG, run_dir=RUN_DIR):
+                 config_path=CONFIG, run_dir=RUN_DIR,
+                 performance_config_path=PERFORMANCE_CONFIG, gpu_root=GPU_ROOT,
+                 cpu_boost_path=CPU_BOOST, profile_reader=read_active_profile):
         self.thermal_root = Path(thermal_root)
         self.cpufreq_root = Path(cpufreq_root)
         self.config_path = Path(config_path)
+        self.performance_config_path = Path(performance_config_path)
+        self.gpu_root = Path(gpu_root)
+        self.cpu_boost_path = Path(cpu_boost_path)
+        self.profile_reader = profile_reader
         self.run_dir = Path(run_dir)
         self.status_path = self.run_dir / "status.json"
         self.baseline_path = self.run_dir / "cpu-max-baselines.json"
@@ -160,22 +315,41 @@ class Limiter:
             self.baselines = capture_baselines(self.cpufreq_root)
             self._save_control_state(False)
         elif was_applied:
-            # Recover caps if the process was killed before its stop handler.
+            # Recover any thermal cap left by a killed prior process.
             write_limits(self.cpufreq_root, self.baselines, False)
             self._save_control_state(False)
         self.limited = False
         self.hot_count = self.cool_count = 0
         self.last_config = None
+        self.last_profile_state = None
         self.sample_count = 0
         self.sample_sum = 0.0
         self.peak = None
         self.started = time.monotonic()
 
+    def _apply(self, settings: dict, limited: bool) -> tuple[int | None, bool | None]:
+        write_limits(
+            self.cpufreq_root, self.baselines, limited, settings["max_percent"]
+        )
+        cpu_boost = write_cpu_boost(
+            self.cpu_boost_path, self.cpufreq_root, settings["cpu_boost"]
+        )
+        gpu_max = write_gpu_limit(
+            self.gpu_root, settings["max_percent"], settings["gpu_boost"], limited
+        )
+        return gpu_max, cpu_boost
+
     def step(self) -> dict:
         config = read_config(self.config_path)
-        if config != self.last_config:
+        profile = self.profile_reader()
+        if profile not in PROFILE_IDS:
+            profile = "balanced"
+        performance = read_performance_settings(self.performance_config_path)["profiles"][profile]
+        profile_state = (profile, dict(performance))
+        if config != self.last_config or profile_state != self.last_profile_state:
             self.hot_count = self.cool_count = 0
             self.last_config = config
+            self.last_profile_state = profile_state
         temp = read_soc_temperature(self.thermal_root)
         if not config["enabled"] or temp is None or not self.baselines:
             want_limit = False
@@ -187,28 +361,17 @@ class Limiter:
             self.cool_count = self.cool_count + 1 if temp <= config["threshold_c"] - 3 else 0
             want_limit = self.cool_count < RELEASE_SAMPLES
 
-        if want_limit:
-            if not self.limited:
-                # Persist intent before touching sysfs so an abrupt kill can
-                # restore every policy on the next service start.
-                self.limited = True
-                self._save_control_state(True)
-                self.cool_count = 0
-            write_limits(self.cpufreq_root, self.baselines, True)
-        elif self.limited:
-            # Keep the recovery marker until all original limits are restored.
-            write_limits(self.cpufreq_root, self.baselines, False)
-            self._save_control_state(False)
+        if want_limit and not self.limited:
+            # Save intent before touching sysfs so an abrupt kill can recover.
+            self.limited = True
+            self._save_control_state(True)
+        elif not want_limit and self.limited:
+            # Restore the selected profile's ceiling before clearing recovery state.
             self.limited = False
-            self.hot_count = 0
-        else:
-            # Do not impose our captured values while idle. Track external
-            # limit changes so a later thermal cap restores the then-current
-            # policy rather than a stale startup value.
-            current = capture_baselines(self.cpufreq_root)
-            if current and current != self.baselines:
-                self.baselines = current
-                self._save_control_state(False)
+            self._apply(performance, False)
+            self._save_control_state(False)
+        gpu_max, cpu_boost = self._apply(performance, self.limited)
+
         if temp is not None:
             self.sample_count += 1
             self.sample_sum += temp
@@ -223,6 +386,12 @@ class Limiter:
             "sample_count": self.sample_count,
             "uptime_seconds": max(0, int(time.monotonic() - self.started)),
             "cpu_policy_count": len(self.baselines),
+            "profile": profile,
+            "max_percent": performance["max_percent"],
+            "cpu_boost": performance["cpu_boost"],
+            "gpu_boost": performance["gpu_boost"],
+            "cpu_boost_applied": cpu_boost,
+            "gpu_max_mhz": round(gpu_max / 1_000_000, 1) if gpu_max is not None else None,
             "error": (
                 "No readable SoC thermal sensors" if temp is None
                 else "CPUFreq policies unavailable" if not self.baselines
@@ -233,14 +402,18 @@ class Limiter:
         return status
 
     def restore(self) -> None:
-        if self.baselines and self.limited:
-            write_limits(self.cpufreq_root, self.baselines, False)
+        profiles = read_performance_settings(self.performance_config_path)["profiles"]
+        profile = self.profile_reader()
+        if profile not in PROFILE_IDS:
+            profile = "balanced"
+        if self.baselines:
+            self.limited = False
+            self._apply(profiles[profile], False)
             self._save_control_state(False)
-        for path in (self.status_path,):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
+        try:
+            self.status_path.unlink()
+        except FileNotFoundError:
+            pass
 
     def _save_control_state(self, applied: bool) -> None:
         atomic_json(
