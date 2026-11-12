@@ -37,6 +37,13 @@ from pathlib import PurePosixPath
 from typing import Any
 
 
+from x810_installer_common import (
+    ADBClient, Check, adb_binary, adb_devices, adb_target, adb_wait_hint, command,
+    hash_password, output, parse_sgdisk_info, sha256_file, stream_adb_file,
+    twrp_identity as common_twrp_identity,
+)
+
+
 REPOSITORY = "iamSlightlyWind/x810-fedroid"
 RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 EXPECTED_MODEL = "SM-X810"
@@ -44,6 +51,7 @@ EXPECTED_DEVICE = "gts9pwifi"
 X810_INTERNAL_DISK_GUID = "98101B32-BBE2-4BF2-A06E-2BB33D000C20"
 X810_USERDATA_TYPE_GUID = "1B81E7E6-F50D-419B-A739-2AEEF8DA3335"
 X810_LINUX_TYPE_GUID = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
+X810_GPT_FIRST_USABLE = 6
 X810_USERDATA_START = 3_568_128
 X810_USERDATA_END = 62_275_574
 X810_SPLIT_ALIGNMENT_SECTORS = 512
@@ -74,29 +82,8 @@ INSTALL_MIN_ANDROID_BYTES = 32 * (1024 ** 3)
 INSTALL_BOOT_IMAGE_SIZES = {name: X810_BOOT_PARTITIONS[name] for name in ("boot", "init_boot", "vendor_boot", "dtbo")}
 
 
-@dataclass
-class Check:
-    label: str
-    state: str
-    detail: str
-
-
-def command(argv: list[str], timeout: int = 15) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, text=True, capture_output=True, timeout=timeout, check=False)
-
-
 def adb_serials(adb_output: str) -> list[tuple[str, str]]:
     return [item for item in adb_devices(adb_output) if item[1] in {"device", "recovery", "sideload"}]
-
-
-def adb_devices(adb_output: str) -> list[tuple[str, str]]:
-    """Return every ADB target/state pair, including actionable failures."""
-    found: list[tuple[str, str]] = []
-    for line in adb_output.splitlines()[1:]:
-        fields = line.split()
-        if len(fields) >= 2 and fields[1] in {"device", "recovery", "sideload", "unauthorized", "offline"}:
-            found.append((fields[0], fields[1]))
-    return found
 
 
 def linux_ids(path: Path = Path("/etc/os-release")) -> set[str]:
@@ -156,21 +143,6 @@ def package_hint(program: str, ids: set[str] | None = None) -> str:
             return "sudo zypper install openssl"
         return "install openssl with your Linux package manager"
     return f"install {program} with your Linux package manager"
-
-
-def adb_wait_hint(adb_output: str, serial: str | None = None) -> str:
-    rows = adb_devices(adb_output)
-    if serial:
-        rows = [row for row in rows if row[0] == serial]
-        if not rows:
-            return f"{serial} is not listed; check the USB cable, then run `adb devices -l` again"
-    if any(state == "unauthorized" for _, state in rows):
-        return "unlock Android and approve the USB-debugging RSA prompt, or open TWRP and reconnect; rerun `doctor`"
-    if any(state == "offline" for _, state in rows):
-        return "reconnect the USB cable, then run `adb kill-server` and `adb start-server`; rerun `doctor`"
-    if not rows:
-        return "connect by USB; in Android enable USB debugging and approve its prompt, or open TWRP; rerun `doctor`"
-    return "no usable ADB target; run `adb devices -l` and resolve its state before continuing"
 
 
 def latest_release(opener=urllib.request.urlopen) -> dict[str, Any] | None:
@@ -385,92 +357,13 @@ def show_checks(checks: list[Check]) -> None:
 
 
 def twrp_identity(adb: str, serial: str, state: str, runner=None) -> tuple[dict[str, str], list[Check]]:
-    """Require root ADB in the X810 TWRP environment; never reboot into it."""
-    runner = command if runner is None else runner
-    values: dict[str, str] = {}
-
-    def shell(*args: str) -> str:
-        result = runner([adb, "-s", serial, "shell", *args])
-        return result.stdout.strip().replace("\r", "") if result.returncode == 0 else ""
-
-    for key, prop in (
-        ("twrp", "ro.twrp.version"),
-        ("device", "ro.product.device"),
-        ("model", "ro.boot.em.model"),
-        ("bootloader", "ro.bootloader"),
-        ("flash_locked", "ro.boot.flash.locked"),
-        ("vbmeta_state", "ro.boot.vbmeta.device_state"),
-        ("verifiedbootstate", "ro.boot.verifiedbootstate"),
-    ):
-        values[key] = shell("getprop", prop)
-    values["uid"] = shell("id", "-u")
-    values["cmdline"] = shell("cat", "/proc/cmdline")
-
-    checks = [Check("ADB target", "OK", f"{serial} ({state})")]
-    if state != "recovery":
-        checks.append(Check("Recovery state", "STOP", f"expected TWRP recovery, got ADB state {state}"))
-    else:
-        checks.append(Check("Recovery state", "OK", "TWRP ADB recovery"))
-    if values["twrp"]:
-        checks.append(Check("TWRP", "OK", values["twrp"]))
-    else:
-        checks.append(Check("TWRP", "STOP", "ro.twrp.version is empty"))
-    unlock_evidence = []
-    if values["flash_locked"] == "0":
-        unlock_evidence.append("ro.boot.flash.locked=0")
-    if values["vbmeta_state"].lower() == "unlocked":
-        unlock_evidence.append("vbmeta device_state=unlocked")
-    if values["verifiedbootstate"].lower() == "orange":
-        unlock_evidence.append("verifiedbootstate=orange")
-    locked = values["flash_locked"] == "1" or values["vbmeta_state"].lower() == "locked"
-    if locked:
-        checks.append(Check("Bootloader", "STOP", "TWRP boot properties report a locked bootloader"))
-    elif unlock_evidence:
-        checks.append(Check("Bootloader", "OK", ", ".join(unlock_evidence)))
-    else:
-        checks.append(Check("Bootloader", "STOP", "TWRP boot properties do not prove the bootloader is unlocked"))
-    if values["device"] not in {"gts9p", "gts9pwifi"}:
-        checks.append(Check("Recovery codename", "STOP", f"expected gts9p/gts9pwifi, got {values['device'] or '?'}"))
-    else:
-        checks.append(Check("Recovery codename", "OK", values["device"]))
-    if values["model"] and values["model"] != EXPECTED_MODEL:
-        checks.append(Check("Tablet model", "STOP", f"expected {EXPECTED_MODEL}, got {values['model']}"))
-    elif values["bootloader"] and not values["bootloader"].startswith("X810"):
-        checks.append(Check("Tablet bootloader", "STOP", f"expected X810 bootloader, got {values['bootloader']}"))
-    elif values["model"] == EXPECTED_MODEL or values["bootloader"].startswith("X810") or "androidboot.em.model=SM-X810" in values["cmdline"]:
-        checks.append(Check("Tablet identity", "OK", f"{values['model'] or values['bootloader'] or EXPECTED_MODEL}"))
-    else:
-        checks.append(Check("Tablet identity", "STOP", "TWRP does not expose a positive SM-X810 identity"))
-    if values["uid"] == "0":
-        checks.append(Check("Recovery privileges", "OK", "ADB shell is root"))
-    else:
-        checks.append(Check("Recovery privileges", "STOP", f"ADB shell uid is {values['uid'] or 'unknown'}, expected 0"))
-    return values, checks
-
-
-def adb_binary(adb: str, serial: str, remote_command: str, timeout: int = 45) -> bytes:
-    """Read a small binary block through adb exec-out without text conversion."""
-    try:
-        result = subprocess.run(
-            [adb, "-s", serial, "exec-out", "sh", "-c", remote_command],
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise RuntimeError(f"ADB binary read failed: {error}") from error
-    if result.returncode != 0:
-        detail = result.stderr.decode(errors="replace").strip()
-        raise RuntimeError(detail or f"adb exec-out exited {result.returncode}")
-    return result.stdout
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    """Use the shared identity evaluator with Fedora's accepted evidence policy."""
+    client = ADBClient(adb, serial, runner=command if runner is None else runner)
+    return common_twrp_identity(
+        client, state, expected_model=EXPECTED_MODEL,
+        codenames={"gts9p", "gts9pwifi"}, bootloader_prefix="X810",
+        allow_cmdline_identity=True,
+    )
 
 
 def save_gpt_backup(adb: str, serial: str, out_dir: Path, values: dict[str, str],
@@ -619,28 +512,6 @@ def run_gpt_backup(serial: str | None, out_dir: Path) -> tuple[list[Check], int]
     return checks, 0
 
 
-def parse_sgdisk_info(text: str) -> dict[str, str] | None:
-    """Parse the stable fields emitted by sgdisk --info=N."""
-    if "does not exist" in text.lower():
-        return None
-    fields = {
-        "type_guid": r"^Partition GUID code:\s*([0-9A-Fa-f-]+)",
-        "unique_guid": r"^Partition unique GUID:\s*([0-9A-Fa-f-]+)",
-        "first": r"^First sector:\s*(\d+)",
-        "last": r"^Last sector:\s*(\d+)",
-        "name": r"^Partition name:\s*'(.*)'\s*$",
-    }
-    parsed: dict[str, str] = {}
-    for key, pattern in fields.items():
-        match = re.search(pattern, text, flags=re.MULTILINE)
-        if not match:
-            return None
-        parsed[key] = match.group(1)
-    parsed["type_guid"] = parsed["type_guid"].upper()
-    parsed["unique_guid"] = parsed["unique_guid"].upper()
-    return parsed
-
-
 def twrp_gpt_layout(adb: str, serial: str, runner=None) -> tuple[dict[str, Any] | None, list[Check]]:
     """Read-only prove the live X810 UFS GPT is stock or our expected split."""
     runner = command if runner is None else runner
@@ -688,11 +559,48 @@ def twrp_gpt_layout(adb: str, serial: str, runner=None) -> tuple[dict[str, Any] 
     if userdata is None or userdata["name"] != "userdata" or userdata["type_guid"] != X810_USERDATA_TYPE_GUID or int(userdata["first"]) != X810_USERDATA_START:
         checks.append(Check("userdata entry", "STOP", "GPT entry 34 does not match the measured X810 userdata identity/start"))
         return None, checks
-    if any(infos[number] is not None for number in range(36, 41)):
-        checks.append(Check("GPT entries 36–40", "STOP", "unexpected occupied GPT entry; refusing to touch this layout"))
+    linuxroot = infos[35]
+    if linuxroot is not None and (linuxroot["name"] != "linuxroot" or linuxroot["type_guid"] != X810_LINUX_TYPE_GUID):
+        checks.append(Check("GPT entry 35", "STOP", "occupied by a partition other than the expected linuxroot"))
         return None, checks
 
-    linuxroot = infos[35]
+    # Entries 36–40 may either live in the measured prefix gap, or (only on
+    # an already-split device) wholly after linuxroot. The latter includes the
+    # live Windstation swap partition. It is safe to preserve for a rootfs-only
+    # install, but not to repartition: a new linuxroot allocation could cover it.
+    additional_entries: dict[int, dict[str, str]] = {}
+    for number in range(36, 41):
+        info = infos[number]
+        if info is None:
+            continue
+        first, last = int(info["first"]), int(info["last"])
+        prefix_gap = X810_GPT_FIRST_USABLE <= first <= last < X810_USERDATA_START
+        tail_gap = (linuxroot is not None
+                    and int(linuxroot["last"]) < first <= last <= X810_USERDATA_END)
+        if first < X810_GPT_FIRST_USABLE or first > last or not (prefix_gap or tail_gap):
+            checks.append(Check(
+                f"GPT entry {number}", "STOP",
+                f"unexpected occupied entry spans LBAs {first}–{last}; only entries wholly in the "
+                f"prefix gap ({X810_GPT_FIRST_USABLE}–{X810_USERDATA_START - 1}) or after the "
+                "recognized linuxroot within the original userdata boundary can be preserved",
+            ))
+            return None, checks
+        additional_entries[number] = info
+    ordered_extents = sorted((int(e["first"]), int(e["last"]), n) for n, e in additional_entries.items())
+    for (left_first, left_last, left_num), (right_first, right_last, right_num) in zip(ordered_extents, ordered_extents[1:]):
+        if right_first <= left_last:
+            checks.append(Check("GPT entries 36–40", "STOP", f"entries {left_num} and {right_num} overlap"))
+            return None, checks
+
+    if additional_entries:
+        preserved = "; ".join(
+            f"#{number} {entry['name'] or entry['type_guid']} LBAs {entry['first']}–{entry['last']}"
+            for number, entry in sorted(additional_entries.items())
+        )
+        checks.append(Check("GPT entries 36–40", "OK", f"preserving without modification: {preserved}"))
+    else:
+        checks.append(Check("GPT entries 36–40", "OK", "unoccupied"))
+
     userdata_last = int(userdata["last"])
     if linuxroot is None:
         if userdata["unique_guid"] != X810_USERDATA_TYPE_GUID:
@@ -705,23 +613,25 @@ def twrp_gpt_layout(adb: str, serial: str, runner=None) -> tuple[dict[str, Any] 
         return {
             "state": "stock",
             "userdata": userdata,
+            "additional_entries": additional_entries,
             "disk_last": X810_USERDATA_END,
         }, checks
 
-    if linuxroot["name"] != "linuxroot" or linuxroot["type_guid"] != X810_LINUX_TYPE_GUID:
-        checks.append(Check("GPT entry 35", "STOP", "occupied by a partition other than the expected linuxroot"))
-        return None, checks
     if (int(userdata["last"]) + 1 != int(linuxroot["first"])
             or int(linuxroot["last"]) > X810_USERDATA_END
             or int(linuxroot["last"]) < int(linuxroot["first"])):
         checks.append(Check("split geometry", "STOP", "userdata/linuxroot are not contiguous within the measured original userdata range"))
         return None, checks
-    free_sectors = X810_USERDATA_END - int(linuxroot["last"])
+    free_sectors = unallocated_tail_sectors({
+        "linuxroot": linuxroot,
+        "additional_entries": additional_entries,
+    })
     checks.append(Check("userdata layout", "OK", "recognized userdata + linuxroot split" + (f" with {free_sectors * GPT_CAPTURE_BLOCK:,} bytes unallocated" if free_sectors else "")))
     return {
         "state": "split",
         "userdata": userdata,
         "linuxroot": linuxroot,
+        "additional_entries": additional_entries,
         "disk_last": X810_USERDATA_END,
     }, checks
 
@@ -811,7 +721,9 @@ def run_split(serial: str | None, android_percent: int, write: bool = False,
     # Recheck geometry immediately before the write. If anything changed after
     # the capture, do not apply sector numbers computed from a stale table.
     second_layout, second_checks = twrp_gpt_layout(adb, target_serial)
-    if second_layout is None or second_layout["state"] != "stock" or any(item.state == "STOP" for item in second_checks):
+    if (second_layout is None or second_layout["state"] != "stock"
+            or any(item.state == "STOP" for item in second_checks)
+            or not same_install_layout(layout, second_layout)):
         checks.extend(second_checks)
         checks.append(Check("Pre-write recheck", "STOP", "GPT no longer matches the stock table captured for this operation"))
         return checks, 2
@@ -857,6 +769,7 @@ def run_split(serial: str | None, android_percent: int, write: bool = False,
             and int(final_layout["userdata"]["last"]) == plan["userdata_last"]
             and int(final_layout["linuxroot"]["first"]) == plan["linuxroot_first"]
             and int(final_layout["linuxroot"]["last"]) == plan["linuxroot_last"]
+            and final_layout.get("additional_entries", {}) == second_layout.get("additional_entries", {})
         )
         if not valid:
             checks.append(Check("GPT read-back", "STOP", "could not prove the expected entry 34/35 result; do not boot system"))
@@ -1642,33 +1555,6 @@ def download_release_install_set(release: dict[str, Any], destination: Path,
     return destination
 
 
-class ADBClient:
-    """Small injectable ADB transport; install orchestration never calls adb directly."""
-
-    def __init__(self, adb: str, serial: str, runner=command,
-                 binary_reader=adb_binary, stream_runner=None):
-        self.adb = adb
-        self.serial = serial
-        self.runner = runner
-        self.binary_reader = binary_reader
-        self.stream_runner = stream_runner or stream_adb_file
-
-    def run(self, *args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
-        return self.runner([self.adb, "-s", self.serial, *args], timeout=timeout)
-
-    def shell(self, *args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
-        return self.run("shell", *args, timeout=timeout)
-
-    def read_binary(self, remote_command: str, timeout: int = 180) -> bytes:
-        return self.binary_reader(self.adb, self.serial, remote_command, timeout=timeout)
-
-    def stream(self, source: Path, remote_command: str, timeout: int = 1800) -> subprocess.CompletedProcess[str]:
-        return self.stream_runner(self.adb, self.serial, source, remote_command, timeout=timeout)
-
-    def push(self, source: Path, remote_path: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
-        return self.run("push", str(source), remote_path, timeout=timeout)
-
-
 def flash_partition_image(client: ADBClient, name: str, source: Path,
                           expected_hash: str, action: str) -> None:
     """Stage an image with adb push, then copy it device-side and verify raw read-back."""
@@ -1735,33 +1621,6 @@ def stream_adb_file(adb: str, serial: str, source: Path, remote_command: str,
 def _getprop(client: ADBClient, key: str) -> str:
     result = client.shell("getprop", key)
     return result.stdout.strip().replace("\r", "") if result.returncode == 0 else ""
-
-
-def adb_target(adb: str, serial: str | None, runner=command,
-               allowed_states: set[str] | None = None) -> tuple[str, str]:
-    allowed_states = allowed_states or {"device", "recovery"}
-    result = runner([adb, "devices", "-l"])
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "adb devices failed")
-    devices = adb_devices(result.stdout)
-    if serial:
-        selected = [item for item in devices if item[0] == serial]
-        if len(selected) != 1:
-            raise RuntimeError(adb_wait_hint(result.stdout, serial))
-    else:
-        if len(devices) != 1:
-            if not devices:
-                raise RuntimeError(adb_wait_hint(result.stdout))
-            raise RuntimeError("multiple ADB targets connected; pass --serial SERIAL")
-        selected = devices
-    target, state = selected[0]
-    if state not in allowed_states:
-        if state == "unauthorized":
-            raise RuntimeError("ADB target is unauthorized; approve its USB-debugging prompt and retry")
-        if state == "offline":
-            raise RuntimeError("ADB target is offline; reconnect USB and retry")
-        raise RuntimeError(f"expected Android or TWRP ADB state, got {state}")
-    return target, state
 
 
 def android_preflight(adb: str, serial: str | None, runner=command) -> tuple[str, list[Check]]:
@@ -1884,10 +1743,31 @@ def live_split_sizes(layout: dict[str, Any]) -> tuple[int, int, int]:
     linuxroot = layout["linuxroot"]
     android_sectors = int(userdata["last"]) - int(userdata["first"]) + 1
     linux_sectors = int(linuxroot["last"]) - int(linuxroot["first"]) + 1
-    free_sectors = X810_USERDATA_END - int(linuxroot["last"])
+    free_sectors = unallocated_tail_sectors(layout)
     return (android_sectors * GPT_CAPTURE_BLOCK,
             linux_sectors * GPT_CAPTURE_BLOCK,
             free_sectors * GPT_CAPTURE_BLOCK)
+
+
+def tail_additional_entries(layout: dict[str, Any]) -> dict[int, dict[str, str]]:
+    """Return preserved GPT entries occupying space after the current linuxroot."""
+    linuxroot = layout.get("linuxroot")
+    if not isinstance(linuxroot, dict):
+        return {}
+    root_last = int(linuxroot["last"])
+    return {
+        number: entry for number, entry in layout.get("additional_entries", {}).items()
+        if int(entry["first"]) > root_last
+    }
+
+
+def unallocated_tail_sectors(layout: dict[str, Any]) -> int:
+    """Count only free sectors after linuxroot, excluding preserved GPT entries."""
+    linuxroot = layout["linuxroot"]
+    free = X810_USERDATA_END - int(linuxroot["last"])
+    occupied = sum(int(entry["last"]) - int(entry["first"]) + 1
+                   for entry in tail_additional_entries(layout).values())
+    return free - occupied
 
 
 def split_plan_matches_live(layout: dict[str, Any], plan: dict[str, int]) -> bool:
@@ -1939,6 +1819,14 @@ def prompt_existing_split_plan(layout: dict[str, Any], minimum_fedora_bytes: int
     print(f"  Android userdata: {gb(android_bytes):.2f} GB ({gib(android_bytes):.2f} GiB)")
     print(f"  Fedora linuxroot: {gb(fedora_bytes):.2f} GB ({gib(fedora_bytes):.2f} GiB)")
     print(f"  Unallocated: {gb(free_bytes):.2f} GB ({gib(free_bytes):.2f} GiB)")
+    tail_entries = tail_additional_entries(layout)
+    if tail_entries:
+        for number, entry in sorted(tail_entries.items()):
+            sectors = int(entry["last"]) - int(entry["first"]) + 1
+            name = entry["name"] or entry["type_guid"]
+            print(f"  Preserved partition #{number} {name}: {capacity_both(sectors * GPT_CAPTURE_BLOCK)}")
+        print("Resizing is disabled: it could overwrite a preserved partition after linuxroot.")
+        return None
     print("Choose whether to preserve these sizes or define new Android/Fedora sizes.")
     print("Resizing changes the userdata boundary and requires manual TWRP Format Data after the GPT write.")
     while True:
@@ -2011,19 +1899,6 @@ def prompt_install_details(total_bytes: int, minimum_fedora_bytes: int,
     return details
 
 
-def hash_password(password: str) -> str:
-    """Hash via OpenSSL stdin; plaintext is never placed in argv or a file."""
-    try:
-        result = subprocess.run(["openssl", "passwd", "-6", "-stdin"], input=password + "\n",
-                                text=True, capture_output=True, timeout=15, check=False)
-    except (OSError, subprocess.SubprocessError) as error:
-        raise ValueError(f"could not hash password with OpenSSL: {error}") from error
-    hashed = result.stdout.strip()
-    if result.returncode != 0 or not hashed.startswith("$6$"):
-        raise ValueError("OpenSSL did not produce a SHA-512-crypt password hash")
-    return hashed
-
-
 def default_install_backup_path() -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1_000_000) % 1_000_000:06d}"
     return install_state_root() / f"x810-install-backup-{stamp}"
@@ -2074,6 +1949,8 @@ def install_partition_table(client: ADBClient, layout: dict[str, Any],
     checks: list[Check] = []
     if confirmation != INSTALL_GPT_CONFIRMATION:
         return [Check("GPT confirmation", "STOP", "partition table was not changed")]
+    if tail_additional_entries(layout):
+        return [Check("GPT write", "STOP", "a preserved partition follows linuxroot; repartitioning is disabled")]
     fresh, fresh_checks = twrp_gpt_layout(client.adb, client.serial, runner=client.runner)
     checks.extend(fresh_checks)
     if layout.get("state") not in {"stock", "split"}:
@@ -2111,6 +1988,7 @@ def install_partition_table(client: ADBClient, layout: dict[str, Any],
     valid = (
         sync.returncode == 0 and verify.returncode == 0 and updated is not None
         and updated.get("state") == "split"
+        and updated.get("additional_entries", {}) == layout.get("additional_entries", {})
         and int(updated["userdata"]["first"]) == plan["userdata_first"]
         and int(updated["userdata"]["last"]) == plan["userdata_last"]
         and int(updated["linuxroot"]["first"]) == plan["linuxroot_first"]
@@ -2137,6 +2015,15 @@ def same_install_layout(expected: dict[str, Any], actual: dict[str, Any]) -> boo
         for key in ("first", "last", "type_guid", "unique_guid", "name"):
             if key in left and str(left[key]).lower() != str(right.get(key, "")).lower():
                 return False
+    # Entries outside userdata are read-only preservation constraints. Compare
+    # the full parsed records so a new/changed entry cannot slip between the
+    # initial preflight and the destructive GPT transaction.
+    expected_extra = expected.get("additional_entries", {})
+    actual_extra = actual.get("additional_entries", {})
+    if not isinstance(expected_extra, dict) or not isinstance(actual_extra, dict):
+        return False
+    if expected_extra != actual_extra:
+        return False
     return True
 
 
@@ -2811,6 +2698,12 @@ def describe_install_plan(layout: dict[str, Any], split: dict[str, int] | None,
     print(f"  Android userdata: {capacity_both(android)} (preserved)")
     print(f"  Fedora linuxroot: {capacity_both(linux)} (will be formatted)")
     print(f"  Unallocated: {capacity_both(free)} (preserved)")
+    for number, entry in sorted(tail_additional_entries(layout).items()):
+        sectors = int(entry["last"]) - int(entry["first"]) + 1
+        name = entry["name"] or entry["type_guid"]
+        print(f"  Preserved partition #{number} {name}: {capacity_both(sectors * GPT_CAPTURE_BLOCK)}")
+    if tail_additional_entries(layout):
+        print("  Resizing disabled to protect the preserved partition(s) after linuxroot.")
     return "INSTALL FEDORA ON SM-X810 AND ERASE LINUXROOT", android, linux
 
 

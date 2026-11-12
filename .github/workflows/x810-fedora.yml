@@ -263,6 +263,7 @@ jobs:
           python3 tools/test-x810-sensor-attach-recovery.py
           python3 tools/test-x810-sensor-registry-runtime-tree.py
           python3 tools/test-x810-install.py
+          python3 tools/test-installer-common.py
           python3 tools/test-x810-pd-limits.py
           python3 tools/test-x810-device-control-wakeup.py
           python3 tools/test-x810-powerkey-wakeup.py

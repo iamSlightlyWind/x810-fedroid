@@ -655,11 +655,17 @@ class InstallerTests(unittest.TestCase):
 
     def test_stock_gpt_writer_changes_only_entries_34_and_35_and_uses_distinct_guid(self):
         plan = installer.calculate_install_split("80GiB", "60GiB", 32 * 1024**3)
+        preserved_extra = {36: {
+            "name": "preserved-prefix", "type_guid": installer.X810_LINUX_TYPE_GUID,
+            "unique_guid": "11111111-2222-3333-4444-555555555555", "first": "6", "last": "264",
+        }}
         stock = {"state": "stock", "userdata": {"first": str(installer.X810_USERDATA_START),
-                 "last": str(installer.X810_USERDATA_END)}, "disk_last": installer.X810_USERDATA_END}
+                 "last": str(installer.X810_USERDATA_END)}, "additional_entries": preserved_extra,
+                 "disk_last": installer.X810_USERDATA_END}
         split = {"state": "split", "userdata": {"name": "userdata", "first": str(plan["userdata_first"]),
                  "last": str(plan["userdata_last"])}, "linuxroot": {"name": "linuxroot",
                  "first": str(plan["linuxroot_first"]), "last": str(plan["linuxroot_last"])},
+                 "additional_entries": preserved_extra,
                  "disk_last": installer.X810_USERDATA_END}
         calls = []
         class Client:
@@ -1649,6 +1655,161 @@ Partition name: 'userdata'
             layout, checks = installer.twrp_gpt_layout("adb", "serial")
         self.assertEqual(layout["state"], "stock")
         self.assertTrue(all(check.state == "OK" for check in checks))
+
+    def test_live_twrp_layout_preserves_extra_entries_only_in_safe_prefix_gap(self):
+        userdata = """Partition GUID code: 1B81E7E6-F50D-419B-A739-2AEEF8DA3335 (Android data)
+Partition unique GUID: 1B81E7E6-F50D-419B-A739-2AEEF8DA3335
+First sector: 3568128
+Last sector: 62275574
+Partition name: 'userdata'
+"""
+        extra = """Partition GUID code: 0FC63DAF-8483-4772-8E79-3D69D8477DE4 (Linux filesystem)
+Partition unique GUID: 11111111-2222-3333-4444-555555555555
+First sector: 6
+Last sector: 264
+Partition name: 'preserved-prefix'
+"""
+
+        def fake_command(argv, timeout=15):
+            if "--getsize64" in argv:
+                return subprocess.CompletedProcess(argv, 0, str(installer.X810_LUNS["sda"]), "")
+            if "logical_block_size" in argv[-1]:
+                return subprocess.CompletedProcess(argv, 0, "4096", "")
+            if "--print" in argv:
+                return subprocess.CompletedProcess(argv, 0, f"Disk identifier (GUID): {installer.X810_INTERNAL_DISK_GUID}\n", "")
+            if "--verify" in argv:
+                return subprocess.CompletedProcess(argv, 0, "No problems found.\n", "")
+            if "--info=34" in argv:
+                return subprocess.CompletedProcess(argv, 0, userdata, "")
+            if "--info=36" in argv:
+                return subprocess.CompletedProcess(argv, 0, extra, "")
+            number = next((n for n in range(35, 41) if f"--info={n}" in argv), None)
+            if number is not None:
+                return subprocess.CompletedProcess(argv, 1, f"Partition #{number} does not exist.\n", "")
+            raise AssertionError(argv)
+
+        with patch.object(installer, "command", side_effect=fake_command):
+            layout, checks = installer.twrp_gpt_layout("adb", "serial")
+        self.assertEqual(layout["state"], "stock")
+        self.assertEqual(layout["additional_entries"][36]["first"], "6")
+        self.assertEqual(layout["additional_entries"][36]["last"], "264")
+        prefix_check = next(check for check in checks if check.label == "GPT entries 36–40")
+        self.assertEqual(prefix_check.state, "OK")
+        self.assertIn("#36 preserved-prefix LBAs 6–264", prefix_check.detail)
+        self.assertTrue(installer.same_install_layout(layout, {**layout}))
+        changed_extra = {**layout, "additional_entries": {36: {**layout["additional_entries"][36], "last": "265"}}}
+        self.assertFalse(installer.same_install_layout(layout, changed_extra))
+
+    def test_live_windstation_swap_after_linuxroot_is_preserved_and_disables_resize(self):
+        userdata = f"""Partition GUID code: {installer.X810_USERDATA_TYPE_GUID} (Android data)
+Partition unique GUID: 11111111-2222-3333-4444-555555555555
+First sector: 3568128
+Last sector: 42630143
+Partition name: 'userdata'
+"""
+        linuxroot = f"""Partition GUID code: {installer.X810_LINUX_TYPE_GUID} (Linux filesystem)
+Partition unique GUID: 22222222-3333-4444-5555-666666666666
+First sector: 42630144
+Last sector: 59407359
+Partition name: 'linuxroot'
+"""
+        swap = """Partition GUID code: 0657FD6D-A4AB-43C4-84E5-0933C84B4F4F (Linux swap)
+Partition unique GUID: 85236798-C823-4744-B784-998460294487
+First sector: 59407360
+Last sector: 62028799
+Partition name: 'Swap'
+"""
+
+        def fake_command(argv, timeout=15):
+            if "--getsize64" in argv:
+                return subprocess.CompletedProcess(argv, 0, str(installer.X810_LUNS["sda"]), "")
+            if "logical_block_size" in argv[-1]:
+                return subprocess.CompletedProcess(argv, 0, "4096", "")
+            if "--print" in argv:
+                return subprocess.CompletedProcess(argv, 0, f"Disk identifier (GUID): {installer.X810_INTERNAL_DISK_GUID}\n", "")
+            if "--verify" in argv:
+                return subprocess.CompletedProcess(argv, 0, "No problems found.\n", "")
+            if "--info=34" in argv:
+                return subprocess.CompletedProcess(argv, 0, userdata, "")
+            if "--info=35" in argv:
+                return subprocess.CompletedProcess(argv, 0, linuxroot, "")
+            if "--info=36" in argv:
+                return subprocess.CompletedProcess(argv, 0, swap, "")
+            number = next((n for n in range(37, 41) if f"--info={n}" in argv), None)
+            if number is not None:
+                return subprocess.CompletedProcess(argv, 1, f"Partition #{number} does not exist.\n", "")
+            raise AssertionError(argv)
+
+        with patch.object(installer, "command", side_effect=fake_command):
+            layout, checks = installer.twrp_gpt_layout("adb", "serial")
+        self.assertEqual(layout["state"], "split")
+        self.assertEqual(layout["additional_entries"][36]["name"], "Swap")
+        self.assertTrue(all(check.state == "OK" for check in checks), checks)
+        android_bytes, linux_bytes, free_bytes = installer.live_split_sizes(layout)
+        self.assertEqual(android_bytes, (42630143 - 3568128 + 1) * installer.GPT_CAPTURE_BLOCK)
+        self.assertEqual(linux_bytes, (59407359 - 42630144 + 1) * installer.GPT_CAPTURE_BLOCK)
+        self.assertEqual(free_bytes, (installer.X810_USERDATA_END - 62028799) * installer.GPT_CAPTURE_BLOCK)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            plan = installer.prompt_existing_split_plan(layout, 40 * 1024**3,
+                                                        input_func=lambda _: self.fail("must not offer resize"))
+        self.assertIsNone(plan)
+        self.assertIn("Resizing is disabled", output.getvalue())
+        self.assertIn("Swap", output.getvalue())
+
+        calls = []
+        class NoWriteClient:
+            adb, serial = "adb", "serial"
+            def shell(self, *args, **kwargs):
+                calls.append(args)
+                raise AssertionError("partition writer must reject before device commands")
+        checks = installer.install_partition_table(NoWriteClient(), layout, {}, installer.INSTALL_GPT_CONFIRMATION)
+        self.assertEqual(checks[0].state, "STOP")
+        self.assertIn("preserved partition follows linuxroot", checks[0].detail)
+        self.assertEqual(calls, [])
+
+    def test_live_twrp_layout_rejects_extra_entry_touching_userdata_allocation(self):
+        userdata = """Partition GUID code: 1B81E7E6-F50D-419B-A739-2AEEF8DA3335 (Android data)
+Partition unique GUID: 1B81E7E6-F50D-419B-A739-2AEEF8DA3335
+First sector: 3568128
+Last sector: 62275574
+Partition name: 'userdata'
+"""
+        extra = """Partition GUID code: 0FC63DAF-8483-4772-8E79-3D69D8477DE4 (Linux filesystem)
+Partition unique GUID: 11111111-2222-3333-4444-555555555555
+First sector: 4000000
+Last sector: 4000100
+Partition name: 'unexpected'
+"""
+        calls = []
+
+        def fake_command(argv, timeout=15):
+            calls.append(argv)
+            if "--getsize64" in argv:
+                return subprocess.CompletedProcess(argv, 0, str(installer.X810_LUNS["sda"]), "")
+            if "logical_block_size" in argv[-1]:
+                return subprocess.CompletedProcess(argv, 0, "4096", "")
+            if "--print" in argv:
+                return subprocess.CompletedProcess(argv, 0, f"Disk identifier (GUID): {installer.X810_INTERNAL_DISK_GUID}\n", "")
+            if "--verify" in argv:
+                return subprocess.CompletedProcess(argv, 0, "No problems found.\n", "")
+            if "--info=34" in argv:
+                return subprocess.CompletedProcess(argv, 0, userdata, "")
+            if "--info=36" in argv:
+                return subprocess.CompletedProcess(argv, 0, extra, "")
+            number = next((n for n in range(35, 41) if f"--info={n}" in argv), None)
+            if number is not None:
+                return subprocess.CompletedProcess(argv, 1, f"Partition #{number} does not exist.\n", "")
+            raise AssertionError(argv)
+
+        with patch.object(installer, "command", side_effect=fake_command):
+            layout, checks = installer.twrp_gpt_layout("adb", "serial")
+        self.assertIsNone(layout)
+        entry_check = next(check for check in checks if check.label == "GPT entry 36")
+        self.assertEqual(entry_check.state, "STOP")
+        self.assertIn("LBAs 4000000–4000100", entry_check.detail)
+        self.assertTrue(all("--delete=" not in arg and "--new=" not in arg for call in calls for arg in call))
 
     def test_live_twrp_layout_rejects_wrong_internal_disk_identity(self):
         def fake_command(argv, timeout=15):

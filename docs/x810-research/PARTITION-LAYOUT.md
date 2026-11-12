@@ -111,6 +111,24 @@ byte-for-byte and do not regenerate supposedly “normal” GUIDs in installer
 code. This is a report of observed on-device metadata, not a claim that the
 layout follows ordinary PC GPT conventions.
 
+The installer reads entries 36–40. It can preserve entries in the measured
+usable prefix gap (LBAs 6–264). On an already-split layout, it can also
+preserve entries wholly after linuxroot and within the original userdata
+boundary. That tail layout is installable without changing GPT, but resizing
+is disabled so no new linuxroot extent can overwrite the tail partition.
+Entries intersecting userdata/linuxroot or extending beyond the measured
+boundary remain a hard stop. Any GPT resize path compares preserved entry
+records before and after writing.
+
+## Live Windstation layout (2026-11-12)
+
+Read-only ADB/TWRP inspection confirmed the current layout is userdata
+3568128–42630143, linuxroot 42630144–59407359, and Linux swap entry 36
+59407360–62028799 (10 GiB). `sgdisk --verify` reported no GPT overlap. The
+installer preserves entry 36, permits formatting only the existing linuxroot,
+and disables repartitioning for this layout. The remaining gap after swap is
+246,775 sectors; it is not treated as available resize space.
+
 The capture contains only the first/last 1 MiB of each LUN—not a full image or
 complete byte-for-byte disk backup. It is enough to parse this GPT layout, but
 the host recovery vault still needs an explicitly planned read-only full GPT
