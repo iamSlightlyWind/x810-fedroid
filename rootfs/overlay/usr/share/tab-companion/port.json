@@ -13,5 +13,13 @@
   "device_id": "SM-X810",
   "os_id": "fedora",
   "os_version": "44",
-  "arch": "aarch64"
+  "arch": "aarch64",
+  "port_update": {
+    "backend": "rpm",
+    "available": true
+  },
+  "kernel_update": {
+    "backend": "rpm",
+    "available": true
+  }
 }
