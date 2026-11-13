@@ -130,7 +130,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_unknown_subcommands_are_rejected(self):
         stderr = io.StringIO()
-        with patch.object(sys, "argv", [str(SCRIPT), "doctor"]), \
+        with patch.object(sys, "argv", [str(SCRIPT), "flash-everything"]), \
              contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as error:
             installer.main()
         self.assertEqual(error.exception.code, 2)
@@ -152,7 +152,7 @@ class InstallerTests(unittest.TestCase):
              patch.object(installer, "run_install", return_value=0) as run_install, \
              patch.object(installer, "latest_release", side_effect=AssertionError("local mode must not query GitHub")):
             self.assertEqual(installer.main(), 0)
-        run_install.assert_called_once_with(cached_bundle, serial=None)
+        run_install.assert_called_once_with(cached_bundle, serial=None, plan_only=False)
 
     def test_default_invocation_starts_latest_release_install(self):
         class TTY(io.StringIO):
@@ -164,7 +164,7 @@ class InstallerTests(unittest.TestCase):
              patch.object(installer, "run_install", return_value=0) as run_install, \
              patch.object(installer, "find_cached_install_bundle", side_effect=AssertionError("default mode must use the latest feed")):
             self.assertEqual(installer.main(), 0)
-        run_install.assert_called_once_with(None, serial=None)
+        run_install.assert_called_once_with(None, serial=None, plan_only=False)
 
     def test_main_starts_single_guided_flow(self):
         class TTY(io.StringIO):
@@ -178,7 +178,7 @@ class InstallerTests(unittest.TestCase):
              patch.object(installer, "find_cached_install_bundle", return_value=cached_bundle), \
              patch.object(installer, "run_install", return_value=0) as install:
             self.assertEqual(installer.main(), 0)
-        install.assert_called_once_with(cached_bundle, serial=None)
+        install.assert_called_once_with(cached_bundle, serial=None, plan_only=False)
 
     def test_serial_is_passed_to_guided_install(self):
         class TTY(io.StringIO):
@@ -188,7 +188,7 @@ class InstallerTests(unittest.TestCase):
              patch.object(sys, "stdin", TTY()), patch.object(sys, "stdout", TTY()), \
              patch.object(installer, "run_install", return_value=0) as run_install:
             self.assertEqual(installer.main(), 0)
-        run_install.assert_called_once_with(None, serial="tablet-serial")
+        run_install.assert_called_once_with(None, serial="tablet-serial", plan_only=False)
 
     def test_restore_dispatches_to_checked_restore_helper(self):
         class TTY(io.StringIO):
@@ -1479,7 +1479,6 @@ class InstallerTests(unittest.TestCase):
         password_answers = iter(["42", "42"])
         with patch.object(installer, "hash_password", return_value="$6$short-pass") as hash_password:
             details = installer.prompt_install_details(
-                100 * 1024**3, 32 * 1024**3,
                 password_reader=lambda _prompt: next(password_answers),
                 input_func=lambda _prompt: next(text_answers),
             )
@@ -2015,6 +2014,40 @@ Partition name: 'linuxroot'
         self.assertEqual(next(c for c in checks if c.label == "Tablet identity").state, "OK")
         self.assertEqual(next(c for c in checks if c.label == "Recovery").state, "OK")
         self.assertTrue(all(c.state == "OK" for c in checks))
+
+    def test_twrp_generic_model_alias_requires_x810_bootloader(self):
+        class Client:
+            serial = "test"
+            def __init__(self, bootloader):
+                self.props = {
+                    "ro.twrp.version": "3.7.1_12-0", "ro.product.device": "gts9p",
+                    "ro.boot.em.model": "SM-X816B", "ro.bootloader": bootloader,
+                    "ro.boot.flash.locked": "0", "ro.boot.vbmeta.device_state": "unlocked",
+                    "ro.boot.verifiedbootstate": "orange",
+                }
+            def shell(self, *args, **_kwargs):
+                if args[:1] == ("getprop",):
+                    value = self.props.get(args[1], "")
+                elif args == ("id", "-u"):
+                    value = "0"
+                elif args == ("cat", "/proc/cmdline"):
+                    value = "androidboot.em.model=SM-X810"
+                else:
+                    value = ""
+                return type("Result", (), {"returncode": 0, "stdout": value + "\n"})()
+
+        _values, checks = installer.common_twrp_identity(
+            Client("X810XXS5CYG1"), "recovery", expected_model="SM-X810",
+            codenames={"gts9p", "gts9pwifi"}, bootloader_prefix="X810",
+            model_aliases={"SM-X816B"}, require_bootloader=True,
+        )
+        self.assertFalse(any(check.state == "STOP" for check in checks), checks)
+        _values, checks = installer.common_twrp_identity(
+            Client("X910XXS1"), "recovery", expected_model="SM-X810",
+            codenames={"gts9p", "gts9pwifi"}, bootloader_prefix="X810",
+            model_aliases={"SM-X816B"}, require_bootloader=True,
+        )
+        self.assertTrue(any(check.label == "Tablet identity" and check.state == "STOP" for check in checks))
 
     def test_recovery_partition_mismatch_stops_preflight(self):
         class Result:

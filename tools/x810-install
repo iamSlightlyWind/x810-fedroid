@@ -48,6 +48,8 @@ REPOSITORY = "iamSlightlyWind/x810-fedroid"
 RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 EXPECTED_MODEL = "SM-X810"
 EXPECTED_DEVICE = "gts9pwifi"
+EXPECTED_TWRP_ALIAS = "SM-X816B"
+EXPECTED_BOOTLOADER_PREFIX = "X810"
 X810_INTERNAL_DISK_GUID = "98101B32-BBE2-4BF2-A06E-2BB33D000C20"
 X810_USERDATA_TYPE_GUID = "1B81E7E6-F50D-419B-A739-2AEEF8DA3335"
 X810_LINUX_TYPE_GUID = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
@@ -361,8 +363,8 @@ def twrp_identity(adb: str, serial: str, state: str, runner=None) -> tuple[dict[
     client = ADBClient(adb, serial, runner=command if runner is None else runner)
     return common_twrp_identity(
         client, state, expected_model=EXPECTED_MODEL,
-        codenames={"gts9p", "gts9pwifi"}, bootloader_prefix="X810",
-        allow_cmdline_identity=True,
+        codenames={"gts9p", "gts9pwifi"}, bootloader_prefix=EXPECTED_BOOTLOADER_PREFIX,
+        model_aliases={EXPECTED_TWRP_ALIAS}, require_bootloader=True,
     )
 
 
@@ -1855,8 +1857,7 @@ def prompt_existing_split_plan(layout: dict[str, Any], minimum_fedora_bytes: int
             print(f"Invalid partition plan: {error}; remaining capacity stays unpartitioned.")
 
 
-def prompt_install_details(total_bytes: int, minimum_fedora_bytes: int,
-                           password_reader=getpass.getpass, input_func=input) -> dict[str, str]:
+def prompt_install_details(password_reader=getpass.getpass, input_func=input) -> dict[str, str]:
     def prompt_nonempty(label: str, validation) -> str:
         while True:
             answer = input_func(label).strip()
@@ -2720,6 +2721,9 @@ def run_install(bundle_path: Path | InstallBundle | None, serial: str | None = N
     if not adb:
         print(f"STOP: adb is required ({package_hint('adb')}).")
         return 2
+    if not shutil.which("openssl"):
+        print(f"STOP: openssl is required ({package_hint('openssl')}).")
+        return 2
     try:
         # Fail before fetching the multi-gigabyte rootfs when a fresh install
         # is not yet at the required Android/ADB stage. Resume runs instead
@@ -2883,9 +2887,7 @@ def run_install(bundle_path: Path | InstallBundle | None, serial: str | None = N
 
             details: dict[str, str] = {}
             try:
-                details = prompt_install_details(
-                    (X810_USERDATA_END - X810_USERDATA_START + 1) * GPT_CAPTURE_BLOCK,
-                    int(bundle.manifest["rootfs"]["minimum_size_bytes"]), password_reader, input_func)
+                details = prompt_install_details(password_reader, input_func)
             except (EOFError, KeyboardInterrupt):
                 print("Cancelled before backup/write.")
                 return 1
@@ -3100,21 +3102,29 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run the complete guided X810 Fedora installation. Manual TWRP actions are prompted in-flow."
     )
-    parser.add_argument("command", nargs="?", choices=("install", "restore-boot-set"),
+    parser.add_argument("command", nargs="?", choices=("install", "doctor", "restore-boot-set"),
                         default="install",
-                        help="install Fedora (default), or restore the four backed-up boot images")
+                        help="install Fedora (default), run read-only checks, or restore the four backed-up boot images")
     parser.add_argument("--no-update", action="store_true",
                         help="use the newest complete SHA-256-verified release already in the local cache; never query GitHub")
     parser.add_argument("--serial", help="select this ADB serial when more than one target is connected")
     parser.add_argument("--backup-dir", type=Path,
                         help="installer backup directory (required by restore-boot-set)")
+    parser.add_argument("--plan-only", action="store_true",
+                        help="verify the device and show the plan without backups or tablet writes")
     args = parser.parse_args()
+    if args.command == "doctor":
+        if args.no_update or args.backup_dir is not None or args.plan_only:
+            parser.error("doctor does not accept --no-update, --backup-dir, or --plan-only")
+        checks, status = run_doctor(args.serial)
+        show_checks(checks)
+        return status
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("STOP: this command requires an interactive terminal for typed confirmations.", file=sys.stderr)
         return 2
     if args.command == "restore-boot-set":
-        if args.no_update or args.backup_dir is None:
-            parser.error("restore-boot-set requires --backup-dir and does not accept --no-update")
+        if args.no_update or args.plan_only or args.backup_dir is None:
+            parser.error("restore-boot-set requires --backup-dir and does not accept --no-update or --plan-only")
         try:
             checks = restore_boot_set_from_backup("adb", args.serial, args.backup_dir)
         except (OSError, RuntimeError, ValueError) as error:
@@ -3133,7 +3143,7 @@ def main() -> int:
             print(f"INSTALL STOPPED: --no-update found no valid cached install set ({error}).", file=sys.stderr)
             return 2
         print(f"Using verified cached release {bundle_path.manifest['bundle_version']}; no GitHub request will be made.", flush=True)
-    return run_install_cli(bundle_path, serial=args.serial)
+    return run_install_cli(bundle_path, serial=args.serial, plan_only=args.plan_only)
 
 
 if __name__ == "__main__":

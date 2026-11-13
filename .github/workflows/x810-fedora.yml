@@ -47,6 +47,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve a compatible publication identity
         id: identity
@@ -238,6 +239,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Test X810 CPU frequency and haptics kernel contracts
         run: |
@@ -419,6 +421,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Verify planned kernel fingerprint
         env:
@@ -687,6 +691,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify selected kernel release and plan rootfs/full-set
         id: resolve
@@ -825,6 +830,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run rootfs Fedora signing-key contract test
         run: python3 tools/test-rootfs-repo-gpg.py
@@ -998,9 +1005,14 @@ jobs:
       needs.resolve_rootfs.outputs.build_full_set == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install RPM inspection tools
         run: |
@@ -1031,6 +1043,8 @@ jobs:
     if: >-
       always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - name: Keep only the newest complete aggregate release
         env:

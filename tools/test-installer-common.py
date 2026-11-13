@@ -86,10 +86,11 @@ Partition name: 'safe-prefix'
         fed_values, fed_checks = common.twrp_identity(
             Client(), "recovery", expected_model="SM-X810",
             codenames={"gts9p", "gts9pwifi"}, bootloader_prefix="X810",
-            allow_cmdline_identity=True,
+            model_aliases={"SM-X816B"}, require_bootloader=True,
         )
         self.assertEqual(fed_values["model"], "SM-X816B")
-        self.assertTrue(any(check.label == "Tablet identity" and check.state == "STOP" for check in fed_checks))
+        self.assertFalse(any(check.state == "STOP" for check in fed_checks), fed_checks)
+        self.assertIn("generic TWRP model alias", next(check.detail for check in fed_checks if check.label == "Tablet identity"))
 
 
 if __name__ == "__main__":
