@@ -157,28 +157,16 @@ def test_driver_anchors_only_success_and_keeps_park_sequence() -> None:
         assert text in rearm
     renegotiate = driver[driver.index("static int sm5440_renegotiate_pps("):]
     renegotiate = renegotiate[:renegotiate.index("\nstatic void ", 1)]
-    same_point = renegotiate.index("sm5440_refresh_pps_without_park(sm, target_mv)")
-    park = renegotiate.index("sm5440_pump_off(sm)")
-    assert same_point < park
-    assert "if (sm->live_refresh_available &&" in renegotiate
+    assert "sm5440_refresh_pps_without_park" not in driver
+    assert "live_refresh_available" not in driver
+    assert "sm5440_refresh_pps_current_only" not in driver
     order = [renegotiate.index("sm5440_pump_off(sm)"),
              renegotiate.index("sm5440_refresh_pps(sm)"),
              renegotiate.index("sm5440_wait_vbus_settled(sm, sm->target_mv)"),
              renegotiate.index("sm5440_pump_on(sm)")]
     assert order == sorted(order)
-    live_refresh = driver[driver.index("static int sm5440_refresh_pps_without_park("):]
-    live_refresh = live_refresh[:live_refresh.index("\nstatic int ", 1)]
-    for text in ("SM5440_REG_CNTL5", "SM5440_REG_STATUS3",
-                 "SM5440_REG_INT1", "SM5440_REG_INT3",
-                 "SM5440_CNTL5_CHG_ON", "SM5440_STATUS3_VBUSPOK",
-                 "ret = -EIO", "goto failed", "live_refresh_available = false",
-                 "reverting to pump-park refreshes"):
-        assert text in live_refresh
-    current_only = driver[driver.index("static int sm5440_refresh_pps_current_only("):]
-    current_only = current_only[:current_only.index("\nstatic int ", 1)]
-    assert "POWER_SUPPLY_PROP_CURRENT_NOW" in current_only
-    assert "POWER_SUPPLY_PROP_VOLTAGE_NOW" not in current_only
-    assert "sm5440_next_pps_target_mv" not in current_only
+    renegotiate_start = driver.rindex("static int sm5440_renegotiate_pps(")
+    assert "park the SM5440" in driver[renegotiate_start - 900:renegotiate_start]
     assert renegotiate.count("sm5440_pt_rearm_check(sm,") == 2
     assert "X810_SM5440_PPS_REFRESH_INTERVAL_MS\t2500UL" in policy
 
