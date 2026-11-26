@@ -610,6 +610,14 @@ static int sm5440_refresh_pps(struct sm5440_direct *sm, int target_mv)
 		if (ret)
 			return ret;
 		sm->target_mv = target_mv;
+		/* A voltage update is already a PPS Request and refreshes the
+		 * contract. Do not immediately send a second, redundant current
+		 * Request: on the X810 source an Alert can arrive during that second
+		 * AMS, making TCPM time out and hard-reset the contract.
+		 */
+		sm->last_pps_request = jiffies;
+		sm->pps_request_valid = true;
+		return 0;
 	}
 
 	ret = sm5440_psy_retry(sm, POWER_SUPPLY_PROP_CURRENT_NOW,

@@ -144,8 +144,15 @@ def test_driver_anchors_only_success_and_keeps_park_sequence() -> None:
     assert "sm->last_pps_request = jiffies;" in driver
     refresh = driver[driver.index("static int sm5440_refresh_pps("):]
     refresh = refresh[:refresh.index("\nstatic int ", 1)]
+    voltage = refresh.index("POWER_SUPPLY_PROP_VOLTAGE_NOW")
+    voltage_success = refresh.index("sm->last_pps_request = jiffies;", voltage)
+    voltage_return = refresh.index("return 0;", voltage_success)
     request = refresh.index("sm5440_psy_retry(sm, POWER_SUPPLY_PROP_CURRENT_NOW")
     timestamp = refresh.index("sm->last_pps_request = jiffies;", request)
+    assert voltage < voltage_success < voltage_return < request, (
+        "a voltage-changing PPS cycle must finish after one request; the "
+        "following current-only keepalive belongs to a later work cycle"
+    )
     assert request < timestamp
     assert "if (!ret)" in refresh[:timestamp]
     rearm = driver[driver.rindex("static int sm5440_pt_rearm_check("):]
