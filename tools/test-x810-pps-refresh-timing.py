@@ -160,8 +160,15 @@ def test_driver_anchors_only_success_and_keeps_park_sequence() -> None:
     assert "sm5440_refresh_pps_without_park" not in driver
     assert "live_refresh_available" not in driver
     assert "sm5440_refresh_pps_current_only" not in driver
-    order = [renegotiate.index("sm5440_pump_off(sm)"),
-             renegotiate.index("sm5440_refresh_pps(sm)"),
+    target_sample = renegotiate.index("sm5440_next_pps_target_mv(sm)")
+    park = renegotiate.index("sm5440_pump_off(sm)")
+    refresh = renegotiate.index("sm5440_refresh_pps(sm, target_mv)")
+    assert target_sample < park < refresh, (
+        "sample VBAT-derived PPS target before parking the pump, so the "
+        "refresh does not chase the pump-off voltage transient"
+    )
+    order = [park,
+             refresh,
              renegotiate.index("sm5440_wait_vbus_settled(sm, sm->target_mv)"),
              renegotiate.index("sm5440_pump_on(sm)")]
     assert order == sorted(order)

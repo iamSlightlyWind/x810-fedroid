@@ -586,14 +586,10 @@ static int sm5440_next_pps_target_mv(struct sm5440_direct *sm)
 	return sm5440_pps_target_mv(sm->target_ma, battery_uv);
 }
 
-static int sm5440_refresh_pps(struct sm5440_direct *sm)
+static int sm5440_refresh_pps(struct sm5440_direct *sm, int target_mv)
 {
-	int target_mv, online, type, min_uv, max_uv, max_ua;
+	int online, type, min_uv, max_uv, max_ua;
 	int ret;
-
-	target_mv = sm5440_next_pps_target_mv(sm);
-	if (target_mv < 0)
-		return target_mv;
 
 	/* Check the currently negotiated source APDO immediately before every PPS
 	 * write. The board-specific ceiling below supplies the other half of the
@@ -741,7 +737,17 @@ static int sm5440_pt_rearm_check(struct sm5440_direct *sm, const char *stage);
  */
 static int sm5440_renegotiate_pps(struct sm5440_direct *sm)
 {
+	int target_mv;
 	int ret;
+
+	/* Sample VBAT before parking the pump.  Its terminal voltage shifts when
+	 * the SM5440 stops drawing current; calculating the next operating point
+	 * after park makes each PPS keepalive chase that transient and can provoke
+	 * large, unnecessary APDO voltage changes on the source.
+	 */
+	target_mv = sm5440_next_pps_target_mv(sm);
+	if (target_mv < 0)
+		return target_mv;
 
 	ret = sm5440_pump_off(sm);
 	if (ret)
@@ -752,7 +758,7 @@ static int sm5440_renegotiate_pps(struct sm5440_direct *sm)
 			return ret;
 	}
 
-	ret = sm5440_refresh_pps(sm);
+	ret = sm5440_refresh_pps(sm, target_mv);
 	if (ret)
 		return ret;
 
